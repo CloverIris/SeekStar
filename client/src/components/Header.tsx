@@ -18,7 +18,10 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   return (
     <header className="header">
-      <h1>SeekStar - 3D 星图搜索引擎</h1>
+      <div className="header-title-container">
+        <h1>SeekStar 互联网探索引擎</h1>
+        <h2 className="header-subtitle">互联网本是星空</h2>
+      </div>
       <SearchBar
         query={query}
         isLoading={isLoading}

@@ -5,6 +5,7 @@ export interface StarPoint {
   url: string;
   source: string;
   content: string;
+  summary?: string;
   author: string[];
   publishDate: string;
   tags: string[];
@@ -13,6 +14,7 @@ export interface StarPoint {
   brightness: number;
   color: string;
   clusterId?: string;
+  imageUrl?: string;
   relatedStars: { id: string; weight: number }[];
   relevanceScore: number;
   qualityScore: number;

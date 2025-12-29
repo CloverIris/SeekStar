@@ -11,7 +11,7 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: transparent;
+  background: #000000;
   color: #ffffff;
   overflow: hidden;
 }
@@ -86,6 +86,24 @@ h1 {
   font-size: 1.5rem;
   font-weight: 600;
   text-align: center;
+}
+
+/* 副标题样式 */
+.header-subtitle {
+  font-size: 1rem;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.7);
+  text-align: center;
+  margin: 0.25rem 0 0 0;
+  letter-spacing: 0.5px;
+}
+
+/* 标题容器样式 */
+.header-title-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
 }
 
 /* 搜索表单样式 */
@@ -360,8 +378,8 @@ h1 {
 /* 星点详细信息面板样式 */
 .star-info-panel {
   position: fixed;
-  bottom: 120px; /* 上移，避免被底部栏遮挡 */
-  left: 20px;
+  top: 20px;
+  left: 280px; /* 右移，避免与左侧列表和操作指南重叠 */
   background-color: rgba(0, 0, 30, 0.9);
   border-radius: 8px;
   padding: 20px;
@@ -372,7 +390,7 @@ h1 {
   backdrop-filter: blur(10px);
   box-shadow: 0 4px 15px rgba(0, 255, 255, 0.2);
   border: 1px solid rgba(78, 205, 196, 0.3);
-  z-index: 100; /* 确保在最上层 */
+  z-index: 100; /* 确保在卡片之上 */
 }
 
 .star-info-panel h3 {
@@ -628,7 +646,7 @@ h1 {
 .star-info-card:hover {
   transform: translateY(-4px) scale(1.15);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.2), 0 0 30px rgba(100, 200, 255, 0.4);
-  z-index: 1000;
+  z-index: 8; /* 悬停时仍低于UI控制元素 */
 }
 
 /* 卡片光泽效果 */
@@ -651,7 +669,7 @@ h1 {
 .star-info-card:hover {
   transform: translateY(-4px) scale(1.1);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.2), 0 0 20px rgba(100, 200, 255, 0.3);
-  z-index: 1000;
+  z-index: 8; /* 悬停时仍低于UI控制元素 */
 }
 
 /* 卡片连接网格效果 */
@@ -1075,8 +1093,8 @@ h1 {
 /* 星点详细信息面板样式 - 增强版 */
 .star-info-panel {
   position: fixed;
-  bottom: 120px;
-  left: 20px;
+  top: 20px;
+  left: 280px; /* 右移，避免与左侧列表和操作指南重叠 */
   background: linear-gradient(135deg, rgba(0, 10, 50, 0.95) 0%, rgba(0, 30, 80, 0.95) 100%);
   border-radius: 16px;
   padding: 24px;

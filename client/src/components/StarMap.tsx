@@ -231,27 +231,40 @@ export const StarMap = ({
   const positions = new Float32Array(positionsArray);
   const colors = new Float32Array(colorsArray);
 
-  // 检测星点是否在相机可视范围内
+  // 使用视锥体检测星点是否在相机可视范围内
+  // 基于3D CG软件工作区思路，确保近距离物体不会消失
   const isStarInView = (star: StarPoint): boolean => {
     if (!star || !star.position) return false;
     
+    // 首先检查星点是否在相机前方
     const starPosition = new THREE.Vector3(
       star.position.x,
       star.position.y,
       star.position.z
     );
     
-    // 将星点位置转换为屏幕坐标
-    const screenPos = starPosition.clone().project(camera);
+    // 计算星点到相机的向量
+    const direction = starPosition.clone().sub(camera.position).normalize();
     
-    // 检查星点是否在屏幕范围内
-    return (
-      screenPos.x >= -1 &&
-      screenPos.x <= 1 &&
-      screenPos.y >= -1 &&
-      screenPos.y <= 1 &&
-      screenPos.z > 0 // 确保星点在相机前方
-    );
+    // 计算相机前方向量
+    const cameraForward = new THREE.Vector3(0, 0, -1);
+    cameraForward.applyQuaternion(camera.quaternion);
+    
+    // 点积计算，判断星点是否在相机前方
+    const dotProduct = direction.dot(cameraForward);
+    if (dotProduct < 0) return false;
+    
+    // 使用视锥体检测星点是否在可视范围内
+    const frustum = new THREE.Frustum();
+    const projScreenMatrix = new THREE.Matrix4();
+    
+    // 更新视锥体矩阵
+    camera.updateMatrixWorld();
+    projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    frustum.setFromProjectionMatrix(projScreenMatrix);
+    
+    // 检查星点是否在视锥体内
+    return frustum.containsPoint(starPosition);
   };
   
   // 移除未使用的函数
@@ -270,7 +283,7 @@ export const StarMap = ({
   //   return Math.max(0, 1 - distance / 30);
   // };
   
-  // 获取星点的LOD级别
+  // 获取星点的LOD级别 - 基于3D CG软件工作区思路
   const getStarLODLevel = (star: StarPoint): number => {
     if (!star || !star.position) return 0;
     
@@ -287,14 +300,33 @@ export const StarMap = ({
     
     const distance = camera.position.distanceTo(starPosition);
     
-    // 根据距离确定LOD级别，大幅增加视距，让卡片在更远的距离才显示
-    if (distance < 15) {
+    // 计算星点在屏幕上的大小
+    const screenSize = 1000 * (1 / (distance * camera.fov / 180));
+    
+    // 3D CG软件工作区思路：
+    // 1. 近距离物体不会消失，始终保持可见
+    // 2. 根据屏幕大小调整LOD级别
+    // 3. 平滑过渡，避免突然消失
+    // 4. 确保重要信息始终可见
+    
+    // 非常近时显示完整信息
+    if (distance < 10 || screenSize > 20) {
       return 3; // 最高级别，显示完整信息
-    } else if (distance < 35) {
+    } 
+    // 中等距离，根据屏幕大小调整
+    else if (distance < 30 || screenSize > 10) {
+      return 3; // 保持最高级别，确保信息可见
+    } 
+    // 稍远一些，显示简化信息
+    else if (distance < 60 || screenSize > 5) {
       return 2; // 中级，显示标题和作者
-    } else if (distance < 55) {
+    } 
+    // 远距离，只显示标题
+    else if (distance < 100 || screenSize > 2) {
       return 1; // 低级，只显示标题
-    } else {
+    } 
+    // 极远处才隐藏
+    else {
       return 0; // 不显示信息
     }
   };
@@ -302,6 +334,17 @@ export const StarMap = ({
   // 存储可视范围内的星点及其LOD级别
   const [visibleStars, setVisibleStars] = useState<Array<{star: StarPoint, lod: number}>>([]);
   
+  // 存储可视星点数据的状态
+  const [visibleStarData, setVisibleStarData] = useState<{
+    indices: number[];
+    positions: Float32Array;
+    colors: Float32Array;
+  }>({
+    indices: [],
+    positions: new Float32Array(0),
+    colors: new Float32Array(0)
+  });
+
   // 每帧检测鼠标与星点的交互，以及可视范围内的星点
   useFrame(() => {
     // 键盘控制摄像机移动
@@ -310,6 +353,37 @@ export const StarMap = ({
     // 相机飞行更新
     updateCameraFlight();
 
+    // 生成可视星点数据 - 在每一帧重新生成，确保与相机位置同步
+    const visibleStarIndices: number[] = [];
+    for (let i = 0; i < allStars.length; i++) {
+      if (isStarInView(allStars[i])) {
+        visibleStarIndices.push(i);
+      }
+    }
+    
+    // 创建可视星点的缓冲区数据
+    const visiblePositions = new Float32Array(visibleStarIndices.length * 3);
+    const visibleColors = new Float32Array(visibleStarIndices.length * 3);
+    
+    visibleStarIndices.forEach((index, i) => {
+      // 复制位置数据
+      visiblePositions[i * 3] = positions[index * 3];
+      visiblePositions[i * 3 + 1] = positions[index * 3 + 1];
+      visiblePositions[i * 3 + 2] = positions[index * 3 + 2];
+      
+      // 复制颜色数据
+      visibleColors[i * 3] = colors[index * 3];
+      visibleColors[i * 3 + 1] = colors[index * 3 + 1];
+      visibleColors[i * 3 + 2] = colors[index * 3 + 2];
+    });
+    
+    // 更新可视星点数据状态
+    setVisibleStarData({
+      indices: visibleStarIndices,
+      positions,
+      colors
+    });
+    
     // 检测可视范围内的星点，并计算LOD级别
     const inViewStars = allStars
       .filter(star => isStarInView(star))
@@ -331,7 +405,7 @@ export const StarMap = ({
         
         if (intersects.length > 0 && intersects[0].index !== undefined) {
           const index = Math.floor(intersects[0].index);
-          // 确保visibleStarIndices[index]存在
+          // 使用当前帧生成的visibleStarIndices数组
           if (index >= 0 && index < visibleStarIndices.length) {
             const star = allStars[visibleStarIndices[index]];
             if (star && star.id && star.id !== prevIntersect.current) {
@@ -360,33 +434,9 @@ export const StarMap = ({
       }
     }
   });
-
-  // 生成可视星点数据 - 使用更高效的过滤方式
-  const visibleStarIndices: number[] = [];
-  for (let i = 0; i < allStars.length; i++) {
-    if (isStarInView(allStars[i])) {
-      visibleStarIndices.push(i);
-    }
-  }
-  
-  // 创建可视星点的缓冲区数据
-  const visiblePositions = new Float32Array(visibleStarIndices.length * 3);
-  const visibleColors = new Float32Array(visibleStarIndices.length * 3);
-  
-  visibleStarIndices.forEach((index, i) => {
-    // 复制位置数据
-    visiblePositions[i * 3] = positions[index * 3];
-    visiblePositions[i * 3 + 1] = positions[index * 3 + 1];
-    visiblePositions[i * 3 + 2] = positions[index * 3 + 2];
-    
-    // 复制颜色数据
-    visibleColors[i * 3] = colors[index * 3];
-    visibleColors[i * 3 + 1] = colors[index * 3 + 1];
-    visibleColors[i * 3 + 2] = colors[index * 3 + 2];
-  });
   
   // 如果没有可视星点，只渲染必要元素
-  if (visibleStarIndices.length === 0) {
+  if (visibleStarData.indices.length === 0) {
     return (
       <group>
         <StarHoverPreview hoveredStar={hoveredStar} mouse={mouse} />
@@ -448,7 +498,7 @@ export const StarMap = ({
           // 检查是否有星点被点击
           if (event.intersections && event.intersections.length > 0 && event.intersections[0].index !== undefined) {
             const index = Math.floor(event.intersections[0].index);
-            const star = allStars[visibleStarIndices[index]];
+            const star = allStars[visibleStarData.indices[index]];
             if (star && !star.id.startsWith('far-star-')) { // 只处理实际星点
               onStarClick(star);
             }
@@ -456,8 +506,8 @@ export const StarMap = ({
         }}
       >
         <bufferGeometry>
-          <bufferAttribute args={[visiblePositions, 3]} name="position" count={visibleStarIndices.length} />
-          <bufferAttribute args={[visibleColors, 3]} name="color" count={visibleStarIndices.length} />
+          <bufferAttribute args={[visibleStarData.positions, 3]} name="position" count={visibleStarData.indices.length} />
+          <bufferAttribute args={[visibleStarData.colors, 3]} name="color" count={visibleStarData.indices.length} />
         </bufferGeometry>
         <pointsMaterial 
           size={0.6} 
@@ -473,8 +523,8 @@ export const StarMap = ({
       {/* 星点发光效果 - 更柔和的光晕效果 */}
       <points>
         <bufferGeometry>
-          <bufferAttribute args={[visiblePositions, 3]} name="position" count={visibleStarIndices.length} />
-          <bufferAttribute args={[visibleColors, 3]} name="color" count={visibleStarIndices.length} />
+          <bufferAttribute args={[visibleStarData.positions, 3]} name="position" count={visibleStarData.indices.length} />
+          <bufferAttribute args={[visibleStarData.colors, 3]} name="color" count={visibleStarData.indices.length} />
         </bufferGeometry>
         <pointsMaterial 
           size={2.0} 
@@ -490,8 +540,8 @@ export const StarMap = ({
       {/* 星点光晕效果 - 最外层的柔和光晕 */}
       <points>
         <bufferGeometry>
-          <bufferAttribute args={[visiblePositions, 3]} name="position" count={visibleStarIndices.length} />
-          <bufferAttribute args={[visibleColors, 3]} name="color" count={visibleStarIndices.length} />
+          <bufferAttribute args={[visibleStarData.positions, 3]} name="position" count={visibleStarData.indices.length} />
+          <bufferAttribute args={[visibleStarData.colors, 3]} name="color" count={visibleStarData.indices.length} />
         </bufferGeometry>
         <pointsMaterial 
           size={3.5} 
@@ -503,6 +553,86 @@ export const StarMap = ({
           depthWrite={false}
         />
       </points>
+      
+      {/* 卡片之间的连线 */}
+      {visibleStars.length > 1 && (
+        <group>
+          {/* 创建连线几何 */}
+          <lineSegments>
+            <bufferGeometry>
+              <bufferAttribute 
+                args={[
+                  new Float32Array(
+                    visibleStars.flatMap(({ star: starA }) => {
+                      // 获取当前星点的相关星点
+                      return (starA.relatedStars || []).flatMap(relatedStar => {
+                        // 查找相关星点在可视星点列表中的位置
+                        const starB = visibleStars.find(({ star }) => star.id === relatedStar.id);
+                        if (starB) {
+                          // 为每对相关星点创建一条连线
+                          return [
+                            starA.position.x, starA.position.y, starA.position.z,
+                            starB.star.position.x, starB.star.position.y, starB.star.position.z
+                          ];
+                        }
+                        return [];
+                      });
+                    })
+                  ),
+                  3
+                ]} 
+                name="position" 
+              />
+              <bufferAttribute 
+                args={[
+                  new Float32Array(
+                    visibleStars.flatMap(({ star: starA, lod: lodA }) => {
+                      // 获取当前星点的相关星点
+                      return (starA.relatedStars || []).flatMap(relatedStar => {
+                        // 查找相关星点在可视星点列表中的位置
+                        const starB = visibleStars.find(({ star }) => star.id === relatedStar.id);
+                        if (starB) {
+                          // 根据星点尺寸组合设置连线颜色
+                        let color;
+                        if (lodA === 3 && starB.lod === 3) {
+                          // 大卡片之间 - 蓝色
+                          color = [0.4, 0.8, 1.0]; // 蓝色
+                        } else if (lodA === 3 && starB.lod === 2 || lodA === 2 && starB.lod === 3) {
+                          // 大卡片与中等卡片之间 - 青色
+                          color = [0.4, 1.0, 0.8]; // 青色
+                        } else if (lodA === 3 && starB.lod === 1 || lodA === 1 && starB.lod === 3) {
+                          // 大卡片与小卡片之间 - 紫色
+                          color = [0.8, 0.4, 1.0]; // 紫色
+                        } else if (lodA === 2 && starB.lod === 2) {
+                          // 中等卡片之间 - 绿色
+                          color = [0.4, 1.0, 0.6]; // 绿色
+                        } else if (lodA === 2 && starB.lod === 1 || lodA === 1 && starB.lod === 2) {
+                          // 中等卡片与小卡片之间 - 橙色
+                          color = [1.0, 0.7, 0.4]; // 橙色
+                        } else {
+                          // 小卡片之间 - 黄色
+                          color = [1.0, 0.9, 0.4]; // 黄色
+                        }
+                          return [...color, ...color]; // 为连线的两个端点设置相同颜色
+                        }
+                        return [];
+                      });
+                    })
+                  ),
+                  3
+                ]} 
+                name="color" 
+              />
+            </bufferGeometry>
+            <lineBasicMaterial 
+              vertexColors={true} 
+              linewidth={2} 
+              transparent={true} 
+              opacity={0.6}
+            />
+          </lineSegments>
+        </group>
+      )}
       
       {/* 星点悬停预览 */}
       <StarHoverPreview hoveredStar={hoveredStar} mouse={mouse} />

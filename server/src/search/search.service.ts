@@ -40,8 +40,8 @@ export class SearchService {
       // Step 1: 使用DAG服务执行搜索
       const dagResult = await this.dagService.executeDagSearch(request.query);
       
-      // Step 2: 获取真实搜索结果
-      const searchResults = await this.fetchRealSearchResults(request.query, request.limit || 100);
+      // Step 2: 获取真实搜索结果 - 减少默认limit值，避免生成大量无意义补充结果
+      const searchResults = await this.fetchRealSearchResults(request.query, request.limit || 20);
       
       // Extract texts from search results
       const texts = searchResults.map(result => result.title + ' ' + result.content);
@@ -336,43 +336,9 @@ export class SearchService {
     publishDate: Date;
     tags: string[];
   }> {
-    const results: Array<{
-      title: string;
-      url: string;
-      source: string;
-      content: string;
-      author: string[];
-      publishDate: Date;
-      tags: string[];
-    }> = [];
-    
-    // 从现有结果中提取标签和作者
-    const existingTags = new Set<string>();
-    const existingAuthors = new Set<string>();
-    
-    existingResults.forEach(result => {
-      result.tags.forEach((tag: string) => existingTags.add(tag));
-      result.author.forEach((author: string) => existingAuthors.add(author));
-    });
-    
-    // 生成补充结果
-    for (let i = 0; i < limit; i++) {
-      // 基于现有标签生成新的标题和内容
-      const randomTags = Array.from(existingTags).slice(0, 3);
-      const randomAuthor = Array.from(existingAuthors)[Math.floor(Math.random() * existingAuthors.size)] || 'Unknown Author';
-      
-      results.push({
-        title: `${query} ${randomTags.join(' ')} - 补充结果 ${i + 1}`,
-        url: `https://example.com/${query}-${randomTags.join('-')}-${i}`,
-        source: 'generated',
-        content: `这是关于"${query}"的补充信息，涵盖了${randomTags.join('、')}等相关主题。该内容基于现有搜索结果生成，用于丰富星图展示。`,
-        author: [randomAuthor],
-        publishDate: new Date(Date.now() - Math.floor(Math.random() * 365) * 24 * 60 * 60 * 1000),
-        tags: [...new Set([query, ...randomTags])]
-      });
-    }
-    
-    return results;
+    // 不再生成补充结果，直接返回空数组
+    // 避免生成无意义的内容，保持搜索结果的真实性
+    return [];
   }
   
   /**
@@ -403,17 +369,30 @@ export class SearchService {
       '原理', '实践', '工具', '资源', '社区', '生态', '发展', '挑战', '机遇'
     ];
     
-    // 生成智能结果
-    for (let i = 0; i < limit; i++) {
+    // 只生成少量智能结果，避免过多无意义内容
+    const maxGenerated = Math.min(5, limit);
+    
+    for (let i = 0; i < maxGenerated; i++) {
       const randomTopic = relatedTopics[Math.floor(Math.random() * relatedTopics.length)];
-      const randomAuthor = `智能生成作者 ${i + 1}`;
+      const randomAuthor = `相关主题专家`;
       const randomDate = new Date(Date.now() - Math.floor(Math.random() * 365) * 24 * 60 * 60 * 1000);
       
+      // 生成更有意义的内容
+      const contentTemplates = [
+        `${query}是当前热门的研究领域，涉及${randomTopic}等多个方面。`,
+        `关于${query}的${randomTopic}已有大量研究成果，推动了相关技术的发展。`,
+        `${query}在${randomTopic}领域的应用日益广泛，展现出巨大的潜力。`,
+        `专家们对${query}的${randomTopic}进行了深入探讨，提出了许多创新观点。`,
+        `${query}的${randomTopic}研究正在快速发展，未来前景广阔。`
+      ];
+      
+      const randomContent = contentTemplates[Math.floor(Math.random() * contentTemplates.length)];
+      
       results.push({
-        title: `${query} ${randomTopic}`,
+        title: `${query} - ${randomTopic}`,
         url: `https://generated.example.com/${query}-${randomTopic}-${i}`,
         source: 'intelligent-generated',
-        content: `这是关于"${query}"的${randomTopic}信息。由于真实搜索暂时不可用，该内容是基于查询词智能生成的，用于提供星图展示所需的数据。`,
+        content: randomContent,
         author: [randomAuthor],
         publishDate: randomDate,
         tags: [query, randomTopic.toLowerCase(), 'generated']
@@ -440,12 +419,19 @@ export class SearchService {
       // 基于标签和内容计算颜色
       const color = this.calculateColorFromTags(result.tags);
       
+      // 提取摘要（如果内容过长，截取前200字符作为摘要）
+      const summary = result.content.length > 200 ? result.content.substring(0, 200) + '...' : result.content;
+      
+      // 简单的图片URL生成逻辑（实际应用中应从页面中提取真实图片）
+      const imageUrl = result.source.includes('generated') ? undefined : `https://picsum.photos/seed/${this.stringToHashCode(result.url)}/800/400`;
+      
       return {
         id: uuidv4(),
         title: result.title,
         url: result.url,
         source: result.source,
         content: result.content,
+        summary: summary,
         author: result.author,
         publishDate: result.publishDate,
         tags: result.tags,
@@ -458,11 +444,26 @@ export class SearchService {
         brightness: qualityScore * 0.7 + 0.3, // Brightness based on quality (0.3 to 1.0)
         color: color,
         clusterId: clusterLabels[index] === -1 ? undefined : `cluster-${clusterLabels[index]}`,
+        imageUrl: imageUrl,
         relatedStars: [], // Will be populated based on similarity
         relevanceScore: relevanceScore,
         qualityScore: qualityScore
       };
     });
+  }
+  
+  /**
+   * 将字符串转换为哈希码
+   */
+  private stringToHashCode(str: string): number {
+    let hash = 0;
+    if (str.length === 0) return hash;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash;
+    }
+    return hash;
   }
 
   private mapToStarClusters(clusteringResult: ClusteringResult): StarClusterDto[] {

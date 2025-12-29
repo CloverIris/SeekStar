@@ -4,6 +4,7 @@ export class StarPointDto {
   url: string;
   source: string;
   content: string;
+  summary?: string;
   author: string[];
   publishDate: Date;
   tags: string[];
@@ -16,6 +17,7 @@ export class StarPointDto {
   brightness: number;
   color: string;
   clusterId?: string;
+  imageUrl?: string;
   relatedStars: {
     id: string;
     weight: number;

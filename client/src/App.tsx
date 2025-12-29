@@ -10,6 +10,8 @@ import { StarInfoPanel } from './components/StarInfoPanel'
 import { SplashScreen } from './components/SplashScreen'
 import { TelescopeControlPanel } from './components/TelescopeControlPanel'
 import { NearbyStarsList } from './components/NearbyStarsList'
+import { AtmosphereBackground } from './components/AtmosphereBackground'
+import { ControlGuide } from './components/ControlGuide'
 
 // 后端统一响应格式类型
 type ApiResponse<T = any> = {
@@ -187,15 +189,28 @@ function App() {
   const exportReferences = () => {
     try {
       // 生成Markdown格式的引用，添加严格的空值检查
-      const markdown = `# SeekStar Search Results\n\n` +
-        `**Query:** ${query || '未指定'}\n\n` +
-        `**Results Count:** ${stars?.length || 0}\n\n` +
-        `## References\n\n` +
+      const markdown = `# SeekStar Search Results
+
+` +
+        `**Query:** ${query || '未指定'}
+
+` +
+        `**Results Count:** ${stars?.length || 0}
+
+` +
+        `## References
+
+` +
         (stars || []).map((star, index) => {
-          return `${index + 1}. **[${star?.title || '未命名'}](${star?.url || '#'})**\n` +
-                 `   - Author: ${(star?.author || []).join(', ') || '未知'}\n` +
-                 `   - Source: ${star?.source || '未知'}\n` +
-                 `   - Tags: ${(star?.tags || []).join(', ') || '无'}\n\n`;
+          return `${index + 1}. **[${star?.title || '未命名'}](${star?.url || '#'})**
+` +
+                 `   - Author: ${(star?.author || []).join(', ') || '未知'}
+` +
+                 `   - Source: ${star?.source || '未知'}
+` +
+                 `   - Tags: ${(star?.tags || []).join(', ') || '无'}
+
+`;
         }).join('');
       
       // 创建下载链接
@@ -211,6 +226,24 @@ function App() {
       setError('Failed to export references. Please try again.');
       // 3秒后清除错误信息
       setTimeout(() => setError(null), 3000);
+    }
+  };
+
+  // 重制视角功能
+  const resetView = () => {
+    if (cameraRef.current) {
+      // 设置相机位置和旋转为默认值
+      cameraRef.current.position.set(0, 0, 20);
+      cameraRef.current.rotation.set(0, 0, 0);
+      cameraRef.current.lookAt(0, 0, 0);
+      
+      // 重置飞行状态
+      setIsFlying(false);
+      setTargetPosition(null);
+      setTargetLookAt(null);
+      
+      // 更新cameraPosition状态
+      setCameraPosition(cameraRef.current.position.clone());
     }
   };
 
@@ -395,25 +428,14 @@ function App() {
             cameraRef.current = camera as THREE.PerspectiveCamera;
           }}
         >
-          {/* 渐变背景 - 更柔和的宇宙感 */}
-          <rectAreaLight 
-            width={100} 
-            height={100} 
-            intensity={0.5} 
-            position={[0, 0, 50]} 
-            color="#001133"
-          />
+          {/* 渐变大气背景和稀疏星点 */}
+          <AtmosphereBackground starCount={500} />
           
           {/* 柔和环境光 */}
           <ambientLight intensity={0.3} color="#e0e0ff" />
           
-          {/* 暖色调点光源 */}
-          <pointLight position={[10, 10, 10]} intensity={0.8} color="#f0e0d0" />
-          
           {/* 冷色调点光源 - 增强层次感 */}
           <pointLight position={[-10, -10, -10]} intensity={0.5} color="#d0e0f0" />
-          
-
           
           {/* 星图 */}
           <StarMap 
@@ -449,6 +471,9 @@ function App() {
           }} 
         />
       )}
+      
+      {/* 操作指南和重制视角按钮 */}
+      <ControlGuide onResetView={resetView} />
     </div>
   );
 }
