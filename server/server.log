@@ -1,0 +1,202 @@
+
+> server@0.0.1 start:dev
+> nest start --watch
+
+[2J[3J[H[[90m12:15:07[0m] Starting compilation in watch mode...
+
+[96msrc/search/search.service.ts[0m:[93m127[0m:[93m20[0m - [91merror[0m[90m TS2345: [0mArgument of type '{ title: string; url: string; source: string; content: string; author: string[]; publishDate: Date; tags: string[]; }' is not assignable to parameter of type 'never'.
+
+[7m127[0m       results.push(mockItem);
+[7m   [0m [91m                   ~~~~~~~~[0m
+
+[96msrc/search/search.service.ts[0m:[93m177[0m:[93m14[0m - [91merror[0m[90m TS18046: [0m'clusterData' is of type 'unknown'.
+
+[7m177[0m           x: clusterData.center[0],
+[7m   [0m [91m             ~~~~~~~~~~~[0m
+
+[96msrc/search/search.service.ts[0m:[93m178[0m:[93m14[0m - [91merror[0m[90m TS18046: [0m'clusterData' is of type 'unknown'.
+
+[7m178[0m           y: clusterData.center[1],
+[7m   [0m [91m             ~~~~~~~~~~~[0m
+
+[96msrc/search/search.service.ts[0m:[93m179[0m:[93m14[0m - [91merror[0m[90m TS18046: [0m'clusterData' is of type 'unknown'.
+
+[7m179[0m           z: clusterData.center[2]
+[7m   [0m [91m             ~~~~~~~~~~~[0m
+
+[96msrc/search/search.service.ts[0m:[93m184[0m:[93m20[0m - [91merror[0m[90m TS18046: [0m'clusterData' is of type 'unknown'.
+
+[7m184[0m         starCount: clusterData.points.length,
+[7m   [0m [91m                   ~~~~~~~~~~~[0m
+
+[96msrc/search/search.service.ts[0m:[93m185[0m:[93m18[0m - [91merror[0m[90m TS18046: [0m'clusterData' is of type 'unknown'.
+
+[7m185[0m         starIds: clusterData.points.map((index: number) => `star-${index}`),
+[7m   [0m [91m                 ~~~~~~~~~~~[0m
+
+[[90m12:15:08[0m] Found 6 errors. Watching for file changes.
+
+[2J[3J[H[[90m12:16:18[0m] File change detected. Starting incremental compilation...
+
+[96msrc/search/search.service.ts[0m:[93m193[0m:[93m14[0m - [91merror[0m[90m TS18046: [0m'clusterData' is of type 'unknown'.
+
+[7m193[0m           x: clusterData.center[0],
+[7m   [0m [91m             ~~~~~~~~~~~[0m
+
+[96msrc/search/search.service.ts[0m:[93m194[0m:[93m14[0m - [91merror[0m[90m TS18046: [0m'clusterData' is of type 'unknown'.
+
+[7m194[0m           y: clusterData.center[1],
+[7m   [0m [91m             ~~~~~~~~~~~[0m
+
+[96msrc/search/search.service.ts[0m:[93m195[0m:[93m14[0m - [91merror[0m[90m TS18046: [0m'clusterData' is of type 'unknown'.
+
+[7m195[0m           z: clusterData.center[2]
+[7m   [0m [91m             ~~~~~~~~~~~[0m
+
+[96msrc/search/search.service.ts[0m:[93m200[0m:[93m20[0m - [91merror[0m[90m TS18046: [0m'clusterData' is of type 'unknown'.
+
+[7m200[0m         starCount: clusterData.points.length,
+[7m   [0m [91m                   ~~~~~~~~~~~[0m
+
+[96msrc/search/search.service.ts[0m:[93m201[0m:[93m18[0m - [91merror[0m[90m TS18046: [0m'clusterData' is of type 'unknown'.
+
+[7m201[0m         starIds: clusterData.points.map((index: number) => `star-${index}`),
+[7m   [0m [91m                 ~~~~~~~~~~~[0m
+
+[[90m12:16:18[0m] Found 5 errors. Watching for file changes.
+
+[2J[3J[H[[90m12:17:58[0m] File change detected. Starting incremental compilation...
+
+[96msrc/search/search.service.ts[0m:[93m185[0m:[93m21[0m - [91merror[0m[90m TS2427: [0mInterface name cannot be 'ClusterData'.
+
+[7m185[0m   private interface ClusterData {
+[7m   [0m [91m                    ~~~~~~~~~~~[0m
+
+[96msrc/search/search.service.ts[0m:[93m185[0m:[93m33[0m - [91merror[0m[90m TS1068: [0mUnexpected token. A constructor, method, accessor, or property was expected.
+
+[7m185[0m   private interface ClusterData {
+[7m   [0m [91m                                ~[0m
+
+[96msrc/search/search.service.ts[0m:[93m186[0m:[93m20[0m - [91merror[0m[90m TS1011: [0mAn element access expression should take an argument.
+
+[7m186[0m     center: number[];
+[7m   [0m [91m                   [0m
+
+[96msrc/search/search.service.ts[0m:[93m187[0m:[93m20[0m - [91merror[0m[90m TS1011: [0mAn element access expression should take an argument.
+
+[7m187[0m     points: number[];
+[7m   [0m [91m                   [0m
+
+[96msrc/search/search.service.ts[0m:[93m190[0m:[93m3[0m - [91merror[0m[90m TS1128: [0mDeclaration or statement expected.
+
+[7m190[0m   private mapToStarClusters(clusteringResult: { clusters: Record<string, ClusterData> }): StarClusterDto[] {
+[7m   [0m [91m  ~~~~~~~[0m
+
+[96msrc/search/search.service.ts[0m:[93m190[0m:[93m45[0m - [91merror[0m[90m TS1005: [0m',' expected.
+
+[7m190[0m   private mapToStarClusters(clusteringResult: { clusters: Record<string, ClusterData> }): StarClusterDto[] {
+[7m   [0m [91m                                            ~[0m
+
+[96msrc/search/search.service.ts[0m:[93m190[0m:[93m89[0m - [91merror[0m[90m TS1005: [0m';' expected.
+
+[7m190[0m   private mapToStarClusters(clusteringResult: { clusters: Record<string, ClusterData> }): StarClusterDto[] {
+[7m   [0m [91m                                                                                        ~[0m
+
+[96msrc/search/search.service.ts[0m:[93m190[0m:[93m106[0m - [91merror[0m[90m TS1011: [0mAn element access expression should take an argument.
+
+[7m190[0m   private mapToStarClusters(clusteringResult: { clusters: Record<string, ClusterData> }): StarClusterDto[] {
+[7m   [0m [91m                                                                                                         [0m
+
+[96msrc/search/search.service.ts[0m:[93m190[0m:[93m108[0m - [91merror[0m[90m TS1005: [0m';' expected.
+
+[7m190[0m   private mapToStarClusters(clusteringResult: { clusters: Record<string, ClusterData> }): StarClusterDto[] {
+[7m   [0m [91m                                                                                                           ~[0m
+
+[96msrc/search/search.service.ts[0m:[93m220[0m:[93m3[0m - [91merror[0m[90m TS1128: [0mDeclaration or statement expected.
+
+[7m220[0m   private getRandomColor(): string {
+[7m   [0m [91m  ~~~~~~~[0m
+
+[96msrc/search/search.service.ts[0m:[93m220[0m:[93m27[0m - [91merror[0m[90m TS1005: [0m';' expected.
+
+[7m220[0m   private getRandomColor(): string {
+[7m   [0m [91m                          ~[0m
+
+[96msrc/search/search.service.ts[0m:[93m220[0m:[93m29[0m - [91merror[0m[90m TS1434: [0mUnexpected keyword or identifier.
+
+[7m220[0m   private getRandomColor(): string {
+[7m   [0m [91m                            ~~~~~~[0m
+
+[96msrc/search/search.service.ts[0m:[93m228[0m:[93m1[0m - [91merror[0m[90m TS1128: [0mDeclaration or statement expected.
+
+[7m228[0m }
+[7m   [0m [91m~[0m
+
+[[90m12:17:59[0m] Found 13 errors. Watching for file changes.
+
+[2J[3J[H[[90m12:18:43[0m] File change detected. Starting incremental compilation...
+
+[[90m12:18:43[0m] Found 0 errors. Watching for file changes.
+
+/Users/yuankeke/Downloads/SeekStar-main/SeekStar/server/dist/search/search.service.js:315
+undefined
+             ^
+
+Error [ERR_REQUIRE_ESM]: require() of ES Module /Users/yuankeke/Downloads/SeekStar-main/SeekStar/server/node_modules/uuid/dist-node/index.js from /Users/yuankeke/Downloads/SeekStar-main/SeekStar/server/dist/search/search.service.js not supported.
+Instead change the require of index.js in /Users/yuankeke/Downloads/SeekStar-main/SeekStar/server/dist/search/search.service.js to a dynamic import() which is available in all CommonJS modules.
+    at TracingChannel.traceSync (node:diagnostics_channel:315:14)
+    at Object.<anonymous> (/Users/yuankeke/Downloads/SeekStar-main/SeekStar/server/dist/search/search.service.js:18:16) {
+  code: 'ERR_REQUIRE_ESM'
+}
+
+Node.js v22.11.0
+[2J[3J[H[[90m12:23:37[0m] File change detected. Starting incremental compilation...
+
+[[90m12:23:37[0m] Found 0 errors. Watching for file changes.
+
+/Users/yuankeke/Downloads/SeekStar-main/SeekStar/server/dist/search/search.service.js:315
+undefined
+             ^
+
+Error [ERR_REQUIRE_ESM]: require() of ES Module /Users/yuankeke/Downloads/SeekStar-main/SeekStar/server/node_modules/uuid/dist-node/index.js from /Users/yuankeke/Downloads/SeekStar-main/SeekStar/server/dist/search/search.service.js not supported.
+Instead change the require of index.js in /Users/yuankeke/Downloads/SeekStar-main/SeekStar/server/dist/search/search.service.js to a dynamic import() which is available in all CommonJS modules.
+    at TracingChannel.traceSync (node:diagnostics_channel:315:14)
+    at Object.<anonymous> (/Users/yuankeke/Downloads/SeekStar-main/SeekStar/server/dist/search/search.service.js:18:16) {
+  code: 'ERR_REQUIRE_ESM'
+}
+
+Node.js v22.11.0
+[2J[3J[H[[90m12:25:33[0m] File change detected. Starting incremental compilation...
+
+[[90m12:25:34[0m] Found 0 errors. Watching for file changes.
+
+/Users/yuankeke/Downloads/SeekStar-main/SeekStar/server/dist/search/search.service.js:315
+undefined
+             ^
+
+Error [ERR_REQUIRE_ESM]: require() of ES Module /Users/yuankeke/Downloads/SeekStar-main/SeekStar/server/node_modules/uuid/dist-node/index.js from /Users/yuankeke/Downloads/SeekStar-main/SeekStar/server/dist/search/search.service.js not supported.
+Instead change the require of index.js in /Users/yuankeke/Downloads/SeekStar-main/SeekStar/server/dist/search/search.service.js to a dynamic import() which is available in all CommonJS modules.
+    at TracingChannel.traceSync (node:diagnostics_channel:315:14)
+    at Object.<anonymous> (/Users/yuankeke/Downloads/SeekStar-main/SeekStar/server/dist/search/search.service.js:18:16) {
+  code: 'ERR_REQUIRE_ESM'
+}
+
+Node.js v22.11.0
+[2J[3J[H[[90m12:26:18[0m] File change detected. Starting incremental compilation...
+
+[96msrc/search/search.service.ts[0m:[93m7[0m:[93m30[0m - [91merror[0m[90m TS2307: [0mCannot find module 'uuid' or its corresponding type declarations.
+
+[7m7[0m import { v4 as uuidv4 } from 'uuid';
+[7m [0m [91m                             ~~~~~~[0m
+
+[[90m12:26:18[0m] Found 1 error. Watching for file changes.
+
+[2J[3J[H[[90m12:26:19[0m] File change detected. Starting incremental compilation...
+
+[96msrc/search/search.service.ts[0m:[93m7[0m:[93m30[0m - [91merror[0m[90m TS2307: [0mCannot find module 'uuid' or its corresponding type declarations.
+
+[7m7[0m import { v4 as uuidv4 } from 'uuid';
+[7m [0m [91m                             ~~~~~~[0m
+
+[[90m12:26:19[0m] Found 1 error. Watching for file changes.
+
