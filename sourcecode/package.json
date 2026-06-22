@@ -1,0 +1,26 @@
+{
+  "name": "seekstar",
+  "version": "0.0.0",
+  "private": true,
+  "description": "SeekStar desktop cognitive cartography workspace.",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm --workspace @seekstar/desktop run dev",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20.19.0",
+    "npm": ">=10.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "electron": "^41.8.0",
+    "typescript": "^6.0.3"
+  }
+}

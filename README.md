@@ -1,0 +1,395 @@
+# 寻星 SeekStar
+
+> 不是搜索引擎，不是浏览器，也不是聊天框。
+> SeekStar 是一个用于探索「未知的未知」的 AI 认知星图。
+> 浏览器和 Chat AI 解决的是“如何回答我已经能问出的问题”。SeekStar 要解决的是“如何让我发现自己还不知道该问的问题”
+
+SeekStar 试图回答一个问题：
+
+**当用户还不知道该问什么时，软件应该如何帮助他们开始探索？**
+
+传统搜索框和 Chat AI 都隐含着同一个前提：用户必须先知道自己想问什么，并且能够把问题准确表达出来。
+但许多真正有价值的发现，发生在问题被命名之前。
+
+SeekStar 的目标，是把检索行为重构为空间行为：
+从「输入关键词，得到结果列表」变成「进入一片可以缩放、漫游、圈选、解释和继续扩展的认知星图」。
+
+---
+
+## 核心理念
+
+### 1. 在提问之前，先抵达未知
+
+SeekStar 不要求用户一开始就提出精确问题。
+
+用户可以从一个词、一段文本、一个网页、一个链接、一个圈选区域、一个每日主题，甚至一个陌生字符开始。
+系统会把它转化为一个可探索的语义场。
+
+---
+
+### 2. 搜索不是结果列表，而是方向感
+
+传统搜索追求「命中」。
+SeekStar 追求「定位」。
+
+输入一个方向后，用户不会被直接扔进一组线性结果，而是被带到一个主题星域中：
+
+* 上层是什么领域？
+* 同层有哪些相邻主题？
+* 下层有哪些具体内容？
+* 边缘还有哪些尚未展开的未知？
+* 哪些内容是来源支持的？
+* 哪些只是 AI 推测或待验证的雾区？
+
+---
+
+### 3. 地图优先于聊天框
+
+SeekStar 的中心不是聊天输入框，而是一个 2.5D 认知画布。
+
+* XY 平面表示当前层级中的语义分布。
+* Z 轴表示无限递归的认知深度。
+* 缩放不是视觉特效，而是语义层级切换。
+* 圈选、画笔、拖拽和镜头移动都是表达意图的方式。
+
+---
+
+### 4. 任意信息粒度都可以成为新的入口
+
+SeekStar 的理想缩放链路是：
+
+```text
+领域
+→ 主题
+→ 来源
+→ 网页 / 文档
+→ 章节
+→ 段落
+→ 句子
+→ 短语
+→ 词语
+→ 字符
+→ Unicode / 字典
+→ 新的探索 seed
+```
+
+这意味着，一个网页中的一个词，也可以重新成为一片星图的中心。
+
+---
+
+### 5. AI 是制图师，不是神谕
+
+SeekStar 中的 AI Agent 不应该像传统聊天机器人那样只给出最终答案。
+
+它更像一个认知制图师：
+
+* 识别父级领域、子级主题和相邻概念；
+* 组织来源、关系和语义层级；
+* 标记不确定区域；
+* 解释用户圈选的局部星域；
+* 生成学习路径、摘要、翻译、对比和下一步问题；
+* 把探索结果导出为结构化 Markdown。
+
+AI 生成的内容必须和真实来源区分开。
+未知区域应该被标记为「雾区」，而不是伪装成事实。
+
+---
+
+## 当前项目状态
+
+SeekStar 目前处于早期原型阶段。
+
+当前重点不是接入真实 AI 或真实搜索，而是先建立稳定的产品骨架：
+
+* Electron 桌面宿主；
+* React 渲染层；
+* Vite 开发与构建工具；
+* TypeScript 类型系统；
+* 2.5D 认知画布原型；
+* 多 tab 探索模型；
+* TerrainScene 结构化地形数据契约；
+* mock seed map；
+* 暗色蓝调 UI 风格；
+* 基础文档与架构约束。
+
+当前版本仍然是本地 mock 原型：
+
+* 暂无真实 AI 调用；
+* 暂无 Playwright 信息抓取；
+* 暂无真实搜索；
+* 暂无本地持久化；
+* 暂无真实图布局算法；
+* 暂无完整 lasso / brush 行为；
+* 暂无浏览器替代功能。
+
+---
+
+## 技术方向
+
+SeekStar 的目标技术结构：
+
+```text
+Electron
+桌面宿主 / 窗口 / 本地状态 / 安全边界
+
+React
+渲染层 UI / 面板 / tab / 状态交互
+
+Vite
+开发服务器 / 构建工具
+
+TypeScript
+共享类型 / 数据契约 / 结构化 Agent 输出
+
+AI Agent
+认知制图 / 结构推理 / 解释与导出
+
+Playwright
+信息侦察 / 页面获取 / 外部搜索与内容观察
+
+TerrainScene
+渲染器消费的结构化认知地形数据
+```
+
+核心角色隐喻：
+
+| 模块          | 隐喻               | 职责               |
+| ----------- | ---------------- | ---------------- |
+| Electron    | 天文台 Observatory  | 承载应用、窗口、权限、本地状态  |
+| UI Renderer | 望远镜 Telescope    | 展示画布、面板、缩放、圈选    |
+| AI Agent    | 制图师 Cartographer | 生成认知结构、解释区域、规划探索 |
+| Playwright  | 探测器 Scout        | 搜索、访问、观察外部信息     |
+| Local Store | 档案员 Archivist    | 保存来源、路径、注释、导出    |
+
+---
+
+## 项目结构
+
+当前项目采用 monorepo 结构：
+
+```text
+SeekStar/
+├─ apps/
+│  └─ desktop/              # Electron + React 桌面应用
+│
+├─ packages/
+│  └─ core-schema/          # SeekStar 共享类型与 TerrainScene 契约
+│
+├─ docs/
+│  └─ decisions/            # 架构决策记录 ADR
+│
+├─ README.md
+├─ AGENTS.md                # Agent 行为与系统角色约束
+├─ PRD.md                   # 产品需求文档
+├─ PHILOSOPHY.md            # 项目哲学
+├─ ARCHITECTURE_AND_UI_SPEC.md
+└─ UI_STYLE_GUIDE.md        # UI 风格约束，如果已创建
+```
+
+---
+
+## 本地运行
+
+安装依赖：
+
+```bash
+npm install
+```
+
+类型检查：
+
+```bash
+npm run typecheck
+```
+
+构建：
+
+```bash
+npm run build
+```
+
+开发运行：
+
+```bash
+npm run dev
+```
+
+在部分受限沙箱或虚拟化环境中，Electron 可能出现 native crash。
+只要 `typecheck` 和 `build` 通过，优先在本机环境验证桌面窗口，不要为了沙箱运行而削弱 Electron 的安全边界。
+
+---
+
+## 设计原则
+
+### 地图优先
+
+不要把 SeekStar 做成搜索结果列表。
+搜索结果可以存在，但不能成为主界面中心。
+
+### 画布优先
+
+主界面应该始终围绕认知画布展开。
+顶部输入框只是入口之一，不是产品本体。
+
+### 来源优先
+
+真实内容节点必须保留来源、时间、类型和置信度。
+AI 推断内容必须被标记为生成或推测。
+
+### 语义缩放优先
+
+缩放必须对应认知层级变化，而不是单纯放大 UI。
+
+### 圈选优先
+
+用户可以通过圈选和画笔表达尚未语言化的问题。
+一片区域本身就是一个 prompt。
+
+### 克制视觉
+
+SeekStar 的视觉方向是：
+
+> 暗色天文台、蓝色认知地图、技术冷静感、低噪声、高可读性。
+
+避免：
+
+* 霓虹赛博风；
+* 游戏化星空；
+* 普通后台 dashboard；
+* 浏览器克隆；
+* ChatGPT 式聊天框中心布局；
+* 过度装饰性的渐变和动效。
+
+---
+
+## P0 原型目标
+
+P0 阶段只验证 SeekStar 的核心交互骨架。
+
+优先实现：
+
+* 多 tab mock 探索；
+* 顶部命令输入框；
+* 输入后弹出操作卡片；
+* “作为新探索 seed”创建 mock tab；
+* “在当前 tab 内检索”进行本地 mock 搜索；
+* TerrainScene 驱动的画布渲染；
+* 节点选择与右侧 Inspect 面板；
+* mock 搜索结果卡片；
+* mock viewport focus；
+* 基础侧边栏；
+* 基础状态栏；
+* UI 风格系统。
+
+P0 阶段不做：
+
+* 真实 AI 接入；
+* Playwright 爬取；
+* 真实搜索；
+* 完整图布局；
+* 完整浏览器；
+* 数据库持久化；
+* 云同步；
+* 3D 渲染；
+* 插件系统。
+
+---
+
+## 后续路线
+
+### P0：本地 mock 探索壳
+
+目标：让 SeekStar 的基本空间交互成立。
+
+* 静态 TerrainScene；
+* mock seed tab；
+* 当前 tab 内检索；
+* 节点选择；
+* Inspect 面板；
+* 暗色蓝调 UI；
+* 文档同步。
+
+### P1：空间选择与解释闭环
+
+目标：让“圈选 = 问题之前的问题”成立。
+
+* lasso 选择 mock 节点；
+* brush attention；
+* 右侧 prompt composer；
+* selected context preview；
+* mock AI response；
+* Markdown preview。
+
+### P2：真实信息侦察
+
+目标：引入外部信息，但仍保持结构可信。
+
+* Playwright scout spike；
+* 搜索结果抓取；
+* source card；
+* 来源去重；
+* provenance metadata；
+* source-backed TerrainScene。
+
+### P3：AI 制图师
+
+目标：让 Agent 开始生成认知地形。
+
+* seed mapper；
+* source distiller；
+* layer cartographer；
+* region explainer；
+* structured output validation；
+* confidence / source state 标记。
+
+### P4：深层语义缩放
+
+目标：进入网页、段落、句子、词语、字符层。
+
+* HTML tile plane；
+* paragraph / sentence / word layer；
+* word as new seed；
+* dictionary / Unicode panel；
+* source position mapping。
+
+---
+
+## 关键文档
+
+建议在开发前先阅读：
+
+* `PHILOSOPHY.md`
+  项目哲学，定义 SeekStar 为什么不是普通搜索或聊天 UI。
+
+* `PRD.md`
+  产品需求文档，定义用户流、功能边界和 MVP 范围。
+
+* `AGENTS.md`
+  Agent 行为准则，定义 AI、Playwright、Electron、UI 的职责边界。
+
+* `ARCHITECTURE_AND_UI_SPEC.md`
+  架构与 UI 设计规范，定义模块关系和交互结构。
+
+* `UI_STYLE_GUIDE.md`
+  UI 视觉风格规范，定义暗色蓝调、面板、节点和状态表现。
+
+* `docs/decisions/`
+  架构决策记录，用于记录为什么选择某种库、结构或实现方式。
+
+---
+
+## 一句话定义
+
+**SeekStar 是一个 AI 驱动的认知制图工具，用空间化、可缩放、可圈选、可解释的方式，帮助用户发现自己尚未意识到的问题。**
+
+---
+
+## 项目愿景
+
+互联网不应该只是一串排序结果。
+知识也不应该只能通过关键词召唤。
+
+SeekStar 想把信息重新变成一片可以仰望、靠近、偏航和记录路径的星空。
+
+用户不必一开始就知道问题。
+他们只需要给出一个方向，然后开始靠近。

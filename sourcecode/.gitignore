@@ -1,0 +1,12 @@
+node_modules/
+dist/
+out/
+dist-electron/
+.vite/
+.npm-cache/
+.electron-cache/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
