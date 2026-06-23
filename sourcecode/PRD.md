@@ -718,6 +718,19 @@ The app should support:
 * Full webpage rendering inside canvas.
 * Universal dictionary coverage.
 
+## 9.4 P2 Current Implementation Boundary
+
+P2 starts with real local product capability while keeping the map-first model:
+
+* local workspace snapshot persistence for tabs, scenes, viewport, selections, side tray items, and generated notes;
+* manual source ingestion from user-provided text or URL metadata;
+* source-backed terrain nodes and `source_contains` relations added to the current map;
+* source readiness counts that keep source-backed, generated, inferred, weak, and fog terrain distinct;
+* source-backed nodes can become independent exploration seed tabs with backlinks to the origin source context.
+* source-derived tabs can focus the original source-backed node across tabs without using browser history.
+
+P2.1-P2.7 close the first local source-backed exploration loop. They still do not implement Playwright retrieval, AI source distillation, real graph layout, browser navigation, durable source-cache indexing, or real Markdown export.
+
 ## 10. UI Layout
 
 ## 10.1 Global Layout

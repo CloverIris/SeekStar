@@ -140,6 +140,69 @@ The final P1 shell adds semantic orientation affordances while keeping the app m
 - This closes the local exploration prototype boundary: seed tabs, local search, selection, lasso, side tray, mock cartographer notes, relation inspection, hover preview, viewport controls, and semantic layer orientation.
 - The next phase should start real product capability at the data boundary: persistence and source-backed terrain ingestion.
 
+## P2.1-P2.3 Local Source Terrain Contract
+
+P2 starts real product capability at the data boundary while preserving the map-first interaction model.
+
+- Electron owns local workspace snapshot persistence through a narrow preload bridge.
+- The renderer saves and restores active tab, `TerrainScene` objects, viewport, selection, side tray items, and local generated notes.
+- The first source ingestion path is manual user-provided text or URL metadata.
+- Manual source ingestion creates a `SourceRef`, a source-backed `source` node, source-backed excerpt nodes, and `source_contains` relations.
+- Source-backed nodes are added to the current map near the current viewport; they do not appear as a ranked result list.
+- Manual ingestion does not call AI, does not use Playwright, does not claim web retrieval, and does not generate summaries.
+- Source readiness in the inspector must continue to distinguish source-backed terrain from generated, inferred, weak, and fog terrain.
+
+## P2.4 Source Inspector Contract
+
+P2.4 deepens source-backed terrain inspection without changing the map-first model.
+
+- Source-backed nodes may carry `source_id` to link directly to `SourceRef`.
+- Selecting a source-backed node shows source evidence in the inspector: source type, URL if present, retrieval/manual timestamp, reliability hints, quote or snippet, and typed evidence relations.
+- Source nodes show mapped excerpt nodes as camera targets so the user can move from source card to evidence terrain.
+- The inspector displays existing source metadata only. It does not summarize with AI, fetch pages, open an internal browser, or turn source evidence into a ranked results page.
+- Generated, inferred, weak, and fog nodes remain visually and semantically distinct from source-backed nodes.
+
+## P2.5 Source-aware Local Search Contract
+
+P2.5 expands current-tab local search across source-backed terrain while keeping results secondary to the canvas.
+
+- Local search scans terrain title, summary, tags, type, quotes, source title, source URL, source snippet, and reliability hints.
+- Results include match type, layer, source state, snippet, and source title when available.
+- Clicking a result selects and focuses the matched terrain node; it does not create a new tab or open a browser.
+- Results remain in scene order rather than becoming a ranked search product surface.
+- This is still an in-memory exact metadata/snippet search. It does not implement Fuse, MiniSearch, SQLite FTS, Playwright retrieval, or AI source distillation.
+
+## P2.6 Source-backed Seed Tab Contract
+
+P2.6 lets a source-backed node or excerpt become a new independent exploration universe.
+
+- Source evidence cards expose "Use as new exploration seed" for source-backed terrain.
+- The new tab is created from the selected source node or excerpt title.
+- The new tab uses `source_mode: "selection"` and stores `parent_backlink` with origin tab, node, source ID, label, and excerpt when available.
+- The new tab does not inherit previous tab camera, local search query, transient selection, or side effects.
+- The generated terrain in the new tab remains marked generated/inferred/fog until real cartographer and scout work populate source-backed nodes.
+- This implements recursive seeding from source-backed content without opening a browser, calling AI, or turning the source inspector into a chat prompt.
+
+## P2.7 Backlink Navigation Contract
+
+P2.7 makes source-backed seed tabs reversible without adopting browser history.
+
+- Tabs created from source-backed terrain show an Origin backlink panel.
+- "Focus origin" switches back to the origin tab, selects the origin node, and moves the origin tab viewport to that node.
+- The action clears transient search and selection action UI in the active renderer state.
+- This is not browser back/forward navigation and does not merge tab histories.
+- If the origin tab or node is missing, the action does nothing rather than fabricating an origin.
+
+## P2 Closure: Local Source-backed Exploration Contract
+
+P2 closes as the first real local data boundary for SeekStar.
+
+- The app can persist and restore a local exploration universe through an Electron-owned workspace snapshot.
+- User-provided sources can enter the current map as source-backed terrain.
+- Source-backed terrain can be inspected, searched, used as a new independent seed, and traced back to its origin.
+- The canvas remains primary: source ingestion, search, seed creation, and backlink focus all resolve to terrain nodes and camera movement.
+- P2 still intentionally avoids AI cartography, Playwright retrieval, browser navigation, durable database indexing, real graph layout, freeform brush, and real Markdown export.
+
 ## Future Flow
 
 Future Agent outputs should be validated against the shared schema in `@seekstar/core-schema`, converted into `TerrainScene`, then handed to the renderer.
@@ -157,14 +220,15 @@ Expected future producers:
 - Real search.
 - AI calls.
 - Playwright retrieval.
-- Local persistence.
+- Durable database-backed source cache.
 - Graph layout.
 - Graph analysis.
 - Freeform lasso or polygon selection.
 - Brush behavior.
 - Real Markdown export.
 - Source-backed region explanation.
-- Source ingestion.
+- Playwright source retrieval.
+- AI source distillation.
 - Browser navigation.
 
 ## Design Rule

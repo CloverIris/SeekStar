@@ -22,14 +22,20 @@ export function SearchResultsPanel({ query, results, onResultSelect }: SearchRes
         <div className="search-results">
           {results.map((result) => (
             <button className="search-result" key={result.nodeId} type="button" onClick={() => onResultSelect(result.nodeId)}>
-              <span>{result.nodeType.replace("_", " ")}</span>
+              <span>
+                {result.nodeType.replace(/_/g, " ")} · {result.layer} · {result.matchType.replace(/_/g, " ")}
+              </span>
               <strong>{result.title}</strong>
               <small>{result.snippet}</small>
+              <em>
+                {result.sourceState.replace(/_/g, " ")}
+                {result.sourceTitle ? ` · ${result.sourceTitle}` : ""}
+              </em>
             </button>
           ))}
         </div>
       ) : (
-        <div className="empty-result">Try a node title, tag, or concept in this scene.</div>
+        <div className="empty-result">Try a terrain title, tag, source title, quote, or pasted source excerpt.</div>
       )}
     </section>
   );

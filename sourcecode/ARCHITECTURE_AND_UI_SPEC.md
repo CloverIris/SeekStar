@@ -110,6 +110,9 @@ Responsibilities:
 Design principle:
 Everything visible in the canvas should be reconstructable from stored structured data.
 
+P2 implementation note:
+The first durable store is an Electron-owned JSON workspace snapshot behind the preload bridge. It persists tabs, `TerrainScene` objects, viewport, selection, side tray items, and local generated notes. This is a small bridge to real product use, not the final source-cache database or full-text index.
+
 ### 2.6 Search and Index Layer
 
 Responsibilities:
@@ -501,6 +504,9 @@ Each tile has its own scale of detail:
 * character layer.
 
 The global camera controls outer scale. The tile controls internal detail based on effective scale.
+
+P2 implementation note:
+Manual source ingestion creates source-backed terrain from user-provided text or URL metadata before Playwright retrieval exists. The source enters the map as `SourceRef`, source-backed nodes, and `source_contains` relations. It must not appear as a ranked result list or chat answer.
 
 ## 7.3 Hyperlink Handling
 

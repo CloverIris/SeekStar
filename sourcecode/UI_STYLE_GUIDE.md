@@ -136,13 +136,18 @@ These are visual rules only; behavior can arrive later.
 
 - Overview panels should summarize source-backed, generated, inferred, weak, and fog terrain counts.
 - In P1, mock scenes with no real sources must say so plainly.
+- In P2, manually added sources should appear as source-backed terrain cards and source-readiness counts, not as a search-results page.
+- Source evidence cards should show provenance metadata, quotes/snippets, reliability hints, and relation links compactly in the inspector.
+- Clicking mapped excerpt links may move the camera to terrain; the inspector must not become a document reader or browser clone.
+- Source-backed evidence cards may offer "Use as new exploration seed"; this creates a new exploration universe with backlink context, not a browser navigation.
+- Origin backlink panels may offer "Focus origin" to return to the source-backed node in its original tab. This is exploration context recovery, not browser history.
 - Source readiness is a trust cue, not a progress meter and not a search result list.
 - Never use color alone to make generated terrain feel verified.
 
 ## Mock P0 Interactions
 
 - The command action card routes typed text; it is not a chat composer.
-- Current-tab search results are secondary inspector support, not the main interface.
+- Current-tab search results are secondary inspector support, not the main interface. In P2 they may include source match type, source state, and source title metadata.
 - The canvas remains primary during command, search, and selection flows.
 - New seed tabs are local mock scenes until real cartographer and scout layers exist.
 
@@ -197,4 +202,4 @@ Rules:
 
 ## Current Scope
 
-This guide covers the closed P0/P1 shell and `TerrainScene` fixture rendering. It does not introduce a UI framework, animation system, real graph layout, AI, Playwright, browser behavior, source ingestion, Markdown export, or persistence.
+This guide covers the closed P0/P1 shell plus the closed P2 local source-backed exploration loop: persistence snapshot, manual source ingestion, source evidence inspection, source-aware local search, recursive source seeding, and backlink origin focus. It does not introduce a UI framework, animation system, real graph layout, AI, Playwright retrieval, browser behavior, generated source summaries, durable source-cache indexing, or real Markdown export.

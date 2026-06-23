@@ -21,9 +21,15 @@ export interface SeekStarWindowApi {
   executeAction: (action: WindowAction) => Promise<void>;
 }
 
+export interface SeekStarWorkspaceApi {
+  loadSnapshot: () => Promise<unknown | undefined>;
+  saveSnapshot: (snapshot: unknown) => Promise<void>;
+}
+
 export interface SeekStarBridge {
   appName: string;
   scaffoldVersion: string;
+  workspace: SeekStarWorkspaceApi;
   window: SeekStarWindowApi;
 }
 

@@ -20,6 +20,10 @@ export type WindowAction =
 contextBridge.exposeInMainWorld("seekstar", {
   appName: "SeekStar",
   scaffoldVersion: "0.0.0",
+  workspace: {
+    loadSnapshot: (): Promise<unknown | undefined> => ipcRenderer.invoke("workspace:load"),
+    saveSnapshot: (snapshot: unknown): Promise<void> => ipcRenderer.invoke("workspace:save", snapshot),
+  },
   window: {
     goBack: (): Promise<void> => ipcRenderer.invoke("window:go-back"),
     goForward: (): Promise<void> => ipcRenderer.invoke("window:go-forward"),

@@ -1,6 +1,6 @@
 # 003: Local Persistence
 
-Status: Proposed spike
+Status: Accepted for P2.1 JSON snapshot boundary
 Date: 2026-06-22
 Subsystem: Workspace store and source cache
 
@@ -41,7 +41,9 @@ SeekStar must persist workspaces, tabs, nodes, relations, layers, camera positio
 
 ## Chosen Approach
 
-Use a repository-owned `workspace-store` abstraction from the start. For the first app scaffold, allow JSON fixture loading so the canvas can develop quickly. For durable P0 persistence, run a SQLite spike and prefer SQLite if it cleanly supports workspace objects plus local FTS metadata.
+Use an Electron-owned `workspace-store` boundary from the start. P2.1 uses a JSON workspace snapshot stored under Electron `userData` through a narrow preload bridge. This persists the current exploration universe without giving the renderer filesystem access.
+
+SQLite remains the preferred later candidate when source snapshots, full-text indexes, and partial updates become large enough to need transactions and FTS.
 
 The store API should expose domain operations, not raw database details:
 
@@ -52,6 +54,15 @@ The store API should expose domain operations, not raw database details:
 - upsert source snapshots;
 - persist camera and layer state;
 - persist annotations, selections, agent runs, and exports.
+
+Current P2.1 snapshot scope:
+
+- active tab ID;
+- `TerrainScene` objects by tab;
+- camera and semantic layer state through `ViewportState`;
+- current selection state;
+- side tray items;
+- local generated cartographer notes.
 
 ## Rejected Approaches
 

@@ -1,8 +1,13 @@
-import type { TerrainScene } from "@seekstar/core-schema";
+import type { Backlink, ExplorationTab, TerrainScene } from "@seekstar/core-schema";
 
 let sceneCounter = 0;
 
-export function createMockSeedScene(seedText: string): TerrainScene {
+export interface MockSeedSceneOptions {
+  parentBacklink?: Backlink;
+  sourceMode?: ExplorationTab["source_mode"];
+}
+
+export function createMockSeedScene(seedText: string, options: MockSeedSceneOptions = {}): TerrainScene {
   sceneCounter += 1;
 
   const seed = seedText.trim();
@@ -26,7 +31,8 @@ export function createMockSeedScene(seedText: string): TerrainScene {
         id: tabId,
         title: seed,
         seed,
-        source_mode: "new_seed",
+        source_mode: options.sourceMode ?? "new_seed",
+        parent_backlink: options.parentBacklink,
         current_layer: "L0",
         viewport: {
           x: 0,

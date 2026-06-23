@@ -1,6 +1,6 @@
 # 004: Per-tab Local Search
 
-Status: Proposed
+Status: Accepted for P2.5 source-aware metadata search
 Date: 2026-06-22
 Subsystem: Local search and match-to-canvas navigation
 
@@ -42,7 +42,9 @@ SeekStar needs immediate search within the current tab without creating a new ex
 
 ## Chosen Approach
 
-Start with a `local-search` package that defines a renderer-independent per-tab index contract. Use Fuse.js for the first metadata search spike because it is lightweight and fast to integrate for node titles, summaries, tags, and source snippets. Keep the contract compatible with MiniSearch or SQLite FTS for fuller source-body search.
+Start with a renderer-local per-tab search helper that scans scene metadata in memory. P2.5 expands the helper to source-aware exact matching across node titles, summaries, tags, type, quotes, source snippets, source titles, source URLs, and reliability hints.
+
+Keep the contract compatible with Fuse.js, MiniSearch, or SQLite FTS for fuller source-body search once source caches and larger documents exist.
 
 Search records should include:
 
@@ -56,6 +58,16 @@ Search records should include:
 - score;
 - camera target;
 - text range when available.
+
+Current P2.5 search records include:
+
+- node ID;
+- node type;
+- layer;
+- match type;
+- snippet;
+- source state;
+- source title when available.
 
 ## Rejected Approaches
 

@@ -3,11 +3,12 @@ import type {
   ExplorationTab,
   LayerId,
   SourceState,
+  SourceRef,
   TerrainNode,
   TerrainRelation,
   TerrainScene,
 } from "@seekstar/core-schema";
-import type { ChangeEvent, KeyboardEvent, ReactElement, RefObject } from "react";
+import type { ChangeEvent, FormEvent, KeyboardEvent, ReactElement, RefObject } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -41,6 +42,7 @@ import {
   createMockRegionActionResult,
 } from "./selection/mockRegionActions";
 import { type SelectionBasketItem, createSelectionBasketItem } from "./selection/selectionBasket";
+import { type SourceIngestionInput, createSourceTerrainPatch } from "./sources/sourceTerrainAdapter";
 
 const favoriteSeeds = ["Cognitive maps", "Source trails", "Unknown unknowns"];
 const canvasTools: Array<{ id: CanvasTool; label: string; icon: LucideIcon; disabled?: boolean }> = [
@@ -49,6 +51,17 @@ const canvasTools: Array<{ id: CanvasTool; label: string; icon: LucideIcon; disa
   { id: "lasso", label: "Lasso", icon: Lasso },
   { id: "brush", label: "Brush", icon: Brush, disabled: true },
 ];
+
+interface WorkspaceSnapshot {
+  version: 1;
+  active_tab_id: string;
+  scenes_by_tab_id: Record<string, TerrainScene>;
+  basket_by_tab_id: Record<string, SelectionBasketItem[]>;
+  mock_action_results_by_tab_id: Record<string, MockRegionActionResult[]>;
+  updated_at: string;
+}
+
+type PersistenceStatus = "loading" | "saved" | "saving" | "unsaved" | "unavailable" | "error";
 
 export function App(): ReactElement {
   const initialTabId = openingSkyScene.active_tab_id;
@@ -71,7 +84,84 @@ export function App(): ReactElement {
   const [basketByTabId, setBasketByTabId] = useState<Record<string, SelectionBasketItem[]>>({});
   const [mockActionResultsByTabId, setMockActionResultsByTabId] = useState<Record<string, MockRegionActionResult[]>>({});
   const [isSelectionActionCardOpen, setIsSelectionActionCardOpen] = useState(false);
+  const [persistenceStatus, setPersistenceStatus] = useState<PersistenceStatus>("loading");
+  const [workspaceHydrated, setWorkspaceHydrated] = useState(false);
   const commandInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadWorkspaceSnapshot(): Promise<void> {
+      try {
+        const snapshot = await window.seekstar.workspace.loadSnapshot();
+
+        if (cancelled) {
+          return;
+        }
+
+        if (isWorkspaceSnapshot(snapshot)) {
+          const nextActiveTabId = snapshot.scenes_by_tab_id[snapshot.active_tab_id]
+            ? snapshot.active_tab_id
+            : Object.keys(snapshot.scenes_by_tab_id)[0] ?? initialTabId;
+          const nextScene = snapshot.scenes_by_tab_id[nextActiveTabId];
+
+          setScenesByTabId(snapshot.scenes_by_tab_id);
+          setActiveTabId(nextActiveTabId);
+          setBasketByTabId(snapshot.basket_by_tab_id);
+          setMockActionResultsByTabId(snapshot.mock_action_results_by_tab_id);
+          setSelectedNodeIds(nextScene?.selection.node_ids ?? []);
+          setViewportFocusNodeId(nextScene?.selection.node_ids[0]);
+        }
+
+        setPersistenceStatus("saved");
+      } catch {
+        setPersistenceStatus("error");
+      } finally {
+        if (!cancelled) {
+          setWorkspaceHydrated(true);
+        }
+      }
+    }
+
+    void loadWorkspaceSnapshot();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [initialTabId]);
+
+  useEffect(() => {
+    if (!workspaceHydrated) {
+      return undefined;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      const snapshot: WorkspaceSnapshot = {
+        version: 1,
+        active_tab_id: activeTabId,
+        scenes_by_tab_id: scenesByTabId,
+        basket_by_tab_id: basketByTabId,
+        mock_action_results_by_tab_id: mockActionResultsByTabId,
+        updated_at: new Date().toISOString(),
+      };
+
+      setPersistenceStatus("saving");
+      void window.seekstar.workspace
+        .saveSnapshot(snapshot)
+        .then(() => {
+          setPersistenceStatus("saved");
+        })
+        .catch(() => {
+          setPersistenceStatus("error");
+        });
+    }, 650);
+
+    setPersistenceStatus("unsaved");
+
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [activeTabId, basketByTabId, mockActionResultsByTabId, scenesByTabId, workspaceHydrated]);
 
   useEffect(() => {
     let fadeTimeoutId: number | undefined;
@@ -274,6 +364,57 @@ export function App(): ReactElement {
     setIsSelectionActionCardOpen(false);
   }
 
+  function handleBacklinkFocus(backlink: NonNullable<ExplorationTab["parent_backlink"]>): void {
+    const originScene = scenesByTabId[backlink.tab_id];
+    const originNode = backlink.node_id ? originScene?.nodes.find((node) => node.id === backlink.node_id) : undefined;
+
+    if (!originScene) {
+      return;
+    }
+
+    const nextViewport =
+      originNode?.position_hint
+        ? {
+            ...originScene.viewport,
+            x: originNode.position_hint.x,
+            y: originNode.position_hint.y,
+            layer: originNode.layer,
+            zoom: Math.max(originScene.viewport.zoom, 1.35),
+          }
+        : originScene.viewport;
+
+    setScenesByTabId((current) => ({
+      ...current,
+      [backlink.tab_id]: {
+        ...originScene,
+        selection: {
+          ...originScene.selection,
+          node_ids: originNode ? [originNode.id] : originScene.selection.node_ids,
+        },
+        viewport: nextViewport,
+        tabs: originScene.tabs.map((tab) =>
+          tab.id === originScene.active_tab_id
+            ? {
+                ...tab,
+                current_layer: nextViewport.layer,
+                viewport: nextViewport,
+              }
+            : tab,
+        ),
+      },
+    }));
+    setActiveTabId(backlink.tab_id);
+    setCommandValue("");
+    setIsCommandModalOpen(false);
+    setSearchQuery("");
+    setSearchResults([]);
+    setSelectedNodeIds(originNode ? [originNode.id] : originScene.selection.node_ids);
+    setSelectedRelationId(undefined);
+    setViewportFocusNodeId(originNode?.id);
+    setIsSelectionActionCardOpen(false);
+    setRightSidebarCollapsed(false);
+  }
+
   function handleFocusCommand(): void {
     commandInputRef.current?.focus();
     setIsCommandModalOpen(commandValue.trim().length > 0);
@@ -377,6 +518,86 @@ export function App(): ReactElement {
     setIsSelectionActionCardOpen(false);
   }
 
+  function handleUseNodeAsSeed(node: TerrainNode): void {
+    const source = getSourceForNode(scene, node);
+    const seedTitle = node.title.trim() || source?.title || "Source-backed seed";
+    const excerpt = node.quote ?? node.summary ?? source?.snippet;
+    const nextScene = createMockSeedScene(seedTitle, {
+      sourceMode: "selection",
+      parentBacklink: {
+        tab_id: activeTabId,
+        node_id: node.id,
+        source_id: source?.id ?? node.source_id,
+        label: source ? `Source: ${source.title}` : `Node: ${node.title}`,
+        excerpt,
+      },
+    });
+    const nextTabId = nextScene.active_tab_id;
+
+    setScenesByTabId((current) => ({
+      ...current,
+      [nextTabId]: nextScene,
+    }));
+    setActiveTabId(nextTabId);
+    setCommandValue("");
+    setIsCommandModalOpen(false);
+    setSearchQuery("");
+    setSearchResults([]);
+    setSelectedNodeIds([]);
+    setSelectedRelationId(undefined);
+    setViewportFocusNodeId(undefined);
+    setIsSelectionActionCardOpen(false);
+  }
+
+  function handleAddSource(input: SourceIngestionInput): void {
+    const patch = createSourceTerrainPatch(input, scene);
+    const sourceNode = patch.nodes[0];
+    const nextViewport = sourceNode.position_hint
+      ? {
+          ...scene.viewport,
+          x: sourceNode.position_hint.x,
+          y: sourceNode.position_hint.y,
+          layer: "L2",
+          zoom: Math.max(scene.viewport.zoom, 1.35),
+        }
+      : scene.viewport;
+
+    setScenesByTabId((current) => ({
+      ...current,
+      [activeTabId]: {
+        ...scene,
+        sources: [...scene.sources, patch.source],
+        nodes: [...scene.nodes, ...patch.nodes],
+        relations: [...scene.relations, ...patch.relations],
+        viewport: nextViewport,
+        tabs: scene.tabs.map((tab) =>
+          tab.id === scene.active_tab_id
+            ? {
+                ...tab,
+                current_layer: nextViewport.layer,
+                node_ids: [...tab.node_ids, ...patch.nodes.map((node) => node.id)],
+                relation_ids: [...tab.relation_ids, ...patch.relations.map((relation) => relation.id)],
+                source_ids: [...tab.source_ids, patch.source.id],
+                updated_at: patch.nodes[0].updated_at,
+                viewport: nextViewport,
+              }
+            : tab,
+        ),
+        metadata: {
+          ...scene.metadata,
+          updated_at: patch.nodes[0].updated_at,
+        },
+      },
+    }));
+    setSelectedNodeIds([sourceNode.id]);
+    setSelectedRelationId(undefined);
+    setViewportFocusNodeId(sourceNode.id);
+    setSearchQuery("");
+    setSearchResults([]);
+    setIsSelectionActionCardOpen(false);
+    setRightSidebarCollapsed(false);
+  }
+
   return (
     <main className="app-shell">
       {splashVisible ? (
@@ -470,6 +691,7 @@ export function App(): ReactElement {
             layer={scene.viewport.layer}
             layerLabel={activeLayerLabel}
             nodeCount={scene.nodes.length}
+            persistenceStatus={persistenceStatus}
             selectedCount={selectedNodeIds.length}
             sourceCount={scene.sources.length}
           />
@@ -480,12 +702,15 @@ export function App(): ReactElement {
             activeTab={activeTab}
             basketItems={activeBasketItems}
             mockActionResults={activeMockActionResults}
+            onAddSource={handleAddSource}
             onClearBasket={handleClearBasket}
             onClearSelection={handleClearSelection}
             onRemoveBasketItem={handleRemoveBasketItem}
             onRunBasketAction={handleRunBasketAction}
             onSaveSelectionToTray={handleSaveSelectionToTray}
+            onBacklinkFocus={handleBacklinkFocus}
             onSearchResultSelect={handleSearchResultSelect}
+            onUseNodeAsSeed={handleUseNodeAsSeed}
             scene={scene}
             searchQuery={searchQuery}
             searchResults={searchResults}
@@ -807,12 +1032,15 @@ function InspectorSidebar({
   activeTab,
   basketItems,
   mockActionResults,
+  onBacklinkFocus,
+  onAddSource,
   onClearBasket,
   onClearSelection,
   onRemoveBasketItem,
   onRunBasketAction,
   onSaveSelectionToTray,
   onSearchResultSelect,
+  onUseNodeAsSeed,
   scene,
   searchQuery,
   searchResults,
@@ -824,12 +1052,15 @@ function InspectorSidebar({
   activeTab: ExplorationTab;
   basketItems: SelectionBasketItem[];
   mockActionResults: MockRegionActionResult[];
+  onBacklinkFocus: (backlink: NonNullable<ExplorationTab["parent_backlink"]>) => void;
+  onAddSource: (input: SourceIngestionInput) => void;
   onClearBasket: () => void;
   onClearSelection: () => void;
   onRemoveBasketItem: (itemId: string) => void;
   onRunBasketAction: (item: SelectionBasketItem, kind: MockRegionActionKind) => void;
   onSaveSelectionToTray: () => void;
   onSearchResultSelect: (nodeId: string) => void;
+  onUseNodeAsSeed: (node: TerrainNode) => void;
   scene: TerrainScene;
   searchQuery: string;
   searchResults: SearchResult[];
@@ -857,11 +1088,18 @@ function InspectorSidebar({
         ) : selectedNodes.length > 1 ? (
           <SelectionRegionPanel nodes={selectedNodes} onSaveSelectionToTray={onSaveSelectionToTray} />
         ) : selectedNode ? (
-          <SelectedNodePanel node={selectedNode} onSaveSelectionToTray={onSaveSelectionToTray} />
+          <SelectedNodePanel
+            node={selectedNode}
+            onNodeSelect={onSearchResultSelect}
+            onSaveSelectionToTray={onSaveSelectionToTray}
+            onUseNodeAsSeed={onUseNodeAsSeed}
+            scene={scene}
+          />
         ) : (
-          <SceneOverviewPanel activeTab={activeTab} fogCount={fogCount} scene={scene} />
+          <SceneOverviewPanel activeTab={activeTab} fogCount={fogCount} onBacklinkFocus={onBacklinkFocus} scene={scene} />
         )}
         <SearchResultsPanel query={searchQuery} results={searchResults} onResultSelect={onSearchResultSelect} />
+        <SourceIngestionPanel onAddSource={onAddSource} />
         <SideTrayPanel
           items={basketItems}
           onClearBasket={onClearBasket}
@@ -874,13 +1112,70 @@ function InspectorSidebar({
   );
 }
 
+function SourceIngestionPanel({ onAddSource }: { onAddSource: (input: SourceIngestionInput) => void }): ReactElement {
+  const [title, setTitle] = useState("");
+  const [url, setUrl] = useState("");
+  const [body, setBody] = useState("");
+  const canSubmit = title.trim().length > 0 && body.trim().length > 0;
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+
+    if (!canSubmit) {
+      return;
+    }
+
+    onAddSource({
+      title: title.trim(),
+      url: url.trim() || undefined,
+      body: body.trim(),
+    });
+    setTitle("");
+    setUrl("");
+    setBody("");
+  }
+
+  return (
+    <section className="inspect-section source-ingestion-panel">
+      <div className="source-ingestion-header">
+        <h2>Add source</h2>
+        <span>manual</span>
+      </div>
+      <p>Paste local text or a source excerpt. It becomes source-backed terrain in this tab.</p>
+      <form className="source-ingestion-form" onSubmit={handleSubmit}>
+        <label>
+          <span>Title</span>
+          <input onChange={(event: ChangeEvent<HTMLInputElement>) => setTitle(event.target.value)} value={title} />
+        </label>
+        <label>
+          <span>URL optional</span>
+          <input onChange={(event: ChangeEvent<HTMLInputElement>) => setUrl(event.target.value)} value={url} />
+        </label>
+        <label>
+          <span>Excerpt</span>
+          <textarea
+            onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setBody(event.target.value)}
+            rows={4}
+            value={body}
+          />
+        </label>
+        <button disabled={!canSubmit} type="submit">
+          Add to map
+        </button>
+      </form>
+    </section>
+  );
+}
+
 function SceneOverviewPanel({
   activeTab,
   fogCount,
+  onBacklinkFocus,
   scene,
 }: {
   activeTab: ExplorationTab;
   fogCount: number;
+  onBacklinkFocus: (backlink: NonNullable<ExplorationTab["parent_backlink"]>) => void;
   scene: TerrainScene;
 }): ReactElement {
   return (
@@ -901,8 +1196,35 @@ function SceneOverviewPanel({
           <dd>{fogCount}</dd>
         </div>
       </dl>
+      {activeTab.parent_backlink ? <BacklinkPanel backlink={activeTab.parent_backlink} onBacklinkFocus={onBacklinkFocus} /> : null}
       <SourceReadinessPanel scene={scene} />
     </section>
+  );
+}
+
+function BacklinkPanel({
+  backlink,
+  onBacklinkFocus,
+}: {
+  backlink: ExplorationTab["parent_backlink"];
+  onBacklinkFocus: (backlink: NonNullable<ExplorationTab["parent_backlink"]>) => void;
+}): ReactElement | null {
+  if (!backlink) {
+    return null;
+  }
+
+  return (
+    <div className="backlink-panel" aria-label="Origin backlink">
+      <div className="backlink-header">
+        <h2>Origin backlink</h2>
+        <span>source context</span>
+      </div>
+      <strong>{backlink.label}</strong>
+      {backlink.excerpt ? <p>{backlink.excerpt}</p> : null}
+      <button className="backlink-focus-action" onClick={() => onBacklinkFocus(backlink)} type="button">
+        Focus origin
+      </button>
+    </div>
   );
 }
 
@@ -938,7 +1260,26 @@ function SourceReadinessPanel({ scene }: { scene: TerrainScene }): ReactElement 
   );
 }
 
-function SelectedNodePanel({ node, onSaveSelectionToTray }: { node: TerrainNode; onSaveSelectionToTray: () => void }): ReactElement {
+function SelectedNodePanel({
+  node,
+  onNodeSelect,
+  onSaveSelectionToTray,
+  onUseNodeAsSeed,
+  scene,
+}: {
+  node: TerrainNode;
+  onNodeSelect: (nodeId: string) => void;
+  onSaveSelectionToTray: () => void;
+  onUseNodeAsSeed: (node: TerrainNode) => void;
+  scene: TerrainScene;
+}): ReactElement {
+  const source = getSourceForNode(scene, node);
+  const sourceRelations = getSourceRelationsForNode(scene, node);
+  const sourceChildren =
+    node.type === "source"
+      ? scene.nodes.filter((candidate) => candidate.parent_id === node.id || sourceRelations.some((relation) => relation.to === candidate.id))
+      : [];
+
   return (
     <section className="inspect-section">
       <h1>{node.title}</h1>
@@ -966,10 +1307,92 @@ function SelectedNodePanel({ node, onSaveSelectionToTray }: { node: TerrainNode;
           <span key={tag}>{tag}</span>
         ))}
       </div>
+      {source ? (
+        <SourceEvidenceCard
+          node={node}
+          onNodeSelect={onNodeSelect}
+          onUseNodeAsSeed={onUseNodeAsSeed}
+          relations={sourceRelations}
+          source={source}
+          sourceChildren={sourceChildren}
+        />
+      ) : null}
       <button className="inspect-action" onClick={onSaveSelectionToTray} type="button">
         Save to side tray
       </button>
     </section>
+  );
+}
+
+function SourceEvidenceCard({
+  node,
+  onNodeSelect,
+  onUseNodeAsSeed,
+  relations,
+  source,
+  sourceChildren,
+}: {
+  node: TerrainNode;
+  onNodeSelect: (nodeId: string) => void;
+  onUseNodeAsSeed: (node: TerrainNode) => void;
+  relations: TerrainRelation[];
+  source: SourceRef;
+  sourceChildren: TerrainNode[];
+}): ReactElement {
+  return (
+    <div className="source-evidence-card" aria-label="Source evidence">
+      <div className="source-evidence-header">
+        <h2>Source evidence</h2>
+        <span>{source.source_type}</span>
+      </div>
+      <dl className="source-evidence-meta">
+        <div>
+          <dt>State</dt>
+          <dd>{formatSourceState(node.source_state)}</dd>
+        </div>
+        <div>
+          <dt>Retrieved</dt>
+          <dd>{source.retrieved_at ? formatTimestamp(source.retrieved_at) : "manual"}</dd>
+        </div>
+      </dl>
+      {source.url ? <p className="source-url">{source.url}</p> : null}
+      {node.quote ? (
+        <blockquote>{node.quote}</blockquote>
+      ) : source.snippet ? (
+        <blockquote>{source.snippet}</blockquote>
+      ) : null}
+      {source.reliability_hints.length > 0 ? (
+        <div className="source-reliability-list" aria-label="Reliability hints">
+          {source.reliability_hints.map((hint) => (
+            <span key={hint}>{hint}</span>
+          ))}
+        </div>
+      ) : null}
+      {relations.length > 0 ? (
+        <div className="source-relation-list">
+          <h3>Evidence relations</h3>
+          {relations.map((relation) => (
+            <span key={relation.id}>
+              {relation.type.replace(/_/g, " ")} · {Math.round(relation.confidence * 100)}%
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {sourceChildren.length > 0 ? (
+        <div className="source-excerpt-list">
+          <h3>Mapped excerpts</h3>
+          {sourceChildren.map((child) => (
+            <button key={child.id} onClick={() => onNodeSelect(child.id)} type="button">
+              <strong>{child.title}</strong>
+              <span>{child.layer}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <button className="source-seed-action" onClick={() => onUseNodeAsSeed(node)} type="button">
+        Use as new exploration seed
+      </button>
+    </div>
   );
 }
 
@@ -1146,6 +1569,7 @@ function StatusStrip({
   layer,
   layerLabel,
   nodeCount,
+  persistenceStatus,
   selectedCount,
   sourceCount,
   jobState,
@@ -1153,6 +1577,7 @@ function StatusStrip({
   layer: LayerId;
   layerLabel: string;
   nodeCount: number;
+  persistenceStatus: PersistenceStatus;
   selectedCount: number;
   sourceCount: number;
   jobState: string;
@@ -1165,6 +1590,7 @@ function StatusStrip({
       <span>{nodeCount} nodes</span>
       <span>{selectedCount} selected</span>
       <span>{sourceCount} sources</span>
+      <span>{formatPersistenceStatus(persistenceStatus)}</span>
       <span>{jobState}</span>
     </footer>
   );
@@ -1185,6 +1611,24 @@ function getRelationNodes(scene: TerrainScene, relation: TerrainRelation): { fro
   };
 }
 
+function getSourceForNode(scene: TerrainScene, node: TerrainNode): SourceRef | undefined {
+  if (node.source_id) {
+    return scene.sources.find((source) => source.id === node.source_id);
+  }
+
+  return scene.sources.find((source) => {
+    if (node.source_url && source.url === node.source_url) {
+      return true;
+    }
+
+    return Boolean(node.source_title && source.title === node.source_title);
+  });
+}
+
+function getSourceRelationsForNode(scene: TerrainScene, node: TerrainNode): TerrainRelation[] {
+  return scene.relations.filter((relation) => relation.from === node.id || relation.to === node.id);
+}
+
 function getSourceStateCounts(nodes: TerrainNode[]): Partial<Record<SourceState, number>> {
   return nodes.reduce<Partial<Record<SourceState, number>>>((counts, node) => {
     counts[node.source_state] = (counts[node.source_state] ?? 0) + 1;
@@ -1194,6 +1638,62 @@ function getSourceStateCounts(nodes: TerrainNode[]): Partial<Record<SourceState,
 
 function formatSourceState(state: SourceState): string {
   return state.replace(/_/g, " ");
+}
+
+function formatTimestamp(value: string): string {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString(undefined, {
+    dateStyle: "short",
+    timeStyle: "short",
+  });
+}
+
+function formatPersistenceStatus(status: PersistenceStatus): string {
+  if (status === "loading") {
+    return "Loading local trail";
+  }
+
+  if (status === "saving") {
+    return "Saving trail";
+  }
+
+  if (status === "saved") {
+    return "Trail saved";
+  }
+
+  if (status === "error") {
+    return "Trail save issue";
+  }
+
+  if (status === "unavailable") {
+    return "Trail local only";
+  }
+
+  return "Unsaved changes";
+}
+
+function isWorkspaceSnapshot(value: unknown): value is WorkspaceSnapshot {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Partial<WorkspaceSnapshot>;
+
+  return (
+    candidate.version === 1 &&
+    typeof candidate.active_tab_id === "string" &&
+    typeof candidate.scenes_by_tab_id === "object" &&
+    candidate.scenes_by_tab_id !== null &&
+    typeof candidate.basket_by_tab_id === "object" &&
+    candidate.basket_by_tab_id !== null &&
+    typeof candidate.mock_action_results_by_tab_id === "object" &&
+    candidate.mock_action_results_by_tab_id !== null
+  );
 }
 
 function getAgentJobState(statuses: AgentJobStatus[]): string {

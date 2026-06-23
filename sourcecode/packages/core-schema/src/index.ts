@@ -149,6 +149,7 @@ export interface TerrainNode {
   updated_at: string;
   summary?: string;
   source_url?: string;
+  source_id?: string;
   source_title?: string;
   source_type?: SourceType;
   retrieved_at?: string;
