@@ -831,33 +831,29 @@ Hover card:
 
 ## 10.7 Application Startup Splash
 
-P0 ships a lightweight desktop startup splash while the observatory shell loads in the background.
+P0 ships a lightweight renderer overlay splash inside the main observatory shell.
 
 Purpose:
 
 * give the user immediate feedback that SeekStar is launching;
-* avoid a blank or half-painted main window during Electron startup;
-* keep renderer, preload, and main-window preparation non-blocking.
+* avoid a blank or half-painted shell during renderer startup;
+* keep startup quiet and local-only.
 
 Visual design:
 
-* small centered window with dark matte background (`#12141a` range);
+* full-shell overlay with dark matte background (`#0b0d12` range);
 * one centered straight-edged telescope SVG mark in the middle;
 * no progress bar, no marketing copy, no fake loading percentage;
 * subtle icon breathing animation is allowed; avoid decorative gradients or spectacle.
 
 Behavior:
 
-* show splash as soon as the app is ready to present a window;
-* create and load the main observatory window in parallel while splash is visible;
-* main window stays hidden until splash dismissal;
-* dismiss splash when **both** are true:
-  * main window `ready-to-show`;
-  * main renderer `did-finish-load`;
+* show overlay immediately when the renderer mounts;
+* dismiss overlay on renderer idle when possible;
 * hard timeout: **10 seconds**;
-* if timeout is reached first, dismiss splash anyway and show the main window if it exists;
-* splash must not block background loading of renderer, preload, or IPC registration;
-* macOS re-activation after all windows are closed may reopen the main window directly without splash.
+* if timeout is reached first, dismiss splash anyway;
+* splash must not block interaction state initialization, preload registration, or future local data loading;
+* no separate Electron splash window is maintained for P0.
 
 Non-goals for P0 splash:
 

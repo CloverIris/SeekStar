@@ -1,31 +1,28 @@
-# SeekStar 源码（Monorepo）
+# SeekStar Source Monorepo
 
-本目录为 SeekStar 的 monorepo 根目录。仓库级总览见上级目录 [`../README.md`](../README.md)。
+This directory is the active SeekStar monorepo root. Repository-level overview lives in [`../README.md`](../README.md).
 
-## 目录结构
+## Structure
 
 ```text
 sourcecode/
-├─ apps/
-│  └─ desktop/              # Electron + React 桌面应用
-│
-├─ packages/
-│  └─ core-schema/          # 共享类型与 TerrainScene 契约
-│
-├─ docs/
-│  ├─ architecture/
-│  └─ decisions/
-│
-├─ AGENTS.md
-├─ PRD.md
-├─ PHILOSOPHY.md
-├─ ARCHITECTURE_AND_UI_SPEC.md
-└─ UI_STYLE_GUIDE.md
+|- apps/
+|  `- desktop/              # Electron + React desktop observatory
+|- packages/
+|  `- core-schema/          # Shared TerrainScene and core SeekStar types
+|- docs/
+|  |- architecture/
+|  `- decisions/
+|- AGENTS.md
+|- PRD.md
+|- PHILOSOPHY.md
+|- ARCHITECTURE_AND_UI_SPEC.md
+`- UI_STYLE_GUIDE.md
 ```
 
-下文路径均相对于本目录（`sourcecode/`）。
+Paths in this directory are relative to `sourcecode/`.
 
-## 本地运行
+## Local Commands
 
 ```bash
 npm install
@@ -34,14 +31,14 @@ npm run build
 npm run dev
 ```
 
-开发模式默认打开 Detached DevTools。修改主进程或 preload 后需完全重启 Electron。
+Development mode opens detached DevTools by default. Restart Electron fully after changing the main process or preload boundary.
 
-## 关键文档
+## Key Documents
 
-* `PHILOSOPHY.md` — 项目哲学
-* `PRD.md` — 产品需求
-* `AGENTS.md` — Agent 行为准则
-* `ARCHITECTURE_AND_UI_SPEC.md` — 架构与 UI 规范
-* `UI_STYLE_GUIDE.md` — 视觉风格
-* `docs/architecture/` — 脚手架与数据契约
-* `docs/decisions/` — 架构决策记录
+- `PHILOSOPHY.md`: product philosophy.
+- `PRD.md`: product requirements.
+- `AGENTS.md`: agent operating rules.
+- `ARCHITECTURE_AND_UI_SPEC.md`: architecture and UI specification.
+- `UI_STYLE_GUIDE.md`: visual system and shell standards.
+- `docs/architecture/`: scaffold and data-contract notes.
+- `docs/decisions/`: architecture decision records.

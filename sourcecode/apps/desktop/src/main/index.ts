@@ -8,9 +8,9 @@ registerWindowBridge();
 
 function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
-    width: 1440,
-    height: 920,
-    minWidth: 1100,
+    width: 1600,
+    height: 900,
+    minWidth: 1280,
     minHeight: 720,
     title: "SeekStar",
     backgroundColor: "#00000000",

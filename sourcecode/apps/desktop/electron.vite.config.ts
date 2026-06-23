@@ -1,20 +1,10 @@
-import { cpSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import react from "@vitejs/plugin-react";
 
-function copySplashHtmlPlugin() {
-  return {
-    name: "copy-splash-html",
-    closeBundle() {
-      cpSync(resolve("src/main/splash.html"), resolve("out/main/splash.html"));
-    },
-  };
-}
-
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin(), copySplashHtmlPlugin()],
+    plugins: [externalizeDepsPlugin()],
   },
   preload: {
     plugins: [externalizeDepsPlugin()],

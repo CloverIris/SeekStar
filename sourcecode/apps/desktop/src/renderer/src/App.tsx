@@ -1,17 +1,54 @@
-import type { AgentJobStatus, ExplorationTab, LayerId, TerrainNode, TerrainScene } from "@seekstar/core-schema";
+import type {
+  AgentJobStatus,
+  ExplorationTab,
+  LayerId,
+  SourceState,
+  TerrainNode,
+  TerrainRelation,
+  TerrainScene,
+} from "@seekstar/core-schema";
 import type { ChangeEvent, KeyboardEvent, ReactElement, RefObject } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Brush,
+  Circle,
+  Compass,
+  Hand,
+  Lasso,
+  MousePointer2,
+  Plus,
+  Search,
+  Settings,
+  Sparkles,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import { CommandActionCard } from "./components/CommandActionCard";
 import { SearchResultsPanel } from "./components/SearchResultsPanel";
 import { SidebarToggleButton } from "./components/SidebarToggleButton";
 import { TitleBarMenus, type AppMenuId } from "./components/TitleBarMenus";
 import { TerrainCanvas } from "./components/TerrainCanvas";
+import type { CanvasTool } from "./canvas/interaction";
 import { createMockSeedScene } from "./fixtures/mockSceneFactory";
 import { openingSkyScene } from "./fixtures/openingSkyScene";
 import { goBack, goForward } from "./platform/windowApi";
 import { type SearchResult, searchScene } from "./search/localSceneSearch";
+import {
+  type MockRegionActionKind,
+  type MockRegionActionResult,
+  createMockRegionActionResult,
+} from "./selection/mockRegionActions";
+import { type SelectionBasketItem, createSelectionBasketItem } from "./selection/selectionBasket";
 
 const favoriteSeeds = ["Cognitive maps", "Source trails", "Unknown unknowns"];
+const canvasTools: Array<{ id: CanvasTool; label: string; icon: LucideIcon; disabled?: boolean }> = [
+  { id: "pointer", label: "Pointer", icon: MousePointer2 },
+  { id: "pan", label: "Pan", icon: Hand },
+  { id: "lasso", label: "Lasso", icon: Lasso },
+  { id: "brush", label: "Brush", icon: Brush, disabled: true },
+];
 
 export function App(): ReactElement {
   const initialTabId = openingSkyScene.active_tab_id;
@@ -24,11 +61,16 @@ export function App(): ReactElement {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
+  const [selectedRelationId, setSelectedRelationId] = useState<string | undefined>();
   const [viewportFocusNodeId, setViewportFocusNodeId] = useState<string | undefined>();
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
   const [rightSidebarCollapsed, setRightSidebarCollapsed] = useState(false);
   const [splashVisible, setSplashVisible] = useState(true);
   const [splashFading, setSplashFading] = useState(false);
+  const [activeCanvasTool, setActiveCanvasTool] = useState<CanvasTool>("pointer");
+  const [basketByTabId, setBasketByTabId] = useState<Record<string, SelectionBasketItem[]>>({});
+  const [mockActionResultsByTabId, setMockActionResultsByTabId] = useState<Record<string, MockRegionActionResult[]>>({});
+  const [isSelectionActionCardOpen, setIsSelectionActionCardOpen] = useState(false);
   const commandInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -38,6 +80,7 @@ export function App(): ReactElement {
       if (!splashVisible || splashFading) {
         return;
       }
+
       setSplashFading(true);
       fadeTimeoutId = window.setTimeout(() => {
         setSplashVisible(false);
@@ -45,7 +88,6 @@ export function App(): ReactElement {
     };
 
     const maxTimeoutId = window.setTimeout(hideSplash, 10_000);
-
     const idleHandle = (window as unknown as { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback?.(
       () => {
         clearTimeout(maxTimeoutId);
@@ -67,13 +109,30 @@ export function App(): ReactElement {
   const scene = scenesByTabId[activeTabId] ?? openingSkyScene;
   const activeTab = getActiveTab(scene);
   const activeLayerLabel = getActiveLayerLabel(scene);
+  const selectedNodes = useMemo(
+    () => selectedNodeIds.map((nodeId) => scene.nodes.find((node) => node.id === nodeId)).filter((node): node is TerrainNode => Boolean(node)),
+    [scene.nodes, selectedNodeIds],
+  );
   const selectedNode = selectedNodeIds.length === 1 ? scene.nodes.find((node) => node.id === selectedNodeIds[0]) : undefined;
+  const selectedRelation = selectedRelationId ? scene.relations.find((relation) => relation.id === selectedRelationId) : undefined;
+  const selectedRelationNodes = selectedRelation ? getRelationNodes(scene, selectedRelation) : undefined;
   const highlightedNodeIds = useMemo(() => searchResults.map((result) => result.nodeId), [searchResults]);
+  const activeBasketItems = basketByTabId[activeTabId] ?? [];
+  const activeMockActionResults = mockActionResultsByTabId[activeTabId] ?? [];
   const jobState = getAgentJobState(scene.agent_jobs.map((job) => job.status));
 
-  function syncSceneSelection(nodeIds: string[], focusNodeId?: string): void {
+  function syncSceneSelection(nodeIds: string[], focusNodeId?: string, showSelectionActions = false): void {
+    const focusNode = focusNodeId ? scene.nodes.find((node) => node.id === focusNodeId) : undefined;
+    const nextViewport = {
+      ...scene.viewport,
+      x: focusNode?.position_hint?.x ?? scene.viewport.x,
+      y: focusNode?.position_hint?.y ?? scene.viewport.y,
+    };
+
     setSelectedNodeIds(nodeIds);
+    setSelectedRelationId(undefined);
     setViewportFocusNodeId(focusNodeId);
+    setIsSelectionActionCardOpen(nodeIds.length > 0 && showSelectionActions);
     setScenesByTabId((current) => ({
       ...current,
       [activeTabId]: {
@@ -82,11 +141,34 @@ export function App(): ReactElement {
           ...scene.selection,
           node_ids: nodeIds,
         },
-        viewport: {
-          ...scene.viewport,
-          x: focusNodeId ? scene.nodes.find((node) => node.id === focusNodeId)?.position_hint?.x ?? scene.viewport.x : scene.viewport.x,
-          y: focusNodeId ? scene.nodes.find((node) => node.id === focusNodeId)?.position_hint?.y ?? scene.viewport.y : scene.viewport.y,
-        },
+        viewport: nextViewport,
+        tabs: scene.tabs.map((tab) =>
+          tab.id === scene.active_tab_id
+            ? {
+                ...tab,
+                viewport: nextViewport,
+              }
+            : tab,
+        ),
+      },
+    }));
+  }
+
+  function syncSceneViewport(viewport: TerrainScene["viewport"]): void {
+    setScenesByTabId((current) => ({
+      ...current,
+      [activeTabId]: {
+        ...scene,
+        viewport,
+        tabs: scene.tabs.map((tab) =>
+          tab.id === scene.active_tab_id
+            ? {
+                ...tab,
+                current_layer: viewport.layer,
+                viewport,
+              }
+            : tab,
+        ),
       },
     }));
   }
@@ -123,7 +205,9 @@ export function App(): ReactElement {
     setSearchQuery("");
     setSearchResults([]);
     setSelectedNodeIds([]);
+    setSelectedRelationId(undefined);
     setViewportFocusNodeId(undefined);
+    setIsSelectionActionCardOpen(false);
   }
 
   function handleSearchCurrentTab(): void {
@@ -131,6 +215,8 @@ export function App(): ReactElement {
     const results = searchScene(scene, query);
     setSearchQuery(query);
     setSearchResults(results);
+    setSelectedRelationId(undefined);
+    setIsSelectionActionCardOpen(false);
     setIsCommandModalOpen(false);
     setCommandValue("");
     setRightSidebarCollapsed(false);
@@ -138,6 +224,30 @@ export function App(): ReactElement {
 
   function handleNodeSelect(nodeId: string): void {
     syncSceneSelection([nodeId], nodeId);
+    setRightSidebarCollapsed(false);
+  }
+
+  function handleRelationSelect(relationId: string): void {
+    const relation = scene.relations.find((candidate) => candidate.id === relationId);
+
+    if (!relation) {
+      return;
+    }
+
+    setSelectedNodeIds([]);
+    setSelectedRelationId(relationId);
+    setViewportFocusNodeId(undefined);
+    setIsSelectionActionCardOpen(false);
+    setScenesByTabId((current) => ({
+      ...current,
+      [activeTabId]: {
+        ...scene,
+        selection: {
+          ...scene.selection,
+          node_ids: [],
+        },
+      },
+    }));
     setRightSidebarCollapsed(false);
   }
 
@@ -159,7 +269,9 @@ export function App(): ReactElement {
     setSearchQuery("");
     setSearchResults([]);
     setSelectedNodeIds(nextScene.selection.node_ids);
+    setSelectedRelationId(undefined);
     setViewportFocusNodeId(nextScene.selection.node_ids[0]);
+    setIsSelectionActionCardOpen(false);
   }
 
   function handleFocusCommand(): void {
@@ -168,10 +280,101 @@ export function App(): ReactElement {
   }
 
   function handleClearSelection(): void {
-    setSelectedNodeIds([]);
-    setViewportFocusNodeId(undefined);
+    syncSceneSelection([]);
+    setSelectedRelationId(undefined);
     setSearchQuery("");
     setSearchResults([]);
+    setIsSelectionActionCardOpen(false);
+  }
+
+  function createActiveSelectionBasketItem(): SelectionBasketItem | undefined {
+    if (selectedNodes.length === 0) {
+      return undefined;
+    }
+
+    return createSelectionBasketItem(activeTab, selectedNodes);
+  }
+
+  function handleSaveSelectionToTray(): void {
+    const item = createActiveSelectionBasketItem();
+
+    if (!item) {
+      return;
+    }
+
+    setBasketByTabId((current) => ({
+      ...current,
+      [activeTabId]: [item, ...(current[activeTabId] ?? [])],
+    }));
+    setIsSelectionActionCardOpen(false);
+  }
+
+  function handleRemoveBasketItem(itemId: string): void {
+    setBasketByTabId((current) => ({
+      ...current,
+      [activeTabId]: (current[activeTabId] ?? []).filter((item) => item.id !== itemId),
+    }));
+  }
+
+  function handleClearBasket(): void {
+    setBasketByTabId((current) => ({
+      ...current,
+      [activeTabId]: [],
+    }));
+  }
+
+  function handleRunBasketAction(item: SelectionBasketItem, kind: MockRegionActionKind): void {
+    const result = createMockRegionActionResult(item, kind);
+
+    setMockActionResultsByTabId((current) => ({
+      ...current,
+      [activeTabId]: [result, ...(current[activeTabId] ?? [])],
+    }));
+    setRightSidebarCollapsed(false);
+  }
+
+  function handleRunSelectionAction(kind: MockRegionActionKind): void {
+    const item = createActiveSelectionBasketItem();
+
+    if (!item) {
+      return;
+    }
+
+    const result = createMockRegionActionResult(item, kind);
+
+    setMockActionResultsByTabId((current) => ({
+      ...current,
+      [activeTabId]: [result, ...(current[activeTabId] ?? [])],
+    }));
+    setRightSidebarCollapsed(false);
+    setIsSelectionActionCardOpen(false);
+  }
+
+  function handleUseSelectionAsSeed(): void {
+    if (selectedNodes.length === 0) {
+      return;
+    }
+
+    const seedTitle =
+      selectedNodes.length === 1
+        ? selectedNodes[0].title
+        : `${selectedNodes[0].title} + ${selectedNodes.length - 1} nearby`;
+    const nextScene = createMockSeedScene(seedTitle);
+    const nextTabId = nextScene.active_tab_id;
+
+    setScenesByTabId((current) => ({
+      ...current,
+      [nextTabId]: nextScene,
+    }));
+    setActiveTabId(nextTabId);
+    setCommandValue("");
+    setIsCommandModalOpen(false);
+    setSearchQuery("");
+    setSearchResults([]);
+    setSelectedNodeIds([]);
+    setSelectedRelationId(undefined);
+    setViewportFocusNodeId(undefined);
+    setIsSelectionActionCardOpen(false);
   }
 
   return (
@@ -204,7 +407,9 @@ export function App(): ReactElement {
         <SidebarRail collapsed={leftSidebarCollapsed} label="Observatory" side="left">
           <ObservatorySidebar
             activeTabId={activeTabId}
+            activeTool={activeCanvasTool}
             onFocusCommand={handleFocusCommand}
+            onToolSelect={setActiveCanvasTool}
             onTabSelect={handleTabSelect}
             scenes={Object.values(scenesByTabId)}
           />
@@ -222,16 +427,31 @@ export function App(): ReactElement {
             />
             <div className="workbench-canvas-wrap">
               <TerrainCanvas
+                activeTool={activeCanvasTool}
                 focusedNodeId={viewportFocusNodeId}
                 highlightedNodeIds={highlightedNodeIds}
                 onNodeSelect={handleNodeSelect}
+                onRelationSelect={handleRelationSelect}
+                onSelectionChange={syncSceneSelection}
+                onViewportChange={syncSceneViewport}
                 scene={scene}
                 selectedNodeIds={selectedNodeIds}
+                selectedRelationId={selectedRelationId}
+                viewport={scene.viewport}
               />
-              {!selectedNode ? (
+              {selectedNodeIds.length === 0 ? (
                 <div className="workbench-prompt" aria-hidden="true">
                   <h1>What should we explore in {activeTab.title}?</h1>
                 </div>
+              ) : null}
+              {isSelectionActionCardOpen && selectedNodes.length > 0 ? (
+                <SelectionActionCard
+                  nodeCount={selectedNodes.length}
+                  onDismiss={() => setIsSelectionActionCardOpen(false)}
+                  onRunAction={handleRunSelectionAction}
+                  onSaveSelection={handleSaveSelectionToTray}
+                  onUseAsSeed={handleUseSelectionAsSeed}
+                />
               ) : null}
             </div>
           </div>
@@ -258,12 +478,21 @@ export function App(): ReactElement {
         <SidebarRail collapsed={rightSidebarCollapsed} label="Inspector" side="right">
           <InspectorSidebar
             activeTab={activeTab}
+            basketItems={activeBasketItems}
+            mockActionResults={activeMockActionResults}
+            onClearBasket={handleClearBasket}
             onClearSelection={handleClearSelection}
+            onRemoveBasketItem={handleRemoveBasketItem}
+            onRunBasketAction={handleRunBasketAction}
+            onSaveSelectionToTray={handleSaveSelectionToTray}
             onSearchResultSelect={handleSearchResultSelect}
             scene={scene}
             searchQuery={searchQuery}
             searchResults={searchResults}
             selectedNode={selectedNode}
+            selectedNodes={selectedNodes}
+            selectedRelation={selectedRelation}
+            selectedRelationNodes={selectedRelationNodes}
           />
         </SidebarRail>
       </div>
@@ -314,10 +543,10 @@ function WindowTitleBar({
           side="left"
         />
         <button aria-label="Back" onClick={goBack} type="button">
-          ‹
+          <ArrowLeft aria-hidden="true" size={15} strokeWidth={1.8} />
         </button>
         <button aria-label="Forward" onClick={goForward} type="button">
-          ›
+          <ArrowRight aria-hidden="true" size={15} strokeWidth={1.8} />
         </button>
       </div>
       <TitleBarMenus openMenuId={openMenuId} onClose={() => setOpenMenuId(null)} onToggle={handleToggleMenu} />
@@ -332,13 +561,17 @@ function WindowTitleBar({
 }
 
 function ObservatorySidebar({
+  activeTool,
   activeTabId,
   onFocusCommand,
+  onToolSelect,
   onTabSelect,
   scenes,
 }: {
+  activeTool: CanvasTool;
   activeTabId: string;
   onFocusCommand: () => void;
+  onToolSelect: (tool: CanvasTool) => void;
   onTabSelect: (tabId: string) => void;
   scenes: TerrainScene[];
 }): ReactElement {
@@ -346,11 +579,15 @@ function ObservatorySidebar({
     <div className="observatory-sidebar" aria-label="SeekStar observatory sidebar">
       <section className="sidebar-nav">
         <button className="sidebar-nav-item" onClick={onFocusCommand} type="button">
-          <span className="sidebar-icon">＋</span>
+          <span className="sidebar-icon">
+            <Compass aria-hidden="true" size={15} strokeWidth={1.8} />
+          </span>
           New field search
         </button>
         <button className="sidebar-nav-item" onClick={onFocusCommand} type="button">
-          <span className="sidebar-icon">⌕</span>
+          <span className="sidebar-icon">
+            <Search aria-hidden="true" size={15} strokeWidth={1.8} />
+          </span>
           Search current map
         </button>
       </section>
@@ -360,8 +597,31 @@ function ObservatorySidebar({
         <div className="sidebar-list">
           {favoriteSeeds.map((seed) => (
             <button className="sidebar-list-item" key={seed} onClick={onFocusCommand} type="button">
-              <span className="sidebar-icon">☆</span>
+              <span className="sidebar-icon">
+                <Sparkles aria-hidden="true" size={14} strokeWidth={1.8} />
+              </span>
               <span className="sidebar-label">{seed}</span>
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className="sidebar-section">
+        <h2>Canvas tools</h2>
+        <div className="canvas-tool-list">
+          {canvasTools.map((tool) => (
+            <button
+              aria-pressed={activeTool === tool.id}
+              className={activeTool === tool.id ? "canvas-tool active" : "canvas-tool"}
+              disabled={tool.disabled}
+              key={tool.id}
+              onClick={() => onToolSelect(tool.id)}
+              type="button"
+            >
+              <span className="sidebar-icon">
+                <tool.icon aria-hidden="true" size={15} strokeWidth={1.8} />
+              </span>
+              <span className="sidebar-label">{tool.label}</span>
             </button>
           ))}
         </div>
@@ -382,12 +642,12 @@ function ObservatorySidebar({
                 type="button"
               >
                 <span className="exploration-tab-icon" aria-hidden="true">
-                  ◫
+                  <Circle size={12} strokeWidth={2} />
                 </span>
                 <span className="exploration-tab-label">{tab.title}</span>
                 {isActive ? (
                   <span aria-hidden="true" className="exploration-tab-close">
-                    ×
+                    <X size={12} strokeWidth={2} />
                   </span>
                 ) : null}
               </button>
@@ -395,7 +655,7 @@ function ObservatorySidebar({
           })}
           <button className="exploration-tab-new" onClick={onFocusCommand} type="button">
             <span className="exploration-tab-icon" aria-hidden="true">
-              ＋
+              <Plus size={13} strokeWidth={2} />
             </span>
             <span className="exploration-tab-label">New tab</span>
           </button>
@@ -403,7 +663,9 @@ function ObservatorySidebar({
       </section>
 
       <button className="sidebar-settings" type="button">
-        <span className="sidebar-icon">⚙</span>
+        <span className="sidebar-icon">
+          <Settings aria-hidden="true" size={15} strokeWidth={1.8} />
+        </span>
         Settings
       </button>
     </div>
@@ -430,7 +692,7 @@ function WorkbenchHeader({
       <div className="workbench-context">
         <span className="workbench-context-label">{activeTab.seed}</span>
         <span className="workbench-context-meta">
-          {layer} · {layerLabel}
+          {layer} - {layerLabel}
         </span>
       </div>
       <div className="workbench-header-actions">
@@ -473,7 +735,7 @@ function CommandComposer({
         ) : null}
         <label className="command-bar" aria-label="Command input">
           <button aria-label="Add context" className="command-bar-addon" type="button">
-            ＋
+            +
           </button>
           <input
             onChange={onCommandChange}
@@ -491,7 +753,7 @@ function CommandComposer({
             onClick={onCommandFocus}
             type="button"
           >
-            ↑
+            {"->"}
           </button>
         </label>
       </div>
@@ -499,39 +761,114 @@ function CommandComposer({
   );
 }
 
+function SelectionActionCard({
+  nodeCount,
+  onDismiss,
+  onRunAction,
+  onSaveSelection,
+  onUseAsSeed,
+}: {
+  nodeCount: number;
+  onDismiss: () => void;
+  onRunAction: (kind: MockRegionActionKind) => void;
+  onSaveSelection: () => void;
+  onUseAsSeed: () => void;
+}): ReactElement {
+  return (
+    <aside className="selection-action-card" aria-label="Selection actions">
+      <div className="selection-action-card-header">
+        <span>{nodeCount} selected</span>
+        <button aria-label="Dismiss selection actions" onClick={onDismiss} type="button">
+          x
+        </button>
+      </div>
+      <div className="selection-action-card-actions">
+        <button onClick={onSaveSelection} type="button">
+          Save to tray
+        </button>
+        <button onClick={() => onRunAction("explain")} type="button">
+          Mock explain
+        </button>
+        <button onClick={() => onRunAction("compare")} type="button">
+          Mock compare
+        </button>
+        <button onClick={() => onRunAction("export")} type="button">
+          Mock export
+        </button>
+        <button className="selection-action-wide" onClick={onUseAsSeed} type="button">
+          Use region as new seed
+        </button>
+      </div>
+    </aside>
+  );
+}
+
 function InspectorSidebar({
   activeTab,
+  basketItems,
+  mockActionResults,
+  onClearBasket,
   onClearSelection,
+  onRemoveBasketItem,
+  onRunBasketAction,
+  onSaveSelectionToTray,
   onSearchResultSelect,
   scene,
   searchQuery,
   searchResults,
   selectedNode,
+  selectedNodes,
+  selectedRelation,
+  selectedRelationNodes,
 }: {
   activeTab: ExplorationTab;
+  basketItems: SelectionBasketItem[];
+  mockActionResults: MockRegionActionResult[];
+  onClearBasket: () => void;
   onClearSelection: () => void;
+  onRemoveBasketItem: (itemId: string) => void;
+  onRunBasketAction: (item: SelectionBasketItem, kind: MockRegionActionKind) => void;
+  onSaveSelectionToTray: () => void;
   onSearchResultSelect: (nodeId: string) => void;
   scene: TerrainScene;
   searchQuery: string;
   searchResults: SearchResult[];
   selectedNode?: TerrainNode;
+  selectedNodes: TerrainNode[];
+  selectedRelation?: TerrainRelation;
+  selectedRelationNodes?: { from?: TerrainNode; to?: TerrainNode };
 }): ReactElement {
   const fogCount = scene.nodes.filter((node) => node.type === "fog_region").length;
-  const panelTitle = selectedNode ? "Inspect" : searchQuery ? "Search" : "Overview";
+  const panelTitle = selectedRelation ? "Relation" : selectedNodes.length > 1 ? "Selection" : selectedNode ? "Inspect" : searchQuery ? "Search" : "Overview";
 
   return (
     <div className="inspector-sidebar">
       <header className="inspector-sidebar-header">
         <span>{panelTitle}</span>
-        {selectedNode || searchQuery ? (
+        {selectedRelation || selectedNode || searchQuery ? (
           <button aria-label="Clear selection" onClick={onClearSelection} type="button">
             Clear
           </button>
         ) : null}
       </header>
       <div className="inspector-sidebar-body">
-        {selectedNode ? <SelectedNodePanel node={selectedNode} /> : <SceneOverviewPanel activeTab={activeTab} fogCount={fogCount} scene={scene} />}
+        {selectedRelation ? (
+          <SelectedRelationPanel fromNode={selectedRelationNodes?.from} relation={selectedRelation} toNode={selectedRelationNodes?.to} />
+        ) : selectedNodes.length > 1 ? (
+          <SelectionRegionPanel nodes={selectedNodes} onSaveSelectionToTray={onSaveSelectionToTray} />
+        ) : selectedNode ? (
+          <SelectedNodePanel node={selectedNode} onSaveSelectionToTray={onSaveSelectionToTray} />
+        ) : (
+          <SceneOverviewPanel activeTab={activeTab} fogCount={fogCount} scene={scene} />
+        )}
         <SearchResultsPanel query={searchQuery} results={searchResults} onResultSelect={onSearchResultSelect} />
+        <SideTrayPanel
+          items={basketItems}
+          onClearBasket={onClearBasket}
+          onRemoveItem={onRemoveBasketItem}
+          onRunAction={onRunBasketAction}
+        />
+        <MockRegionOutputPanel results={mockActionResults} />
       </div>
     </div>
   );
@@ -564,11 +901,44 @@ function SceneOverviewPanel({
           <dd>{fogCount}</dd>
         </div>
       </dl>
+      <SourceReadinessPanel scene={scene} />
     </section>
   );
 }
 
-function SelectedNodePanel({ node }: { node: TerrainNode }): ReactElement {
+function SourceReadinessPanel({ scene }: { scene: TerrainScene }): ReactElement {
+  const nodeCounts = getSourceStateCounts(scene.nodes);
+  const sourceBackedCount = nodeCounts.source_backed ?? 0;
+  const generatedCount = (nodeCounts.generated ?? 0) + (nodeCounts.agent_inferred ?? 0) + (nodeCounts.weak_hypothesis ?? 0);
+
+  return (
+    <div className="source-readiness-panel" aria-label="Source readiness">
+      <div className="source-readiness-header">
+        <h2>Source readiness</h2>
+        <span>{scene.sources.length === 0 ? "mock only" : `${scene.sources.length} sources`}</span>
+      </div>
+      <p>
+        {sourceBackedCount > 0
+          ? "Some terrain is source-backed. Generated and inferred nodes remain visually marked."
+          : "This map is source-free mock terrain. No factual node is presented as source-backed yet."}
+      </p>
+      <dl className="source-state-list">
+        {(["source_backed", "generated", "agent_inferred", "weak_hypothesis", "fog"] satisfies SourceState[]).map((state) => (
+          <div key={state}>
+            <dt>{formatSourceState(state)}</dt>
+            <dd>{nodeCounts[state] ?? 0}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="source-readiness-note">
+        <span>{generatedCount} generated or inferred nodes</span>
+        <span>{scene.relations.length} typed relations</span>
+      </div>
+    </div>
+  );
+}
+
+function SelectedNodePanel({ node, onSaveSelectionToTray }: { node: TerrainNode; onSaveSelectionToTray: () => void }): ReactElement {
   return (
     <section className="inspect-section">
       <h1>{node.title}</h1>
@@ -596,6 +966,178 @@ function SelectedNodePanel({ node }: { node: TerrainNode }): ReactElement {
           <span key={tag}>{tag}</span>
         ))}
       </div>
+      <button className="inspect-action" onClick={onSaveSelectionToTray} type="button">
+        Save to side tray
+      </button>
+    </section>
+  );
+}
+
+function SelectedRelationPanel({
+  fromNode,
+  relation,
+  toNode,
+}: {
+  fromNode?: TerrainNode;
+  relation: TerrainRelation;
+  toNode?: TerrainNode;
+}): ReactElement {
+  return (
+    <section className="inspect-section relation-inspect-panel">
+      <h1>{relation.type.replace("_", " ")}</h1>
+      <p>{relation.explanation}</p>
+      <div className="relation-node-pair" aria-label="Relation endpoints">
+        <span>{fromNode?.title ?? relation.from}</span>
+        <span aria-hidden="true">{"->"}</span>
+        <span>{toNode?.title ?? relation.to}</span>
+      </div>
+      <dl className="metric-list">
+        <div>
+          <dt>State</dt>
+          <dd>{relation.source_state.replace("_", " ")}</dd>
+        </div>
+        <div>
+          <dt>Confidence</dt>
+          <dd>{Math.round(relation.confidence * 100)}%</dd>
+        </div>
+        <div>
+          <dt>From layer</dt>
+          <dd>{fromNode?.layer ?? "Unknown"}</dd>
+        </div>
+        <div>
+          <dt>To layer</dt>
+          <dd>{toNode?.layer ?? "Unknown"}</dd>
+        </div>
+      </dl>
+      <div className="tag-list" aria-label="Relation state tags">
+        <span>{relation.source_state.replace("_", " ")}</span>
+        <span>{relation.type.replace("_", " ")}</span>
+      </div>
+    </section>
+  );
+}
+
+function SelectionRegionPanel({
+  nodes,
+  onSaveSelectionToTray,
+}: {
+  nodes: TerrainNode[];
+  onSaveSelectionToTray: () => void;
+}): ReactElement {
+  const fogCount = nodes.filter((node) => node.type === "fog_region").length;
+  const generatedCount = nodes.filter((node) => node.source_state !== "source_backed").length;
+
+  return (
+    <section className="inspect-section">
+      <h1>Selected region</h1>
+      <p>This local spatial selection can become a future explain, compare, seed, or export context.</p>
+      <dl className="metric-list">
+        <div>
+          <dt>Nodes</dt>
+          <dd>{nodes.length}</dd>
+        </div>
+        <div>
+          <dt>Fog</dt>
+          <dd>{fogCount}</dd>
+        </div>
+        <div>
+          <dt>Mock / inferred</dt>
+          <dd>{generatedCount}</dd>
+        </div>
+      </dl>
+      <div className="selection-node-list" aria-label="Selected nodes">
+        {nodes.map((node) => (
+          <span key={node.id}>{node.title}</span>
+        ))}
+      </div>
+      <button className="inspect-action" onClick={onSaveSelectionToTray} type="button">
+        Save region to side tray
+      </button>
+    </section>
+  );
+}
+
+function SideTrayPanel({
+  items,
+  onClearBasket,
+  onRemoveItem,
+  onRunAction,
+}: {
+  items: SelectionBasketItem[];
+  onClearBasket: () => void;
+  onRemoveItem: (itemId: string) => void;
+  onRunAction: (item: SelectionBasketItem, kind: MockRegionActionKind) => void;
+}): ReactElement {
+  return (
+    <section className="inspect-section side-tray-panel">
+      <div className="side-tray-header">
+        <h2>Side tray</h2>
+        {items.length > 0 ? (
+          <button onClick={onClearBasket} type="button">
+            Clear
+          </button>
+        ) : null}
+      </div>
+      {items.length === 0 ? (
+        <p>Save selected nodes or lassoed regions here as local mock context.</p>
+      ) : (
+        <div className="side-tray-list">
+          {items.map((item) => (
+            <article className="side-tray-item" key={item.id}>
+              <div className="side-tray-item-body">
+                <div>
+                  <strong>{item.title}</strong>
+                  <small>
+                    {item.nodeIds.length} nodes - {item.sourceStates.join(", ")}
+                  </small>
+                </div>
+                <div className="side-tray-item-actions" aria-label={`Mock actions for ${item.title}`}>
+                  <button onClick={() => onRunAction(item, "explain")} type="button">
+                    Explain
+                  </button>
+                  <button onClick={() => onRunAction(item, "compare")} type="button">
+                    Compare
+                  </button>
+                  <button onClick={() => onRunAction(item, "export")} type="button">
+                    Export
+                  </button>
+                </div>
+              </div>
+              <button aria-label={`Remove ${item.title}`} onClick={() => onRemoveItem(item.id)} type="button">
+                x
+              </button>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MockRegionOutputPanel({ results }: { results: MockRegionActionResult[] }): ReactElement | null {
+  if (results.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="inspect-section mock-output-panel">
+      <div className="mock-output-header">
+        <h2>Cartographer notes</h2>
+        <span>mock generated</span>
+      </div>
+      <div className="mock-output-list">
+        {results.map((result) => (
+          <article className="mock-output-item" key={result.id}>
+            <div className="mock-output-meta">
+              <span>{result.kind}</span>
+              <span>{result.nodeCount} nodes</span>
+              <span>{result.sourceState.replace("_", " ")}</span>
+            </div>
+            <h3>{result.title}</h3>
+            <p>{result.body}</p>
+          </article>
+        ))}
+      </div>
     </section>
   );
 }
@@ -618,7 +1160,7 @@ function StatusStrip({
   return (
     <footer className="status-strip">
       <span>
-        {layer} · {layerLabel}
+        {layer} - {layerLabel}
       </span>
       <span>{nodeCount} nodes</span>
       <span>{selectedCount} selected</span>
@@ -634,6 +1176,24 @@ function getActiveTab(scene: TerrainScene): ExplorationTab {
 
 function getActiveLayerLabel(scene: TerrainScene): string {
   return scene.layers.find((layer) => layer.id === scene.viewport.layer)?.label ?? scene.viewport.layer;
+}
+
+function getRelationNodes(scene: TerrainScene, relation: TerrainRelation): { from?: TerrainNode; to?: TerrainNode } {
+  return {
+    from: scene.nodes.find((node) => node.id === relation.from),
+    to: scene.nodes.find((node) => node.id === relation.to),
+  };
+}
+
+function getSourceStateCounts(nodes: TerrainNode[]): Partial<Record<SourceState, number>> {
+  return nodes.reduce<Partial<Record<SourceState, number>>>((counts, node) => {
+    counts[node.source_state] = (counts[node.source_state] ?? 0) + 1;
+    return counts;
+  }, {});
+}
+
+function formatSourceState(state: SourceState): string {
+  return state.replace(/_/g, " ");
 }
 
 function getAgentJobState(statuses: AgentJobStatus[]): string {

@@ -63,6 +63,22 @@ The spike must prove:
 - source-card labels that remain readable;
 - no overlap regressions in basic source-card layout.
 
+## P1 Interim Approach
+
+P1 implements a renderer-agnostic interaction boundary with a DOM adapter before adding PixiJS.
+
+- Keep `@seekstar/core-schema` unchanged.
+- Add renderer-local canvas interaction types and pure coordinate helpers.
+- Treat `ViewportState` as the camera contract.
+- Implement pan, wheel zoom, semantic zoom band orientation, and rectangular mock lasso on the existing DOM `TerrainCanvas`.
+- Keep the DOM world origin aligned with the visible canvas center so fixture positions and camera math share the same coordinate space.
+- Add a transient centered selection action card after lasso as a product interaction proof before implementing real Region Explainer or Markdown export.
+- Render simple SVG relation lines from existing `TerrainScene.relations` under node cards. This is only an orientation layer and does not replace the future graph layout/rendering spike.
+- Make relation lines selectable in Pointer mode so the inspector can show existing relation metadata without adding graph analysis or AI interpretation.
+- Keep PixiJS as the next renderer spike candidate once the interaction contract proves useful.
+
+This keeps the P1 change small while preserving the option to replace the DOM adapter with PixiJS later.
+
 ## Rejected Approaches
 
 - Full 3D renderer:

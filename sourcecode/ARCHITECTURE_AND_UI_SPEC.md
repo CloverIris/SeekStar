@@ -593,9 +593,9 @@ The intended tone is dark observatory, cognitive cartography, and blue-accented 
 
 ## 9.1 Top Bar
 
-P0 uses an integrated desktop title bar plus an application stage bar.
+P0 uses an integrated desktop title bar, a central map workbench, and a bottom command composer.
 
-The native Windows title frame should be hidden through Electron-supported title bar customization. Window controls should remain native where possible. The application title bar may show lightweight navigation and menu labels, while the stage bar holds the active exploration universe, command input, current layer, and job state.
+The native Windows title frame should be hidden through Electron-supported title bar customization. Window controls should remain native where possible. The application title bar may show lightweight navigation and menu labels, while the workbench header holds the active exploration universe, current layer, and job state. The command composer lives at the bottom of the workbench and routes intent; it must not become a chat-first surface.
 
 ### Title bar identity
 
@@ -613,15 +613,14 @@ SeekStar  AI Explorer lens
 
 Visual rules are defined in `UI_STYLE_GUIDE.md` under **Title Bar Brand**.
 
-Stage bar must include:
+Workbench header must include:
 
-* command/search input;
 * current seed;
 * breadcrumb;
 * Agent job indicator;
 * settings.
 
-Search input placeholder should not pressure users to be precise.
+Command composer placeholder should not pressure users to be precise.
 
 Recommended placeholder:
 “输入一个方向、问题、词语、链接，或在当前星图中搜索”
