@@ -13,6 +13,7 @@ import { LocateFixed, Maximize2, RotateCcw } from "lucide-react";
 import "pixi.js/unsafe-eval";
 import { Application, Container, Graphics, Rectangle, Text } from "pixi.js";
 import {
+  createTerrainPixiProjection,
   type CanvasPoint,
   type CanvasTool,
   type LassoDraft,
@@ -23,7 +24,7 @@ import {
   screenToWorld,
   selectNodesInRect,
   zoomViewportAtScreenPoint,
-} from "../canvas/interaction";
+} from "@seekstar/constellation-engine";
 
 interface TerrainCanvasProps {
   activeTool: CanvasTool;
@@ -64,7 +65,6 @@ interface HoverPreviewState {
 }
 
 const macroLayerIds = new Set<LayerId>(["L-3", "L-2", "L-1", "L0"]);
-const candidateStatuses = new Set<ScoutObservation["status"]>(["pending", "observed", "source_candidate", "failed"]);
 
 export function TerrainCanvas({
   activeTool,
@@ -94,41 +94,9 @@ export function TerrainCanvas({
   const [dragState, setDragState] = useState<CanvasDragState | undefined>();
   const [hoverPreview, setHoverPreview] = useState<HoverPreviewState | undefined>();
   const lassoRect = dragState?.mode === "lasso" ? normalizeRect(dragState.draft.start, dragState.draft.current) : undefined;
-  const currentLayer = scene.layers.find((layer) => layer.id === viewport.layer);
-  const parentLayerId = currentLayer?.parent_layer_id;
-  const childLayerIds = currentLayer?.child_layer_ids ?? [];
-  const visibleNodes = useMemo(() => {
-    const nodesForLayer = scene.nodes.filter((node) => node.layer === viewport.layer);
-
-    return nodesForLayer.length > 0 ? nodesForLayer : scene.nodes;
-  }, [scene.nodes, viewport.layer]);
-  const ghostNodes = useMemo(
-    () =>
-      scene.nodes.filter(
-        (node) =>
-          node.layer !== viewport.layer &&
-          (node.layer === parentLayerId || childLayerIds.includes(node.layer)) &&
-          !visibleNodes.some((visibleNode) => visibleNode.id === node.id),
-      ),
-    [childLayerIds, parentLayerId, scene.nodes, viewport.layer, visibleNodes],
-  );
-  const renderedNodes = useMemo(() => [...ghostNodes, ...visibleNodes], [ghostNodes, visibleNodes]);
-  const visibleNodeIds = useMemo(() => new Set(visibleNodes.map((node) => node.id)), [visibleNodes]);
-  const renderedNodeIds = useMemo(() => new Set(renderedNodes.map((node) => node.id)), [renderedNodes]);
-  const visibleRelations = useMemo(
-    () => scene.relations.filter((relation) => renderedNodeIds.has(relation.from) && renderedNodeIds.has(relation.to)),
-    [renderedNodeIds, scene.relations],
-  );
-  const candidateObservations = useMemo(
-    () =>
-      (scene.scout_observations ?? []).filter(
-        (observation) =>
-          observation.layer === viewport.layer &&
-          observation.position_hint &&
-          candidateStatuses.has(observation.status) &&
-          observation.status !== "converted",
-      ),
-    [scene.scout_observations, viewport.layer],
+  const { candidateObservations, renderedNodes, visibleNodes, visibleNodeIds, visibleRelations } = useMemo(
+    () => createTerrainPixiProjection(scene, viewport),
+    [scene, viewport],
   );
 
   useEffect(() => {
@@ -584,26 +552,28 @@ function renderPixiScene({
 }
 
 function destroyPixiApplication(app: Application): void {
-  const canvas = app.canvas;
   const destroyableApp = app as Application & {
+    destroy?: (rendererDestroyOptions?: false, options?: { children?: boolean }) => void;
     stop?: () => void;
-    ticker?: { destroy: () => void };
+    renderer?: Application["renderer"] & { canvas?: HTMLCanvasElement };
+    stage?: Application["stage"];
   };
+  const canvas = destroyableApp.renderer?.canvas;
 
-  destroyableApp.stop?.();
-  destroyableApp.ticker?.destroy();
-  app.stage.destroy({ children: true });
-  app.renderer.destroy({ removeView: true });
-  canvas.remove();
+  try {
+    destroyableApp.stop?.();
+    destroyableApp.destroy?.(false, { children: true });
+  } catch (error) {
+    console.warn("[SeekStar] Pixi cleanup skipped after renderer teardown.", error);
+  } finally {
+    canvas?.remove();
+  }
 }
 
 function drawPixiBackground(stage: Container, bounds: DOMRect): void {
-  const background = new Graphics();
   const grid = new Graphics();
   const width = Math.max(1, bounds.width);
   const height = Math.max(1, bounds.height);
-
-  background.rect(0, 0, width, height).fill({ color: 0x070b12, alpha: 0.42 });
 
   for (let x = 0; x <= width; x += 48) {
     grid.moveTo(x, 0).lineTo(x, height);
@@ -613,8 +583,8 @@ function drawPixiBackground(stage: Container, bounds: DOMRect): void {
     grid.moveTo(0, y).lineTo(width, y);
   }
 
-  grid.stroke({ color: 0x6e9fff, alpha: 0.035, width: 1 });
-  stage.addChild(background, grid);
+  grid.stroke({ color: 0x6e9fff, alpha: 0.028, width: 1 });
+  stage.addChild(grid);
 }
 
 function createRelationLine({

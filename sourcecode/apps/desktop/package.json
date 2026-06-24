@@ -13,6 +13,7 @@
     "clean": "node -e \"fs.rmSync('out', { recursive: true, force: true }); fs.rmSync('dist', { recursive: true, force: true })\""
   },
   "dependencies": {
+    "@seekstar/constellation-engine": "0.0.0",
     "@seekstar/core-schema": "0.0.0",
     "lucide-react": "^1.21.0",
     "pixi.js": "^8.19.0",

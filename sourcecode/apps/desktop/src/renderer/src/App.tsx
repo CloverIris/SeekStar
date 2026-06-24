@@ -1,5 +1,4 @@
 import type {
-  AgentJob,
   AgentJobStatus,
   CartographerOutput,
   ExplorationTab,
@@ -8,11 +7,24 @@ import type {
   ScoutPlan,
   SourceState,
   SourceRef,
+  TabRecord,
   TerrainNode,
   TerrainRelation,
   TerrainScene,
+  WorkspaceFolder,
 } from "@seekstar/core-schema";
-import type { ChangeEvent, FormEvent, KeyboardEvent, ReactElement, RefObject } from "react";
+import {
+  DEFAULT_DOMAIN_LEXICON_ID,
+  DEFAULT_DOMAIN_LEXICONS,
+  cloneDomainLexicons,
+  type CanvasTool,
+  type DomainLexicon,
+  type DomainLexiconTerm,
+  type SourceIngestionInput,
+} from "@seekstar/constellation-engine";
+import type { SeekStarSettings } from "../../main/appSettingsStore";
+import type { TabRuntimeSnapshot } from "../../main/tabRuntimeManager";
+import type { ChangeEvent, DragEvent, FormEvent, KeyboardEvent, ReactElement, RefObject } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -20,13 +32,22 @@ import {
   Brush,
   Circle,
   Compass,
+  Copy,
+  ExternalLink,
+  Folder,
+  FolderPlus,
   Hand,
   Lasso,
   MousePointer2,
+  PanelLeftOpen,
+  Pin,
   Plus,
+  RefreshCw,
   Search,
   Settings,
   Sparkles,
+  Star,
+  Trash2,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -35,28 +56,27 @@ import { SearchResultsPanel } from "./components/SearchResultsPanel";
 import { SidebarToggleButton } from "./components/SidebarToggleButton";
 import { TitleBarMenus, type AppMenuId } from "./components/TitleBarMenus";
 import { TerrainCanvas } from "./components/TerrainCanvas";
-import { resolveZoomForLayer } from "./canvas/interaction";
-import type { CanvasTool } from "./canvas/interaction";
 import {
-  completeMockCartographerJob,
-  createMockCartographerJob,
-  enqueueMockCartographerJob,
-  type MockCartographerMode,
-  updateMockCartographerJob,
-} from "./cartographer/mockCartographerJobs";
-import { createMockSeedScene } from "./fixtures/mockSceneFactory";
-import { unknownUnknownsDeepZoomScene } from "./fixtures/unknownUnknownsDeepZoomScene";
+  formatPersistenceStatus,
+  formatSourceState,
+  formatTimestamp,
+  getActiveLayer,
+  getActiveLayerLabel,
+  getActiveTab,
+  getAgentJobState,
+  getJobStatusCounts,
+  getRelationNodes,
+  getSourceForNode,
+  getSourceRelationsForNode,
+  getSourceStateCounts,
+  type PersistenceStatus,
+} from "./exploration/types";
+import { useExplorationSession } from "./exploration/useExplorationSession";
 import { goBack, goForward } from "./platform/windowApi";
 import { type SearchResult, searchScene } from "./search/localSceneSearch";
-import {
-  type MockRegionActionKind,
-  type MockRegionActionResult,
-  createMockRegionActionResult,
-} from "./selection/mockRegionActions";
 import { type SelectionBasketItem, createSelectionBasketItem } from "./selection/selectionBasket";
-import { type SourceIngestionInput, createSourceTerrainPatch } from "./sources/sourceTerrainAdapter";
 
-const favoriteSeeds = ["Cognitive maps", "Source trails", "Unknown unknowns"];
+const favoriteSeeds = ["Cognitive maps", "Source trails", "Domain gallery"];
 const canvasTools: Array<{ id: CanvasTool; label: string; icon: LucideIcon; disabled?: boolean }> = [
   { id: "pointer", label: "Pointer", icon: MousePointer2 },
   { id: "pan", label: "Pan", icon: Hand },
@@ -64,39 +84,43 @@ const canvasTools: Array<{ id: CanvasTool; label: string; icon: LucideIcon; disa
   { id: "brush", label: "Brush", icon: Brush, disabled: true },
 ];
 
-interface WorkspaceSnapshot {
-  version: 1;
-  active_tab_id: string;
-  scenes_by_tab_id: Record<string, TerrainScene>;
-  basket_by_tab_id: Record<string, SelectionBasketItem[]>;
-  mock_action_results_by_tab_id: Record<string, MockRegionActionResult[]>;
-  updated_at: string;
-}
-
-type PersistenceStatus = "loading" | "saved" | "saving" | "unsaved" | "unavailable" | "error";
-type FrontierDirection = "east" | "west" | "south" | "north";
-
-interface FrontierTrigger {
-  id: string;
-  direction: FrontierDirection;
-  layer: LayerId;
-  viewport: TerrainScene["viewport"];
-}
-
-interface ScoutObservationPlacement {
-  anchor: { x: number; y: number };
-  discoveryMode: NonNullable<ScoutPlan["discovery_mode"]>;
-  frontierId: string;
-  layer: LayerId;
-  radius?: number;
-}
-
 export function App(): ReactElement {
-  const initialTabId = unknownUnknownsDeepZoomScene.active_tab_id;
-  const [scenesByTabId, setScenesByTabId] = useState<Record<string, TerrainScene>>({
-    [initialTabId]: unknownUnknownsDeepZoomScene,
-  });
-  const [activeTabId, setActiveTabId] = useState(initialTabId);
+  const runtimeParams = useMemo(() => new URLSearchParams(window.location.search), []);
+  const runtimeTabId = runtimeParams.get("runtimeTabId") ?? undefined;
+  const runtimeSurface = runtimeParams.get("runtimeSurface");
+  const isDockedTabView = Boolean(runtimeTabId && runtimeSurface === "docked");
+  const isDetachedTabWindow = Boolean(runtimeTabId && !isDockedTabView);
+  const isShellWindow = !runtimeTabId;
+  const exploration = useExplorationSession({ runtimeTabId });
+  const {
+    scene,
+    activeTabId,
+    scenesByTabId,
+    basketByTabId,
+    setBasketByTabId,
+    persistenceStatus,
+    workspaceHydrated,
+    hydratedSelection,
+    syncSceneSelection,
+    syncSceneViewport,
+    handleLayerSelect: selectLayer,
+    handleExploreInCurrentTab: exploreInCurrentTab,
+    handleApplyDomainLexiconToDefaultSeek: applyDomainLexiconToDefaultSeek,
+    handleUseAsSeed: createSeedTab,
+    handleTabSelect: selectTab,
+    handleCloseTab: closeTab,
+    handleReorderTabs: reorderTabs,
+    handleBacklinkFocus: focusBacklink,
+    handleAddSource: ingestSource,
+    handleRunScoutPlan,
+    handleScoutSourceLinks,
+    handleCanvasFrontierDiscovery,
+    handleConvertScoutObservation: convertScoutObservation,
+    handleResetWorkspace: resetWorkspace,
+    handleUseSelectionAsSeed,
+    handleUseNodeAsSeed,
+  } = exploration;
+
   const [commandValue, setCommandValue] = useState("");
   const [isCommandModalOpen, setIsCommandModalOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -110,111 +134,115 @@ export function App(): ReactElement {
   const [splashVisible, setSplashVisible] = useState(true);
   const [splashFading, setSplashFading] = useState(false);
   const [activeCanvasTool, setActiveCanvasTool] = useState<CanvasTool>("pointer");
-  const [basketByTabId, setBasketByTabId] = useState<Record<string, SelectionBasketItem[]>>({});
-  const [mockActionResultsByTabId, setMockActionResultsByTabId] = useState<Record<string, MockRegionActionResult[]>>({});
   const [isSelectionActionCardOpen, setIsSelectionActionCardOpen] = useState(false);
-  const [persistenceStatus, setPersistenceStatus] = useState<PersistenceStatus>("loading");
-  const [workspaceHydrated, setWorkspaceHydrated] = useState(false);
+  const [tabRuntimeSnapshot, setTabRuntimeSnapshot] = useState<TabRuntimeSnapshot | undefined>();
+  const [pendingRuntimeActiveTabId, setPendingRuntimeActiveTabId] = useState<string | undefined>();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settings, setSettings] = useState<SeekStarSettings | undefined>();
+  const [storePaths, setStorePaths] = useState<Record<string, string>>({});
   const commandInputRef = useRef<HTMLInputElement>(null);
+  const dockHostRef = useRef<HTMLElement | null>(null);
   const activeTabIdRef = useRef(activeTabId);
-  const scenesByTabIdRef = useRef(scenesByTabId);
-  const jobTimersRef = useRef<Record<string, number[]>>({});
-  const frontierTimersRef = useRef<Record<string, number>>({});
-  const discoveredFrontiersRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     activeTabIdRef.current = activeTabId;
   }, [activeTabId]);
 
   useEffect(() => {
-    scenesByTabIdRef.current = scenesByTabId;
-  }, [scenesByTabId]);
-
-  useEffect(
-    () => () => {
-      Object.values(jobTimersRef.current)
-        .flat()
-        .forEach((timerId) => window.clearTimeout(timerId));
-      Object.values(frontierTimersRef.current).forEach((timerId) => window.clearTimeout(timerId));
-    },
-    [],
-  );
-
-  useEffect(() => {
     let cancelled = false;
 
-    async function loadWorkspaceSnapshot(): Promise<void> {
-      try {
-        const snapshot = await window.seekstar.workspace.loadSnapshot();
-
-        if (cancelled) {
-          return;
-        }
-
-        if (isWorkspaceSnapshot(snapshot)) {
-          const snapshotScenes = ensureDeepZoomScene(snapshot.scenes_by_tab_id);
-          const nextActiveTabId = snapshotScenes[snapshot.active_tab_id]
-            ? snapshot.active_tab_id
-            : Object.keys(snapshotScenes)[0] ?? initialTabId;
-          const nextScene = snapshotScenes[nextActiveTabId];
-
-          setActiveTabId(nextActiveTabId);
-          setScenesByTabId(snapshotScenes);
-          setBasketByTabId(snapshot.basket_by_tab_id);
-          setMockActionResultsByTabId(snapshot.mock_action_results_by_tab_id);
-          setSelectedNodeIds(nextScene?.selection.node_ids ?? []);
-          setViewportFocusNodeId(nextScene?.selection.node_ids[0]);
-        }
-
-        setPersistenceStatus("saved");
-      } catch {
-        setPersistenceStatus("error");
-      } finally {
-        if (!cancelled) {
-          setWorkspaceHydrated(true);
-        }
+    void window.seekstar.tabs.list().then((snapshot) => {
+      if (!cancelled) {
+        setTabRuntimeSnapshot(snapshot);
       }
-    }
+    });
 
-    void loadWorkspaceSnapshot();
+    const unsubscribe = window.seekstar.tabs.onChanged((snapshot) => {
+      setTabRuntimeSnapshot(snapshot);
+      if (runtimeTabId) {
+        return;
+      }
+      if (snapshot.active_tab_id !== activeTabIdRef.current) {
+        setPendingRuntimeActiveTabId(snapshot.active_tab_id);
+      }
+    });
 
     return () => {
       cancelled = true;
+      unsubscribe();
     };
-  }, [initialTabId]);
+  }, [runtimeTabId]);
 
   useEffect(() => {
-    if (!workspaceHydrated) {
+    if (!isShellWindow) {
       return undefined;
     }
 
-    const timeoutId = window.setTimeout(() => {
-      const snapshot: WorkspaceSnapshot = {
-        version: 1,
-        active_tab_id: activeTabId,
-        scenes_by_tab_id: scenesByTabId,
-        basket_by_tab_id: basketByTabId,
-        mock_action_results_by_tab_id: mockActionResultsByTabId,
-        updated_at: new Date().toISOString(),
-      };
+    if (settingsOpen) {
+      void window.seekstar.tabs.setDockBounds(undefined);
+      return undefined;
+    }
 
-      setPersistenceStatus("saving");
-      void window.seekstar.workspace
-        .saveSnapshot(snapshot)
-        .then(() => {
-          setPersistenceStatus("saved");
-        })
-        .catch(() => {
-          setPersistenceStatus("error");
+    const host = dockHostRef.current;
+
+    if (!host) {
+      return undefined;
+    }
+
+    let frameId = 0;
+
+    const syncDockBounds = (): void => {
+      window.cancelAnimationFrame(frameId);
+      frameId = window.requestAnimationFrame(() => {
+        const rect = host.getBoundingClientRect();
+
+        void window.seekstar.tabs.setDockBounds({
+          x: Math.round(rect.left),
+          y: Math.round(rect.top),
+          width: Math.max(1, Math.round(rect.width)),
+          height: Math.max(1, Math.round(rect.height)),
         });
-    }, 650);
+      });
+    };
 
-    setPersistenceStatus("unsaved");
+    const resizeObserver = new ResizeObserver(syncDockBounds);
+    resizeObserver.observe(host);
+    window.addEventListener("resize", syncDockBounds);
+    syncDockBounds();
 
     return () => {
-      clearTimeout(timeoutId);
+      window.cancelAnimationFrame(frameId);
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", syncDockBounds);
+      void window.seekstar.tabs.setDockBounds(undefined);
     };
-  }, [activeTabId, basketByTabId, mockActionResultsByTabId, scenesByTabId, workspaceHydrated]);
+  }, [isShellWindow, leftSidebarCollapsed, settingsOpen, tabRuntimeSnapshot?.active_tab_id]);
+
+  useEffect(() => {
+    if (!settingsOpen) {
+      return;
+    }
+
+    void window.seekstar.settings.load().then(setSettings);
+    void window.seekstar.workspace.getStorePaths().then(setStorePaths);
+  }, [settingsOpen]);
+
+  function applySelection(result: { selectedNodeIds: string[]; focusNodeId?: string }, showSelectionActions = false): void {
+    setSelectedNodeIds(result.selectedNodeIds);
+    setSelectedRelationId(undefined);
+    setSelectedObservationId(undefined);
+    setViewportFocusNodeId(result.focusNodeId);
+    setIsSelectionActionCardOpen(result.selectedNodeIds.length > 0 && showSelectionActions);
+  }
+
+  useEffect(() => {
+    if (!workspaceHydrated || !hydratedSelection) {
+      return;
+    }
+
+    setSelectedNodeIds(hydratedSelection.selectedNodeIds);
+    setViewportFocusNodeId(hydratedSelection.focusNodeId);
+  }, [hydratedSelection, workspaceHydrated]);
 
   useEffect(() => {
     let fadeTimeoutId: number | undefined;
@@ -249,7 +277,6 @@ export function App(): ReactElement {
     };
   }, [splashFading, splashVisible]);
 
-  const scene = scenesByTabId[activeTabId] ?? unknownUnknownsDeepZoomScene;
   const activeTab = getActiveTab(scene);
   const activeLayer = getActiveLayer(scene);
   const activeLayerLabel = getActiveLayerLabel(scene);
@@ -262,113 +289,49 @@ export function App(): ReactElement {
   const selectedRelationNodes = selectedRelation ? getRelationNodes(scene, selectedRelation) : undefined;
   const highlightedNodeIds = useMemo(() => searchResults.map((result) => result.nodeId), [searchResults]);
   const activeBasketItems = basketByTabId[activeTabId] ?? [];
-  const activeMockActionResults = mockActionResultsByTabId[activeTabId] ?? [];
   const jobState = getAgentJobState(scene.agent_jobs.map((job) => job.status));
   const visibleNodeCount = scene.nodes.filter((node) => node.layer === scene.viewport.layer).length || scene.nodes.length;
+  const runtimeTabsById = useMemo(() => new Map((tabRuntimeSnapshot?.tabs ?? []).map((tab) => [tab.id, tab])), [tabRuntimeSnapshot]);
+  const folderCounts = useMemo(() => {
+    const counts = new Map<string, number>();
 
-  function syncSceneSelection(nodeIds: string[], focusNodeId?: string, showSelectionActions = false): void {
-    const focusNode = focusNodeId ? scene.nodes.find((node) => node.id === focusNodeId) : undefined;
-    const nextViewport = {
-      ...scene.viewport,
-      x: focusNode?.position_hint?.x ?? scene.viewport.x,
-      y: focusNode?.position_hint?.y ?? scene.viewport.y,
-    };
-
-    setSelectedNodeIds(nodeIds);
-    setSelectedRelationId(undefined);
-    setSelectedObservationId(undefined);
-    setViewportFocusNodeId(focusNodeId);
-    setIsSelectionActionCardOpen(nodeIds.length > 0 && showSelectionActions);
-    setScenesByTabId((current) => ({
-      ...current,
-      [activeTabId]: {
-        ...scene,
-        selection: {
-          ...scene.selection,
-          node_ids: nodeIds,
-        },
-        viewport: nextViewport,
-        tabs: scene.tabs.map((tab) =>
-          tab.id === scene.active_tab_id
-            ? {
-                ...tab,
-                viewport: nextViewport,
-              }
-            : tab,
-        ),
-      },
-    }));
-  }
-
-  function syncSceneViewport(viewport: TerrainScene["viewport"]): void {
-    const layerSelectedNodeIds = selectedNodeIds.filter((nodeId) => scene.nodes.find((node) => node.id === nodeId)?.layer === viewport.layer);
-
-    if (layerSelectedNodeIds.length !== selectedNodeIds.length) {
-      setSelectedNodeIds(layerSelectedNodeIds);
-      setSelectedRelationId(undefined);
-      setSelectedObservationId(undefined);
-      setViewportFocusNodeId(layerSelectedNodeIds[0]);
-      setIsSelectionActionCardOpen(false);
+    for (const tab of tabRuntimeSnapshot?.tabs ?? []) {
+      if (tab.folder_id) {
+        counts.set(tab.folder_id, (counts.get(tab.folder_id) ?? 0) + 1);
+      }
     }
 
-    setScenesByTabId((current) => ({
-      ...current,
-      [activeTabId]: {
-        ...scene,
-        selection: {
-          ...scene.selection,
-          node_ids: layerSelectedNodeIds,
-        },
-        viewport,
-        tabs: scene.tabs.map((tab) =>
-          tab.id === scene.active_tab_id
-            ? {
-                ...tab,
-                current_layer: viewport.layer,
-                viewport,
-              }
-            : tab,
-        ),
-      },
-    }));
+    return counts;
+  }, [tabRuntimeSnapshot]);
+  const orderedScenes = useMemo(() => {
+    const scenes = Object.values(scenesByTabId);
+    const ordered = (tabRuntimeSnapshot?.tabs ?? [])
+      .map((tab) => scenesByTabId[tab.id])
+      .filter((candidate): candidate is TerrainScene => Boolean(candidate));
+    const seenSceneIds = new Set(ordered.map((candidate) => candidate.id));
+    const leftovers = scenes.filter((candidate) => !seenSceneIds.has(candidate.id));
+
+    return [...ordered, ...leftovers];
+  }, [scenesByTabId, tabRuntimeSnapshot]);
+
+  function handleSceneSelection(nodeIds: string[], focusNodeId?: string, showSelectionActions = false): void {
+    applySelection(syncSceneSelection(nodeIds, focusNodeId), showSelectionActions);
+  }
+
+  function handleSceneViewport(viewport: TerrainScene["viewport"]): void {
+    const nextSelectedNodeIds = syncSceneViewport(viewport, selectedNodeIds);
+
+    if (nextSelectedNodeIds.length !== selectedNodeIds.length) {
+      setSelectedNodeIds(nextSelectedNodeIds);
+      setSelectedRelationId(undefined);
+      setSelectedObservationId(undefined);
+      setViewportFocusNodeId(nextSelectedNodeIds[0]);
+      setIsSelectionActionCardOpen(false);
+    }
   }
 
   function handleLayerSelect(layer: LayerId, focusNodeId?: string): void {
-    const focusNode = focusNodeId ? scene.nodes.find((node) => node.id === focusNodeId) : scene.nodes.find((node) => node.layer === layer);
-    const nextViewport = {
-      ...scene.viewport,
-      x: focusNode?.position_hint?.x ?? scene.viewport.x,
-      y: focusNode?.position_hint?.y ?? scene.viewport.y,
-      layer,
-      zoom: resolveZoomForLayer(layer),
-    };
-    const nextSelectedNodeIds = focusNode ? [focusNode.id] : [];
-
-    setSelectedNodeIds(nextSelectedNodeIds);
-    setSelectedRelationId(undefined);
-    setSelectedObservationId(undefined);
-    setViewportFocusNodeId(focusNode?.id);
-    setIsSelectionActionCardOpen(false);
-    setScenesByTabId((current) => ({
-      ...current,
-      [activeTabId]: {
-        ...scene,
-        selection: {
-          ...scene.selection,
-          node_ids: nextSelectedNodeIds,
-        },
-        viewport: nextViewport,
-        tabs: scene.tabs.map((tab) =>
-          tab.id === scene.active_tab_id
-            ? {
-                ...tab,
-                current_layer: layer,
-                viewport: nextViewport,
-              }
-            : tab,
-        ),
-      },
-    }));
+    applySelection(selectLayer(layer, focusNodeId));
   }
 
   function handleCommandChange(event: ChangeEvent<HTMLInputElement>): void {
@@ -381,7 +344,31 @@ export function App(): ReactElement {
     if (event.key === "Escape") {
       setIsCommandModalOpen(false);
       setCommandValue("");
+      return;
     }
+
+    if (event.key === "Enter") {
+      event.preventDefault();
+      handleAddKeywordToCurrentPage();
+    }
+  }
+
+  function handleAddKeywordToCurrentPage(): void {
+    const seed = commandValue.trim();
+
+    if (!seed) {
+      return;
+    }
+
+    const result = exploreInCurrentTab(seed);
+
+    resetCommandAndSearch();
+    resetSelection();
+
+    if (result) {
+      applySelection(result);
+    }
+    setRightSidebarCollapsed(false);
   }
 
   function handleUseAsSeed(): void {
@@ -391,22 +378,9 @@ export function App(): ReactElement {
       return;
     }
 
-    const nextScene = createMockSeedScene(seed);
-    const nextTabId = nextScene.active_tab_id;
-    setScenesByTabId((current) => ({
-      ...current,
-      [nextTabId]: nextScene,
-    }));
-    setActiveTabId(nextTabId);
-    setCommandValue("");
-    setIsCommandModalOpen(false);
-    setSearchQuery("");
-    setSearchResults([]);
-    setSelectedNodeIds([]);
-    setSelectedRelationId(undefined);
-    setSelectedObservationId(undefined);
-    setViewportFocusNodeId(undefined);
-    setIsSelectionActionCardOpen(false);
+    createSeedTab(seed);
+    resetCommandAndSearch();
+    resetSelection();
   }
 
   function handleSearchCurrentTab(): void {
@@ -422,34 +396,6 @@ export function App(): ReactElement {
     setRightSidebarCollapsed(false);
   }
 
-  async function handleScoutDirectUrl(): Promise<void> {
-    const url = commandValue.trim();
-
-    if (!isDirectHttpUrl(url)) {
-      return;
-    }
-
-    const createdAt = new Date().toISOString();
-    const plan: ScoutPlan = {
-      id: `scout-plan-direct-url-${Date.now()}`,
-      title: `Direct URL Scout: ${url}`,
-      target_node_ids: selectedNodeIds,
-      candidate_queries: [url],
-      discovery_mode: "direct_url",
-      source_type_targets: ["webpage"],
-      priority: "medium",
-      stop_conditions: ["Observe the page once and return structured intake only."],
-      deduplication_notes: ["Do not create source-backed terrain until the user confirms conversion."],
-      created_at: createdAt,
-    };
-
-    setCommandValue("");
-    setIsCommandModalOpen(false);
-    setSearchQuery("");
-    setSearchResults([]);
-    await handleRunScoutPlan(plan);
-  }
-
   function handleNodeSelect(nodeId: string): void {
     const node = scene.nodes.find((candidate) => candidate.id === nodeId);
 
@@ -458,7 +404,7 @@ export function App(): ReactElement {
       return;
     }
 
-    syncSceneSelection([nodeId], nodeId);
+    handleSceneSelection([nodeId], nodeId);
     setRightSidebarCollapsed(false);
   }
 
@@ -469,96 +415,149 @@ export function App(): ReactElement {
       return;
     }
 
+    syncSceneSelection([]);
     setSelectedNodeIds([]);
     setSelectedRelationId(relationId);
     setSelectedObservationId(undefined);
     setViewportFocusNodeId(undefined);
     setIsSelectionActionCardOpen(false);
-    setScenesByTabId((current) => ({
-      ...current,
-      [activeTabId]: {
-        ...scene,
-        selection: {
-          ...scene.selection,
-          node_ids: [],
-        },
-      },
-    }));
     setRightSidebarCollapsed(false);
   }
 
   function handleSearchResultSelect(nodeId: string): void {
-    syncSceneSelection([nodeId], nodeId);
+    handleSceneSelection([nodeId], nodeId);
     setRightSidebarCollapsed(false);
   }
 
   function handleTabSelect(tabId: string): void {
-    const nextScene = scenesByTabId[tabId];
+    const result = selectTab(tabId);
 
-    if (!nextScene) {
+    if (!result) {
       return;
     }
 
-    setActiveTabId(tabId);
-    setCommandValue("");
-    setIsCommandModalOpen(false);
-    setSearchQuery("");
-    setSearchResults([]);
-    setSelectedNodeIds(nextScene.selection.node_ids);
-    setSelectedRelationId(undefined);
-    setSelectedObservationId(undefined);
-    setViewportFocusNodeId(nextScene.selection.node_ids[0]);
+    resetCommandAndSearch();
+    applySelection(result);
     setIsSelectionActionCardOpen(false);
   }
 
-  function handleBacklinkFocus(backlink: NonNullable<ExplorationTab["parent_backlink"]>): void {
-    const originScene = scenesByTabId[backlink.tab_id];
-    const originNode = backlink.node_id ? originScene?.nodes.find((node) => node.id === backlink.node_id) : undefined;
-
-    if (!originScene) {
+  useEffect(() => {
+    if (!pendingRuntimeActiveTabId) {
       return;
     }
 
-    const nextViewport =
-      originNode?.position_hint
-        ? {
-            ...originScene.viewport,
-            x: originNode.position_hint.x,
-            y: originNode.position_hint.y,
-            layer: originNode.layer,
-            zoom: Math.max(originScene.viewport.zoom, 1.35),
-          }
-        : originScene.viewport;
+    if (pendingRuntimeActiveTabId === activeTabId) {
+      setPendingRuntimeActiveTabId(undefined);
+      return;
+    }
 
-    setScenesByTabId((current) => ({
-      ...current,
-      [backlink.tab_id]: {
-        ...originScene,
-        selection: {
-          ...originScene.selection,
-          node_ids: originNode ? [originNode.id] : originScene.selection.node_ids,
-        },
-        viewport: nextViewport,
-        tabs: originScene.tabs.map((tab) =>
-          tab.id === originScene.active_tab_id
-            ? {
-                ...tab,
-                current_layer: nextViewport.layer,
-                viewport: nextViewport,
-              }
-            : tab,
-        ),
-      },
-    }));
-    setActiveTabId(backlink.tab_id);
-    setCommandValue("");
-    setIsCommandModalOpen(false);
-    setSearchQuery("");
-    setSearchResults([]);
-    setSelectedNodeIds(originNode ? [originNode.id] : originScene.selection.node_ids);
-    setSelectedRelationId(undefined);
-    setSelectedObservationId(undefined);
-    setViewportFocusNodeId(originNode?.id);
+    if (!scenesByTabId[pendingRuntimeActiveTabId]) {
+      return;
+    }
+
+    const result = selectTab(pendingRuntimeActiveTabId);
+
+    if (!result) {
+      return;
+    }
+
+    resetCommandAndSearch();
+    applySelection(result);
+    setIsSelectionActionCardOpen(false);
+    setPendingRuntimeActiveTabId(undefined);
+  }, [activeTabId, pendingRuntimeActiveTabId, scenesByTabId, selectTab]);
+
+  async function handleTabClose(tabId: string): Promise<void> {
+    const result = await closeTab(tabId);
+
+    if (!result) {
+      return;
+    }
+
+    resetCommandAndSearch();
+    applySelection(result);
+    setIsSelectionActionCardOpen(false);
+  }
+
+  async function handleTabRefresh(tabId: string): Promise<void> {
+    const snapshot = await window.seekstar.tabs.refresh(tabId);
+    setTabRuntimeSnapshot(snapshot);
+  }
+
+  async function handleTabPin(tabId: string): Promise<void> {
+    setTabRuntimeSnapshot(await window.seekstar.tabs.togglePin(tabId));
+  }
+
+  async function handleTabFavorite(tabId: string): Promise<void> {
+    setTabRuntimeSnapshot(await window.seekstar.tabs.toggleFavorite(tabId));
+  }
+
+  async function handleTabCopyCrashLog(tabId: string): Promise<void> {
+    await window.seekstar.tabs.copyCrashLog(tabId);
+  }
+
+  async function handleTabFolderAssign(tabId: string, folderId?: string): Promise<void> {
+    setTabRuntimeSnapshot(await window.seekstar.tabs.assignFolder(tabId, folderId));
+  }
+
+  async function handleTabDetach(tabId: string): Promise<void> {
+    setTabRuntimeSnapshot(await window.seekstar.tabs.detach(tabId));
+  }
+
+  async function handleTabReorder(sourceTabId: string, targetTabId: string): Promise<void> {
+    await reorderTabs(sourceTabId, targetTabId);
+    setTabRuntimeSnapshot(await window.seekstar.tabs.list());
+  }
+
+  async function handleSettingsSave(nextSettings: SeekStarSettings): Promise<void> {
+    setSettings(await window.seekstar.settings.save(nextSettings));
+  }
+
+  async function handleSettingsApplyDomainLexicon(nextSettings: SeekStarSettings): Promise<void> {
+    const savedSettings = await window.seekstar.settings.save(nextSettings);
+    const result = applyDomainLexiconToDefaultSeek(savedSettings.domain_lexicons, savedSettings.active_domain_lexicon_id);
+
+    setSettings(savedSettings);
+    resetCommandAndSearch();
+    applySelection(result);
+    setIsSelectionActionCardOpen(false);
+    setRightSidebarCollapsed(false);
+    setTabRuntimeSnapshot(await window.seekstar.tabs.list());
+  }
+
+  async function handleFolderCreate(): Promise<void> {
+    const title = window.prompt("Folder name");
+
+    if (!title?.trim()) {
+      return;
+    }
+
+    setTabRuntimeSnapshot(await window.seekstar.tabs.createFolder(title.trim()));
+  }
+
+  async function handleFolderDelete(folderId: string): Promise<void> {
+    setTabRuntimeSnapshot(await window.seekstar.tabs.deleteFolder(folderId));
+  }
+
+  async function handleWorkspaceRename(): Promise<void> {
+    const title = window.prompt("Workspace name", tabRuntimeSnapshot?.workspace_name ?? "SeekStar local workspace");
+
+    if (!title?.trim()) {
+      return;
+    }
+
+    setTabRuntimeSnapshot(await window.seekstar.tabs.renameWorkspace(title.trim()));
+  }
+
+  function handleBacklinkFocus(backlink: NonNullable<ExplorationTab["parent_backlink"]>): void {
+    const result = focusBacklink(backlink);
+
+    if (!result) {
+      return;
+    }
+
+    resetCommandAndSearch();
+    applySelection(result);
     setIsSelectionActionCardOpen(false);
     setRightSidebarCollapsed(false);
   }
@@ -569,11 +568,24 @@ export function App(): ReactElement {
   }
 
   function handleClearSelection(): void {
-    syncSceneSelection([]);
-    setSelectedRelationId(undefined);
-    setSelectedObservationId(undefined);
+    handleSceneSelection([]);
     setSearchQuery("");
     setSearchResults([]);
+    setIsSelectionActionCardOpen(false);
+  }
+
+  function resetCommandAndSearch(): void {
+    setCommandValue("");
+    setIsCommandModalOpen(false);
+    setSearchQuery("");
+    setSearchResults([]);
+  }
+
+  function resetSelection(): void {
+    setSelectedNodeIds([]);
+    setSelectedRelationId(undefined);
+    setSelectedObservationId(undefined);
+    setViewportFocusNodeId(undefined);
     setIsSelectionActionCardOpen(false);
   }
 
@@ -613,468 +625,44 @@ export function App(): ReactElement {
     }));
   }
 
-  function handleRunBasketAction(item: SelectionBasketItem, kind: MockRegionActionKind): void {
-    const nodes = item.nodeIds.map((nodeId) => scene.nodes.find((node) => node.id === nodeId)).filter((node): node is TerrainNode => Boolean(node));
-
-    if (kind === "explain") {
-      handleRunCartographerJob("region_explainer", nodes);
-      return;
-    }
-
-    if (kind === "questions") {
-      handleRunCartographerJob("question_generator", nodes);
-      return;
-    }
-
-    if (kind === "learning_path") {
-      handleRunCartographerJob("learning_path_mapper", nodes);
-      return;
-    }
-
-    const result = createMockRegionActionResult(item, kind);
-
-    setMockActionResultsByTabId((current) => ({
-      ...current,
-      [activeTabId]: [result, ...(current[activeTabId] ?? [])],
-    }));
-    setRightSidebarCollapsed(false);
+  function handleUseSelectionAsSeedTab(): void {
+    handleUseSelectionAsSeed(selectedNodes);
+    resetCommandAndSearch();
+    resetSelection();
   }
 
-  function handleRunSelectionAction(kind: MockRegionActionKind): void {
-    const item = createActiveSelectionBasketItem();
-
-    if (!item) {
-      return;
-    }
-
-    if (kind === "explain") {
-      handleRunCartographerJob("region_explainer", selectedNodes);
-      setIsSelectionActionCardOpen(false);
-      return;
-    }
-
-    if (kind === "questions") {
-      handleRunCartographerJob("question_generator", selectedNodes);
-      setIsSelectionActionCardOpen(false);
-      return;
-    }
-
-    if (kind === "learning_path") {
-      handleRunCartographerJob("learning_path_mapper", selectedNodes);
-      setIsSelectionActionCardOpen(false);
-      return;
-    }
-
-    const result = createMockRegionActionResult(item, kind);
-
-    setMockActionResultsByTabId((current) => ({
-      ...current,
-      [activeTabId]: [result, ...(current[activeTabId] ?? [])],
-    }));
-    setRightSidebarCollapsed(false);
-    setIsSelectionActionCardOpen(false);
-  }
-
-  function handleRunCartographerJob(mode: MockCartographerMode, targetNodes: TerrainNode[]): void {
-    const draft = createMockCartographerJob(scene, mode, targetNodes);
-
-    if (!draft) {
-      return;
-    }
-
-    setScenesByTabId((current) => ({
-      ...current,
-      [activeTabId]: enqueueMockCartographerJob(current[activeTabId] ?? scene, draft.job),
-    }));
-    setSelectedRelationId(undefined);
-    setSearchQuery("");
-    setSearchResults([]);
-    setIsSelectionActionCardOpen(false);
-    setRightSidebarCollapsed(false);
-    scheduleMockCartographerLifecycle(activeTabId, draft.job.id);
-  }
-
-  function handleRetryCartographerJob(job: AgentJob): void {
-    const targetScene = scenesByTabId[job.tab_id];
-
-    if (!targetScene || !isMockCartographerMode(job.mode)) {
-      return;
-    }
-
-    const targetNodes = (job.target_node_ids ?? [])
-      .map((nodeId) => targetScene.nodes.find((node) => node.id === nodeId))
-      .filter((node): node is TerrainNode => Boolean(node));
-    const draft = createMockCartographerJob(targetScene, job.mode, targetNodes);
-
-    if (!draft) {
-      return;
-    }
-
-    setScenesByTabId((current) => ({
-      ...current,
-      [job.tab_id]: enqueueMockCartographerJob(current[job.tab_id] ?? targetScene, draft.job),
-    }));
-    scheduleMockCartographerLifecycle(job.tab_id, draft.job.id);
-    setRightSidebarCollapsed(false);
-  }
-
-  function scheduleMockCartographerLifecycle(tabId: string, jobId: string): void {
-    clearJobTimers(jobId);
-
-    const timerIds = [
-      window.setTimeout(() => {
-        updateCartographerJob(tabId, jobId, {
-          status: "running",
-          progress: 0.34,
-        });
-      }, 320),
-      window.setTimeout(() => {
-        updateCartographerJob(tabId, jobId, {
-          status: "running",
-          progress: 0.72,
-        });
-      }, 820),
-      window.setTimeout(() => {
-        completeCartographerJob(tabId, jobId);
-      }, 1350),
-    ];
-
-    jobTimersRef.current[jobId] = timerIds;
-  }
-
-  function clearJobTimers(jobId: string): void {
-    const timerIds = jobTimersRef.current[jobId] ?? [];
-    timerIds.forEach((timerId) => window.clearTimeout(timerId));
-    delete jobTimersRef.current[jobId];
-  }
-
-  function updateCartographerJob(tabId: string, jobId: string, patch: Partial<AgentJob>): void {
-    setScenesByTabId((current) => {
-      const targetScene = current[tabId];
-
-      if (!targetScene) {
-        return current;
-      }
-
-      const job = targetScene.agent_jobs.find((candidate) => candidate.id === jobId);
-
-      if (!job || job.status === "cancelled" || job.status === "failed" || job.status === "completed") {
-        return current;
-      }
-
-      return {
-        ...current,
-        [tabId]: updateMockCartographerJob(targetScene, jobId, patch),
-      };
-    });
-  }
-
-  function completeCartographerJob(tabId: string, jobId: string): void {
-    clearJobTimers(jobId);
-
-    let nextSelectedNodeIds: string[] | undefined;
-    let nextFocusNodeId: string | undefined;
-
-    setScenesByTabId((current) => {
-      const targetScene = current[tabId];
-
-      if (!targetScene) {
-        return current;
-      }
-
-      const run = completeMockCartographerJob(targetScene, jobId);
-
-      if (!run) {
-        return current;
-      }
-
-      const focusNode = run.focusNodeId ? run.scene.nodes.find((node) => node.id === run.focusNodeId) : undefined;
-      const nextViewport = focusNode?.position_hint
-        ? {
-            ...run.scene.viewport,
-            x: focusNode.position_hint.x,
-            y: focusNode.position_hint.y,
-            layer: focusNode.layer,
-            zoom: Math.max(run.scene.viewport.zoom, 1.18),
-          }
-        : run.scene.viewport;
-      const nextScene: TerrainScene = {
-        ...run.scene,
-        selection: {
-          ...run.scene.selection,
-          node_ids: focusNode ? [focusNode.id] : run.scene.selection.node_ids,
-        },
-        viewport: nextViewport,
-        tabs: run.scene.tabs.map((tab) =>
-          tab.id === run.scene.active_tab_id
-            ? {
-                ...tab,
-                current_layer: nextViewport.layer,
-                viewport: nextViewport,
-              }
-            : tab,
-        ),
-      };
-
-      nextSelectedNodeIds = nextScene.selection.node_ids;
-      nextFocusNodeId = focusNode?.id;
-
-      return {
-        ...current,
-        [tabId]: nextScene,
-      };
-    });
-
-    if (activeTabIdRef.current === tabId && nextSelectedNodeIds) {
-      setSelectedNodeIds(nextSelectedNodeIds);
-      setSelectedRelationId(undefined);
-      setViewportFocusNodeId(nextFocusNodeId);
-    }
-  }
-
-  function handleCancelCartographerJob(job: AgentJob): void {
-    clearJobTimers(job.id);
-    updateCartographerJob(job.tab_id, job.id, {
-      status: "cancelled",
-      progress: 1,
-    });
-  }
-
-  function handleFailCartographerJob(job: AgentJob): void {
-    clearJobTimers(job.id);
-    updateCartographerJob(job.tab_id, job.id, {
-      status: "failed",
-      progress: 1,
-      error_message: "Mock cartographer failure for lifecycle testing. No terrain patch was applied.",
-    });
-  }
-
-  function handleUseSelectionAsSeed(): void {
-    if (selectedNodes.length === 0) {
-      return;
-    }
-
-    const seedTitle =
-      selectedNodes.length === 1
-        ? selectedNodes[0].title
-        : `${selectedNodes[0].title} + ${selectedNodes.length - 1} nearby`;
-    const originNode = selectedNodes[0];
-    const originSource = getSourceForNode(scene, originNode);
-    const nextScene = createMockSeedScene(seedTitle, {
-      sourceMode: "selection",
-      parentBacklink: {
-        tab_id: activeTabId,
-        node_id: originNode.id,
-        source_id: originSource?.id ?? originNode.source_id,
-        label: selectedNodes.length === 1 ? `Selection: ${originNode.title}` : `Region: ${seedTitle}`,
-        excerpt: selectedNodes.map((node) => node.title).join(", "),
-      },
-    });
-    const nextTabId = nextScene.active_tab_id;
-
-    setScenesByTabId((current) => ({
-      ...current,
-      [nextTabId]: nextScene,
-    }));
-    setActiveTabId(nextTabId);
-    setCommandValue("");
-    setIsCommandModalOpen(false);
-    setSearchQuery("");
-    setSearchResults([]);
-    setSelectedNodeIds([]);
-    setSelectedRelationId(undefined);
-    setViewportFocusNodeId(undefined);
-    setIsSelectionActionCardOpen(false);
-  }
-
-  function handleUseNodeAsSeed(node: TerrainNode): void {
-    const source = getSourceForNode(scene, node);
-    const seedTitle = node.title.trim() || source?.title || "Source-backed seed";
-    const excerpt = node.quote ?? node.summary ?? source?.snippet;
-    const createdFromLabel = node.created_from?.label ?? node.semantic_breadcrumb?.join(" / ");
-    const nextScene = createMockSeedScene(seedTitle, {
-      sourceMode: "selection",
-      parentBacklink: {
-        tab_id: activeTabId,
-        node_id: node.id,
-        source_id: source?.id ?? node.source_id,
-        label: source ? `Source: ${source.title}` : createdFromLabel ? `Deep zoom: ${createdFromLabel}` : `Node: ${node.title}`,
-        excerpt,
-      },
-    });
-    const nextTabId = nextScene.active_tab_id;
-
-    setScenesByTabId((current) => ({
-      ...current,
-      [nextTabId]: nextScene,
-    }));
-    setActiveTabId(nextTabId);
-    setCommandValue("");
-    setIsCommandModalOpen(false);
-    setSearchQuery("");
-    setSearchResults([]);
-    setSelectedNodeIds([]);
-    setSelectedRelationId(undefined);
-    setViewportFocusNodeId(undefined);
-    setIsSelectionActionCardOpen(false);
+  function handleUseNodeAsSeedTab(node: TerrainNode): void {
+    handleUseNodeAsSeed(node, getSourceForNode(scene, node));
+    resetCommandAndSearch();
+    resetSelection();
   }
 
   function handleAddSource(input: SourceIngestionInput): void {
-    const patch = createSourceTerrainPatch(input, scene);
-    const sourceNode = patch.nodes[0];
-    const nextViewport = sourceNode.position_hint
-      ? {
-          ...scene.viewport,
-          x: sourceNode.position_hint.x,
-          y: sourceNode.position_hint.y,
-          layer: "L2",
-          zoom: Math.max(scene.viewport.zoom, 1.35),
-        }
-      : scene.viewport;
-
-    setScenesByTabId((current) => ({
-      ...current,
-      [activeTabId]: {
-        ...scene,
-        sources: [...scene.sources, patch.source],
-        nodes: [...scene.nodes, ...patch.nodes],
-        relations: [...scene.relations, ...patch.relations],
-        viewport: nextViewport,
-        tabs: scene.tabs.map((tab) =>
-          tab.id === scene.active_tab_id
-            ? {
-                ...tab,
-                current_layer: nextViewport.layer,
-                node_ids: [...tab.node_ids, ...patch.nodes.map((node) => node.id)],
-                relation_ids: [...tab.relation_ids, ...patch.relations.map((relation) => relation.id)],
-                source_ids: [...tab.source_ids, patch.source.id],
-                updated_at: patch.nodes[0].updated_at,
-                viewport: nextViewport,
-              }
-            : tab,
-        ),
-        metadata: {
-          ...scene.metadata,
-          updated_at: patch.nodes[0].updated_at,
-        },
-      },
-    }));
-    setSelectedNodeIds([sourceNode.id]);
-    setSelectedRelationId(undefined);
-    setSelectedObservationId(undefined);
-    setViewportFocusNodeId(sourceNode.id);
+    const result = ingestSource(input);
+    applySelection(result);
     setSearchQuery("");
     setSearchResults([]);
     setIsSelectionActionCardOpen(false);
     setRightSidebarCollapsed(false);
   }
 
-  async function handleRunScoutPlan(plan: ScoutPlan, placement?: ScoutObservationPlacement): Promise<void> {
-    const updatedAt = new Date().toISOString();
-    const tabId = activeTabIdRef.current;
-    const currentScene = scenesByTabIdRef.current[tabId] ?? scene;
+  async function handleRunScoutPlanWithUi(
+    plan: ScoutPlan,
+    placement?: import("./exploration/types").ScoutObservationPlacement,
+  ): Promise<void> {
+    const observation = await handleRunScoutPlan(plan, placement);
 
-    try {
-      const runResult = await window.seekstar.scout.runPlan(tabId, plan);
-      const observations = placement
-        ? positionAnchoredScoutObservations(runResult.observations, currentScene, placement)
-        : runResult.observations;
-
-      setScenesByTabId((current) => ({
-        ...current,
-        [tabId]: {
-          ...(current[tabId] ?? currentScene),
-          scout_observations: [...((current[tabId] ?? currentScene).scout_observations ?? []), ...observations],
-          viewport: placement
-            ? {
-                ...(current[tabId] ?? currentScene).viewport,
-                x: placement.anchor.x,
-                y: placement.anchor.y,
-                layer: placement.layer,
-                zoom: Math.max((current[tabId] ?? currentScene).viewport.zoom, 1.2),
-              }
-            : (current[tabId] ?? currentScene).viewport,
-          metadata: {
-            ...(current[tabId] ?? currentScene).metadata,
-            updated_at: updatedAt,
-            description: `${(current[tabId] ?? currentScene).metadata.title} now includes ${runResult.adapter} Scout observations. Observations are not source-backed terrain.`,
-          },
-        },
-      }));
-      if (placement && observations[0]) {
-        setSelectedObservationId(observations[0].id);
-        setSelectedNodeIds([]);
-        setSelectedRelationId(undefined);
-        setViewportFocusNodeId(undefined);
-      }
-    } catch (error) {
-      const failedObservation: ScoutObservation = {
-        id: `observation-${plan.id}-adapter-failed-${Date.now()}`,
-        tab_id: tabId,
-        plan_id: plan.id,
-        status: "failed",
-        adapter: "playwright",
-        discovery_mode: plan.discovery_mode,
-        query: plan.candidate_queries[0] ?? plan.title,
-        title: `Scout adapter failed: ${plan.title}`,
-        target_node_ids: plan.target_node_ids,
-        failure_reason: error instanceof Error ? error.message : "Scout adapter failed before producing observations.",
-        created_at: updatedAt,
-        updated_at: updatedAt,
-      };
-      const observations = placement
-        ? positionAnchoredScoutObservations([failedObservation], currentScene, placement)
-        : [failedObservation];
-
-      setScenesByTabId((current) => ({
-        ...current,
-        [tabId]: {
-          ...(current[tabId] ?? currentScene),
-          scout_observations: [...((current[tabId] ?? currentScene).scout_observations ?? []), ...observations],
-          metadata: {
-            ...(current[tabId] ?? currentScene).metadata,
-            updated_at: updatedAt,
-            description: `${(current[tabId] ?? currentScene).metadata.title} received a failed Scout adapter observation.`,
-          },
-        },
-      }));
-      if (placement && observations[0]) {
-        setSelectedObservationId(observations[0].id);
-        setSelectedNodeIds([]);
-        setSelectedRelationId(undefined);
-        setViewportFocusNodeId(undefined);
-      }
+    if (observation) {
+      setSelectedObservationId(observation.id);
+      resetSelection();
     }
+
     setRightSidebarCollapsed(false);
   }
 
-  async function handleScoutSourceLinks(node: TerrainNode, source: SourceRef): Promise<void> {
-    if (!source.url || node.source_state !== "source_backed") {
-      return;
-    }
-
-    const createdAt = new Date().toISOString();
-    const plan: ScoutPlan = {
-      id: `scout-plan-outlinks-${node.id}-${Date.now()}`,
-      title: `Linked frontier Scout: ${source.title}`,
-      target_node_ids: [node.id],
-      candidate_queries: [source.url],
-      discovery_mode: "page_outlinks",
-      source_type_targets: ["webpage", "article"],
-      priority: "medium",
-      stop_conditions: ["Extract candidate links only; do not create source-backed terrain automatically."],
-      deduplication_notes: [`Use source node ${node.id} as the telescope anchor for this outlink frontier.`],
-      created_at: createdAt,
-    };
-    const anchor = node.position_hint ?? { x: scene.viewport.x, y: scene.viewport.y };
-
-    await handleRunScoutPlan(plan, {
-      anchor,
-      discoveryMode: "page_outlinks",
-      frontierId: `source-outlinks-${node.id}-${Date.now()}`,
-      layer: node.layer,
-      radius: 340,
-    });
+  async function handleScoutSourceLinksWithUi(node: TerrainNode, source: SourceRef): Promise<void> {
+    await handleScoutSourceLinks(node, source);
+    setRightSidebarCollapsed(false);
   }
 
   function handleScoutObservationSelect(observationId: string): void {
@@ -1086,187 +674,55 @@ export function App(): ReactElement {
     setRightSidebarCollapsed(false);
   }
 
-  function handleCanvasFrontierDiscovery(nextViewport: TerrainScene["viewport"]): void {
-    const trigger = resolveFrontierTrigger(scene, nextViewport);
-
-    if (!trigger || discoveredFrontiersRef.current.has(trigger.id)) {
-      return;
-    }
-
-    const existingTimer = frontierTimersRef.current[trigger.id];
-
-    if (existingTimer) {
-      window.clearTimeout(existingTimer);
-    }
-
-    frontierTimersRef.current[trigger.id] = window.setTimeout(() => {
-      void runFrontierDiscovery(trigger);
-    }, 950);
-  }
-
-  async function runFrontierDiscovery(trigger: FrontierTrigger): Promise<void> {
-    if (discoveredFrontiersRef.current.has(trigger.id)) {
-      return;
-    }
-
-    discoveredFrontiersRef.current.add(trigger.id);
-    const tabId = activeTabIdRef.current;
-    const currentScene = scenesByTabIdRef.current[tabId];
-
-    if (!currentScene) {
-      return;
-    }
-
-    const createdAt = new Date().toISOString();
-    const plan = createFrontierScoutPlan(currentScene, trigger, createdAt);
-
-    try {
-      const runResult = await window.seekstar.scout.runPlan(tabId, plan);
-      const positionedObservations = positionFrontierObservations(runResult.observations, currentScene, trigger);
-
-      setScenesByTabId((current) => {
-        const targetScene = current[tabId] ?? currentScene;
-
-        return {
-          ...current,
-          [tabId]: {
-            ...targetScene,
-            scout_observations: [...(targetScene.scout_observations ?? []), ...positionedObservations],
-            metadata: {
-              ...targetScene.metadata,
-              updated_at: new Date().toISOString(),
-              description: `${targetScene.metadata.title} discovered a ${trigger.layer} ${trigger.direction} frontier through Playwright Scout observations.`,
-            },
-          },
-        };
-      });
-      setRightSidebarCollapsed(false);
-    } catch (error) {
-      const failedObservation = positionFrontierObservations(
-        [
-          {
-            id: `observation-${trigger.id}-failed-${Date.now()}`,
-            tab_id: tabId,
-            plan_id: plan.id,
-            status: "failed",
-            adapter: "playwright",
-            discovery_mode: "frontier_web_search",
-            query: plan.candidate_queries[0] ?? plan.title,
-            title: `Frontier Scout failed: ${trigger.direction}`,
-            target_node_ids: plan.target_node_ids,
-            failure_reason: error instanceof Error ? error.message : "Frontier Scout failed before producing observations.",
-            created_at: createdAt,
-            updated_at: createdAt,
-          },
-        ],
-        currentScene,
-        trigger,
-      );
-
-      setScenesByTabId((current) => {
-        const targetScene = current[tabId] ?? currentScene;
-
-        return {
-          ...current,
-          [tabId]: {
-            ...targetScene,
-            scout_observations: [...(targetScene.scout_observations ?? []), ...failedObservation],
-          },
-        };
-      });
-    }
-  }
-
   function handleConvertScoutObservation(observation: ScoutObservation): void {
-    if (observation.status !== "source_candidate" && observation.status !== "observed") {
+    const result = convertScoutObservation(observation, activeTabId);
+
+    if (!result) {
       return;
     }
 
-    const patch = createSourceTerrainPatch(
-      {
-        title: observation.title,
-        url: observation.url,
-        body: observation.snippet ?? observation.query,
-        sourceType: observation.source_type,
-        retrievedAt: observation.retrieved_at,
-        reliabilityHints: [
-          "user-confirmed Scout observation",
-          observation.adapter === "playwright"
-            ? "observed by Playwright Scout adapter"
-            : "mock Scout observation; real Playwright retrieval not connected yet",
-          `Scout status: ${observation.status.replace("_", " ")}`,
-        ],
-        tags: ["scout-observation"],
-        createdFrom: {
-          tab_id: activeTabId,
-          node_id: observation.target_node_ids[0],
-          label: `Scout observation: ${observation.title}`,
-          excerpt: observation.snippet ?? observation.query,
-        },
-        observationId: observation.id,
-      },
-      scene,
-    );
-    const sourceNode = patch.nodes[0];
-    const updatedAt = new Date().toISOString();
-    const nextViewport = sourceNode.position_hint
-      ? {
-          ...scene.viewport,
-          x: sourceNode.position_hint.x,
-          y: sourceNode.position_hint.y,
-          layer: "L2" as LayerId,
-          zoom: Math.max(scene.viewport.zoom, 1.35),
-        }
-      : scene.viewport;
-
-    setScenesByTabId((current) => ({
-      ...current,
-      [activeTabId]: {
-        ...scene,
-        sources: [...scene.sources, patch.source],
-        nodes: [...scene.nodes, ...patch.nodes],
-        relations: [...scene.relations, ...patch.relations],
-        scout_observations: (scene.scout_observations ?? []).map((candidate) =>
-          candidate.id === observation.id
-            ? {
-                ...candidate,
-                status: "converted",
-                updated_at: updatedAt,
-              }
-            : candidate,
-        ),
-        viewport: nextViewport,
-        tabs: scene.tabs.map((tab) =>
-          tab.id === scene.active_tab_id
-            ? {
-                ...tab,
-                current_layer: nextViewport.layer,
-                node_ids: [...tab.node_ids, ...patch.nodes.map((node) => node.id)],
-                relation_ids: [...tab.relation_ids, ...patch.relations.map((relation) => relation.id)],
-                source_ids: [...tab.source_ids, patch.source.id],
-                updated_at: updatedAt,
-                viewport: nextViewport,
-              }
-            : tab,
-        ),
-        metadata: {
-          ...scene.metadata,
-          updated_at: updatedAt,
-          description: `${scene.metadata.title} includes a user-confirmed Scout observation converted into source-backed terrain.`,
-        },
-      },
-    }));
-    setSelectedNodeIds([sourceNode.id]);
-    setSelectedRelationId(undefined);
-    setViewportFocusNodeId(sourceNode.id);
+    applySelection(result);
     setSearchQuery("");
     setSearchResults([]);
     setIsSelectionActionCardOpen(false);
     setRightSidebarCollapsed(false);
   }
 
+  async function handleResetWorkspace(): Promise<void> {
+    const result = await resetWorkspace();
+
+    resetCommandAndSearch();
+    applySelection(result);
+    setSelectedRelationId(undefined);
+    setSelectedObservationId(undefined);
+    setIsSelectionActionCardOpen(false);
+    setRightSidebarCollapsed(false);
+  }
+
+  async function handleAttachRuntimeTab(): Promise<void> {
+    if (!runtimeTabId) {
+      return;
+    }
+
+    await window.seekstar.tabs.attach(runtimeTabId);
+  }
+
+  async function handleCloseRuntimeTab(): Promise<void> {
+    if (!runtimeTabId) {
+      return;
+    }
+
+    await window.seekstar.tabs.close(runtimeTabId);
+  }
+
+  const appShellClass = isDockedTabView
+    ? "app-shell docked-tab-shell"
+    : isDetachedTabWindow
+      ? "app-shell tab-window-shell"
+      : "app-shell";
+
   return (
-    <main className="app-shell">
+    <main className={appShellClass}>
       {splashVisible ? (
         <div className={splashFading ? "app-splash-overlay is-fading" : "app-splash-overlay"}>
           <div className="splash-mark" aria-hidden="true">
@@ -1287,22 +743,66 @@ export function App(): ReactElement {
         </div>
       ) : null}
 
-      <WindowTitleBar
-        leftSidebarExpanded={!leftSidebarCollapsed}
-        onToggleLeftSidebar={() => setLeftSidebarCollapsed((current) => !current)}
-      />
-      <div className="desktop-shell">
-        <SidebarRail collapsed={leftSidebarCollapsed} label="Observatory" side="left">
-          <ObservatorySidebar
-            activeTabId={activeTabId}
-            activeTool={activeCanvasTool}
-            onFocusCommand={handleFocusCommand}
-            onToolSelect={setActiveCanvasTool}
-            onTabSelect={handleTabSelect}
-            scenes={Object.values(scenesByTabId)}
-          />
-        </SidebarRail>
+      {isDetachedTabWindow ? (
+        <DetachedTabTitleBar
+          activeTab={activeTab}
+          onAttach={handleAttachRuntimeTab}
+          onClose={handleCloseRuntimeTab}
+          onToggleRightSidebar={() => setRightSidebarCollapsed((current) => !current)}
+          rightSidebarExpanded={!rightSidebarCollapsed}
+        />
+      ) : isDockedTabView ? null : (
+        <WindowTitleBar
+          leftSidebarExpanded={!leftSidebarCollapsed}
+          onToggleLeftSidebar={() => setLeftSidebarCollapsed((current) => !current)}
+        />
+      )}
+      {settingsOpen && isShellWindow ? (
+        <SettingsPage
+          settings={settings}
+          storePaths={storePaths}
+          onBack={() => setSettingsOpen(false)}
+          onClearCache={() => window.seekstar.tabs.clearCache().then(setTabRuntimeSnapshot)}
+          onApplyDomainLexicon={handleSettingsApplyDomainLexicon}
+          onSave={handleSettingsSave}
+        />
+      ) : (
+        <div className={isDetachedTabWindow || isDockedTabView ? "desktop-shell detached-tab-desktop" : "desktop-shell"}>
+        {isShellWindow ? (
+          <SidebarRail collapsed={leftSidebarCollapsed} label="Observatory" side="left">
+            <ObservatorySidebar
+              activeTabId={activeTabId}
+              activeTool={activeCanvasTool}
+              onFocusCommand={handleFocusCommand}
+              folders={tabRuntimeSnapshot?.folders ?? []}
+              folderCounts={folderCounts}
+              onOpenSettings={() => setSettingsOpen(true)}
+              onTabClose={handleTabClose}
+              onTabCopyCrashLog={handleTabCopyCrashLog}
+              onTabDetach={handleTabDetach}
+              onTabFavorite={handleTabFavorite}
+              onTabFolderAssign={handleTabFolderAssign}
+              onTabPin={handleTabPin}
+              onTabRefresh={handleTabRefresh}
+              onTabReorder={handleTabReorder}
+              onToolSelect={setActiveCanvasTool}
+              onTabSelect={handleTabSelect}
+              onFolderCreate={handleFolderCreate}
+              onFolderDelete={handleFolderDelete}
+              onWorkspaceRename={handleWorkspaceRename}
+              runtimeTabsById={runtimeTabsById}
+              scenes={orderedScenes}
+              workspaceName={tabRuntimeSnapshot?.workspace_name ?? "SeekStar local workspace"}
+            />
+          </SidebarRail>
+        ) : null}
 
+        {isShellWindow ? (
+          <ShellDockWorkbench
+            activeRuntimeTab={runtimeTabsById.get(tabRuntimeSnapshot?.active_tab_id ?? activeTabId)}
+            dockHostRef={dockHostRef}
+          />
+        ) : (
         <section className="main-workbench">
           <div className="workbench-body">
             <WorkbenchHeader
@@ -1321,12 +821,15 @@ export function App(): ReactElement {
                 activeTool={activeCanvasTool}
                 focusedNodeId={viewportFocusNodeId}
                 highlightedNodeIds={highlightedNodeIds}
-                onFrontierDiscovery={handleCanvasFrontierDiscovery}
+                onFrontierDiscovery={(viewport) => {
+                  handleCanvasFrontierDiscovery(viewport);
+                  setRightSidebarCollapsed(false);
+                }}
                 onNodeSelect={handleNodeSelect}
                 onObservationSelect={handleScoutObservationSelect}
                 onRelationSelect={handleRelationSelect}
-                onSelectionChange={syncSceneSelection}
-                onViewportChange={syncSceneViewport}
+                onSelectionChange={handleSceneSelection}
+                onViewportChange={handleSceneViewport}
                 scene={scene}
                 selectedNodeIds={selectedNodeIds}
                 selectedObservationId={selectedObservationId}
@@ -1342,9 +845,8 @@ export function App(): ReactElement {
                 <SelectionActionCard
                   nodeCount={selectedNodes.length}
                   onDismiss={() => setIsSelectionActionCardOpen(false)}
-                  onRunAction={handleRunSelectionAction}
                   onSaveSelection={handleSaveSelectionToTray}
-                  onUseAsSeed={handleUseSelectionAsSeed}
+                  onUseAsSeed={handleUseSelectionAsSeedTab}
                 />
               ) : null}
             </div>
@@ -1356,7 +858,7 @@ export function App(): ReactElement {
             onCommandChange={handleCommandChange}
             onCommandFocus={() => setIsCommandModalOpen(commandValue.trim().length > 0)}
             onCommandKeyDown={handleCommandKeyDown}
-            onScoutDirectUrl={handleScoutDirectUrl}
+            onAddToCurrentPage={handleAddKeywordToCurrentPage}
             onSearchCurrentTab={handleSearchCurrentTab}
             onUseAsSeed={handleUseAsSeed}
           />
@@ -1371,29 +873,26 @@ export function App(): ReactElement {
             sourceCount={scene.sources.length}
           />
         </section>
+        )}
 
+        {!isShellWindow ? (
         <SidebarRail collapsed={rightSidebarCollapsed} label="Inspector" side="right">
           <InspectorSidebar
             activeTab={activeTab}
             basketItems={activeBasketItems}
-            mockActionResults={activeMockActionResults}
             onAddSource={handleAddSource}
             onClearBasket={handleClearBasket}
             onClearSelection={handleClearSelection}
-            onCancelCartographerJob={handleCancelCartographerJob}
             onConvertScoutObservation={handleConvertScoutObservation}
-            onFailCartographerJob={handleFailCartographerJob}
             onRemoveBasketItem={handleRemoveBasketItem}
-            onRunBasketAction={handleRunBasketAction}
-            onRunCartographerJob={handleRunCartographerJob}
-            onRunScoutPlan={handleRunScoutPlan}
-            onScoutSourceLinks={handleScoutSourceLinks}
-            onRetryCartographerJob={handleRetryCartographerJob}
+            onRunScoutPlan={handleRunScoutPlanWithUi}
+            onScoutSourceLinks={handleScoutSourceLinksWithUi}
             onLayerSelect={handleLayerSelect}
             onSaveSelectionToTray={handleSaveSelectionToTray}
             onBacklinkFocus={handleBacklinkFocus}
+            onResetWorkspace={handleResetWorkspace}
             onSearchResultSelect={handleSearchResultSelect}
-            onUseNodeAsSeed={handleUseNodeAsSeed}
+            onUseNodeAsSeed={handleUseNodeAsSeedTab}
             scene={scene}
             searchQuery={searchQuery}
             searchResults={searchResults}
@@ -1404,8 +903,39 @@ export function App(): ReactElement {
             selectedRelationNodes={selectedRelationNodes}
           />
         </SidebarRail>
-      </div>
+        ) : null}
+        </div>
+      )}
     </main>
+  );
+}
+
+function ShellDockWorkbench({
+  activeRuntimeTab,
+  dockHostRef,
+}: {
+  activeRuntimeTab?: TabRecord;
+  dockHostRef: RefObject<HTMLElement | null>;
+}): ReactElement {
+  return (
+    <section className="main-workbench shell-dock-workbench" aria-label="Docked telescope tab host">
+      <div className="shell-dock-toolbar">
+        <div>
+          <span>Active telescope tab</span>
+          <strong>{activeRuntimeTab?.title ?? "Loading tab runtime"}</strong>
+        </div>
+      </div>
+      <section className="tab-dock-host" ref={dockHostRef}>
+        <div className="tab-dock-placeholder" aria-hidden="true">
+          <strong>{activeRuntimeTab?.runtime_status === "crashed" ? "Tab crashed" : "Docking telescope runtime"}</strong>
+          <span>
+            {activeRuntimeTab?.runtime_status === "crashed"
+              ? "Use the tab row actions to copy the crash log or refresh the tab."
+              : "The active tab is hosted in its own Electron WebContentsView."}
+          </span>
+        </div>
+      </section>
+    </section>
   );
 }
 
@@ -1426,6 +956,600 @@ function SidebarRail({
     <aside aria-label={label} className={railClass}>
       <div className="sidebar-rail-inner">{children}</div>
     </aside>
+  );
+}
+
+type SettingsSectionId = "general" | "domainLexicon" | "runtime" | "scout" | "storage" | "development";
+
+const settingsSectionMeta: Record<SettingsSectionId, { title: string; description: string }> = {
+  general: {
+    title: "General",
+    description: "Workspace status and SeekStar shell preferences.",
+  },
+  domainLexicon: {
+    title: "Domain lexicon",
+    description: "Configure the L0 field vocabulary used by the default New Seek tab.",
+  },
+  runtime: {
+    title: "Runtime",
+    description: "Default tab memory behavior and inactive cooling.",
+  },
+  scout: {
+    title: "Scout service",
+    description: "Background Playwright concurrency per app instance.",
+  },
+  storage: {
+    title: "Storage",
+    description: "Current local development store paths.",
+  },
+  development: {
+    title: "Development",
+    description: "Prototype data controls for clean iteration.",
+  },
+};
+
+const domainLexiconLanguages = [
+  { id: "en", label: "EN" },
+  { id: "zh-Hans", label: "简体" },
+  { id: "zh-Hant", label: "繁體" },
+] as const;
+
+function createSettingsDraft(settings?: SeekStarSettings): SeekStarSettings {
+  return {
+    tab_cache_max_bytes: settings?.tab_cache_max_bytes ?? 256 * 1024 * 1024,
+    inactive_grace_ms: settings?.inactive_grace_ms ?? 30 * 60 * 1000,
+    scout_concurrency: settings?.scout_concurrency ?? 2,
+    active_domain_lexicon_id: settings?.active_domain_lexicon_id ?? DEFAULT_DOMAIN_LEXICON_ID,
+    domain_lexicons: settings?.domain_lexicons ?? cloneDomainLexicons(DEFAULT_DOMAIN_LEXICONS),
+  };
+}
+
+function createUiId(prefix: string): string {
+  const randomId = typeof window.crypto?.randomUUID === "function"
+    ? window.crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  return `${prefix}-${randomId}`;
+}
+
+function SettingsPage({
+  onApplyDomainLexicon,
+  onBack,
+  onClearCache,
+  onSave,
+  settings,
+  storePaths,
+}: {
+  onApplyDomainLexicon: (settings: SeekStarSettings) => Promise<void> | void;
+  onBack: () => void;
+  onClearCache: () => Promise<unknown> | void;
+  onSave: (settings: SeekStarSettings) => void;
+  settings?: SeekStarSettings;
+  storePaths: Record<string, string>;
+}): ReactElement {
+  const [draft, setDraft] = useState<SeekStarSettings | undefined>(settings);
+  const [searchValue, setSearchValue] = useState("");
+  const [statusText, setStatusText] = useState("Ready");
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>("general");
+  const [selectedLexiconId, setSelectedLexiconId] = useState(DEFAULT_DOMAIN_LEXICON_ID);
+  const [selectedTermId, setSelectedTermId] = useState<string | undefined>();
+
+  useEffect(() => {
+    setDraft(settings);
+    setSelectedLexiconId(settings?.active_domain_lexicon_id ?? DEFAULT_DOMAIN_LEXICON_ID);
+    setSelectedTermId(undefined);
+  }, [settings]);
+
+  const cacheMb = Math.round((draft?.tab_cache_max_bytes ?? 0) / 1024 / 1024);
+  const inactiveMinutes = Math.round((draft?.inactive_grace_ms ?? 0) / 60_000);
+  const domainLexicons = draft?.domain_lexicons ?? cloneDomainLexicons(DEFAULT_DOMAIN_LEXICONS);
+  const selectedLexicon =
+    domainLexicons.find((lexicon) => lexicon.id === selectedLexiconId) ??
+    domainLexicons.find((lexicon) => lexicon.active) ??
+    domainLexicons[0];
+  const selectedTerm = selectedLexicon?.terms.find((term) => term.id === selectedTermId) ?? selectedLexicon?.terms[0];
+
+  function updateDraft(patch: Partial<SeekStarSettings>): void {
+    setDraft((current) => ({
+      ...createSettingsDraft(current),
+      ...patch,
+    }));
+  }
+
+  function updateDomainLexicons(nextLexicons: DomainLexicon[], nextActiveId?: string): void {
+    const activeId =
+      nextActiveId ??
+      nextLexicons.find((lexicon) => lexicon.active)?.id ??
+      nextLexicons[0]?.id ??
+      DEFAULT_DOMAIN_LEXICON_ID;
+    updateDraft({
+      active_domain_lexicon_id: activeId,
+      domain_lexicons: nextLexicons.map((lexicon) => ({
+        ...lexicon,
+        active: lexicon.id === activeId,
+        updated_at: new Date().toISOString(),
+      })),
+    });
+  }
+
+  function updateSelectedLexicon(patch: Partial<DomainLexicon>): void {
+    if (!selectedLexicon) {
+      return;
+    }
+
+    updateDomainLexicons(
+      domainLexicons.map((lexicon) => (lexicon.id === selectedLexicon.id ? { ...lexicon, ...patch } : lexicon)),
+      draft?.active_domain_lexicon_id,
+    );
+  }
+
+  function handleLexiconCreate(): void {
+    const now = new Date().toISOString();
+    const nextLexicon: DomainLexicon = {
+      id: createUiId("domain-lexicon"),
+      title: "Custom domain lexicon",
+      description: "Custom L0 vocabulary for a New Seek starting field.",
+      active: false,
+      terms: [],
+      updated_at: now,
+    };
+
+    updateDomainLexicons([...domainLexicons, nextLexicon], draft?.active_domain_lexicon_id);
+    setSelectedLexiconId(nextLexicon.id);
+    setSelectedTermId(undefined);
+  }
+
+  function handleLexiconDelete(lexiconId: string): void {
+    if (domainLexicons.length <= 1) {
+      return;
+    }
+
+    const nextLexicons = domainLexicons.filter((lexicon) => lexicon.id !== lexiconId);
+    const activeId = draft?.active_domain_lexicon_id === lexiconId ? nextLexicons[0]?.id : draft?.active_domain_lexicon_id;
+
+    updateDomainLexicons(nextLexicons, activeId);
+    setSelectedLexiconId(activeId ?? nextLexicons[0]?.id ?? DEFAULT_DOMAIN_LEXICON_ID);
+    setSelectedTermId(undefined);
+  }
+
+  function handleLexiconActivate(lexiconId: string): void {
+    updateDomainLexicons(domainLexicons, lexiconId);
+    setSelectedLexiconId(lexiconId);
+  }
+
+  function handleTermCreate(): void {
+    if (!selectedLexicon) {
+      return;
+    }
+
+    const nextTerm: DomainLexiconTerm = {
+      id: createUiId("domain-term"),
+      canonical: "New domain",
+      enabled: true,
+      labels: {
+        en: "New domain",
+        "zh-Hans": "新领域",
+        "zh-Hant": "新領域",
+      },
+      tags: [],
+    };
+
+    updateSelectedLexicon({
+      terms: [...selectedLexicon.terms, nextTerm],
+    });
+    setSelectedTermId(nextTerm.id);
+  }
+
+  function handleTermDelete(termId: string): void {
+    if (!selectedLexicon) {
+      return;
+    }
+
+    updateSelectedLexicon({
+      terms: selectedLexicon.terms.filter((term) => term.id !== termId),
+    });
+    setSelectedTermId(undefined);
+  }
+
+  function updateSelectedTerm(termId: string, patch: Partial<DomainLexiconTerm>): void {
+    if (!selectedLexicon) {
+      return;
+    }
+
+    updateSelectedLexicon({
+      terms: selectedLexicon.terms.map((term) => (term.id === termId ? { ...term, ...patch } : term)),
+    });
+  }
+
+  function updateTermLabel(term: DomainLexiconTerm, language: string, value: string): void {
+    updateSelectedTerm(term.id, {
+      labels: {
+        ...term.labels,
+        [language]: value,
+      },
+    });
+  }
+
+  async function handleClearDevelopmentData(): Promise<void> {
+    const confirmed = window.confirm("Clear SeekStar development workspace, tab runtime, and settings data? This cannot be undone.");
+
+    if (!confirmed) {
+      return;
+    }
+
+    setStatusText("Clearing development data...");
+    await window.seekstar.workspace.clearDevelopmentData();
+    window.location.reload();
+  }
+
+  async function handleClearCache(): Promise<void> {
+    setStatusText("Clearing tab cache...");
+    await onClearCache();
+    setStatusText("Tab cache cleared");
+  }
+
+  async function handleSave(): Promise<void> {
+    if (!draft) {
+      return;
+    }
+
+    setStatusText("Saving settings...");
+    await onSave(draft);
+    setStatusText("Settings saved");
+  }
+
+  async function handleApplyDomainLexicon(): Promise<void> {
+    if (!draft) {
+      return;
+    }
+
+    setStatusText("Applying domain lexicon...");
+    await onApplyDomainLexicon(draft);
+    setStatusText("Domain lexicon applied to New Seek");
+  }
+
+  const settingsNavItems: Array<{ id: SettingsSectionId; label: string; icon: LucideIcon }> = [
+    { id: "general", label: "General", icon: Settings },
+    { id: "domainLexicon", label: "Domain lexicon", icon: Star },
+    { id: "runtime", label: "Runtime", icon: Compass },
+    { id: "scout", label: "Scout service", icon: Sparkles },
+    { id: "storage", label: "Storage", icon: Folder },
+    { id: "development", label: "Development", icon: Trash2 },
+  ];
+  const visibleNavItems = settingsNavItems.filter((item) => item.label.toLowerCase().includes(searchValue.trim().toLowerCase()));
+  const resolvedActiveSection = visibleNavItems.some((item) => item.id === activeSection)
+    ? activeSection
+    : (visibleNavItems[0]?.id ?? "general");
+  const activeMeta = settingsSectionMeta[resolvedActiveSection];
+
+  return (
+    <section className="settings-page" aria-label="SeekStar settings">
+      <aside className="settings-page-sidebar">
+        <button className="settings-back" onClick={onBack} type="button">
+          <ArrowLeft aria-hidden="true" size={14} strokeWidth={1.8} />
+          Back to app
+        </button>
+        <label className="settings-search">
+          <Search aria-hidden="true" size={14} strokeWidth={1.8} />
+          <input
+            aria-label="Search settings"
+            onChange={(event) => setSearchValue(event.target.value)}
+            placeholder="Search settings..."
+            value={searchValue}
+          />
+        </label>
+        <nav className="settings-nav" aria-label="Settings sections">
+          <span>Personal</span>
+          {visibleNavItems.map((item) => (
+            <button
+              aria-current={resolvedActiveSection === item.id ? "page" : undefined}
+              className={resolvedActiveSection === item.id ? "active" : ""}
+              key={item.id}
+              onClick={() => setActiveSection(item.id)}
+              type="button"
+            >
+              <item.icon aria-hidden="true" size={14} strokeWidth={1.8} />
+              {item.label}
+            </button>
+          ))}
+        </nav>
+      </aside>
+
+      <div className="settings-page-content">
+        <div className="settings-content-scroll">
+          <div className="settings-panel">
+            <header className="settings-hero">
+              <p>SeekStar Settings</p>
+              <h1>{activeMeta.title}</h1>
+              <span>{statusText}</span>
+              <p>{activeMeta.description}</p>
+            </header>
+
+            {resolvedActiveSection === "general" ? (
+              <section className="settings-section">
+                <div className="settings-card">
+                  <div className="settings-row">
+                    <span>
+                      <strong>Shell surface</strong>
+                      <small>Acrylic-backed observatory shell with glass sidebars and transparent workbench.</small>
+                    </span>
+                  </div>
+                  <div className="settings-row">
+                    <span>
+                      <strong>Status</strong>
+                      <small>Settings changes apply to tab runtime, Scout service, and local workspace stores.</small>
+                    </span>
+                  </div>
+                </div>
+              </section>
+            ) : null}
+
+            {resolvedActiveSection === "domainLexicon" ? (
+              <section className="settings-section domain-lexicon-section">
+                <div className="domain-lexicon-toolbar">
+                  <div>
+                    <strong>{selectedLexicon?.title ?? "No lexicon selected"}</strong>
+                    <span>{selectedLexicon?.terms.filter((term) => term.enabled).length ?? 0} active terms</span>
+                  </div>
+                  <div>
+                    <button onClick={handleLexiconCreate} type="button">
+                      <Plus aria-hidden="true" size={14} strokeWidth={1.8} />
+                      Add lexicon
+                    </button>
+                    <button className="primary" disabled={!draft} onClick={handleApplyDomainLexicon} type="button">
+                      <RefreshCw aria-hidden="true" size={14} strokeWidth={1.8} />
+                      Apply to New Seek
+                    </button>
+                  </div>
+                </div>
+
+                <div className="domain-lexicon-workspace">
+                  <aside className="domain-lexicon-list" aria-label="Domain lexicons">
+                    {domainLexicons.map((lexicon) => (
+                      <button
+                        className={lexicon.id === selectedLexicon?.id ? "active" : ""}
+                        key={lexicon.id}
+                        onClick={() => {
+                          setSelectedLexiconId(lexicon.id);
+                          setSelectedTermId(undefined);
+                        }}
+                        type="button"
+                      >
+                        <span>
+                          <strong>{lexicon.title}</strong>
+                          <small>{lexicon.terms.length} terms</small>
+                        </span>
+                        {lexicon.active ? <em>Active</em> : null}
+                      </button>
+                    ))}
+                  </aside>
+
+                  <div className="domain-lexicon-editor">
+                    {selectedLexicon ? (
+                      <>
+                        <div className="domain-lexicon-fields">
+                          <label>
+                            <span>Title</span>
+                            <input
+                              onChange={(event) => updateSelectedLexicon({ title: event.target.value })}
+                              value={selectedLexicon.title}
+                            />
+                          </label>
+                          <label>
+                            <span>Description</span>
+                            <textarea
+                              onChange={(event) => updateSelectedLexicon({ description: event.target.value })}
+                              rows={3}
+                              value={selectedLexicon.description}
+                            />
+                          </label>
+                          <div className="domain-lexicon-actions">
+                            <button
+                              disabled={selectedLexicon.active}
+                              onClick={() => handleLexiconActivate(selectedLexicon.id)}
+                              type="button"
+                            >
+                              <Star aria-hidden="true" size={14} strokeWidth={1.8} />
+                              Activate
+                            </button>
+                            <button
+                              className="danger"
+                              disabled={domainLexicons.length <= 1}
+                              onClick={() => handleLexiconDelete(selectedLexicon.id)}
+                              type="button"
+                            >
+                              <Trash2 aria-hidden="true" size={14} strokeWidth={1.8} />
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="domain-term-toolbar">
+                          <strong>Terms</strong>
+                          <button onClick={handleTermCreate} type="button">
+                            <Plus aria-hidden="true" size={14} strokeWidth={1.8} />
+                            Add term
+                          </button>
+                        </div>
+
+                        <div className="domain-term-table" role="table" aria-label="Domain terms">
+                          <div className="domain-term-row domain-term-row-head" role="row">
+                            <span>On</span>
+                            <span>Canonical</span>
+                            {domainLexiconLanguages.map((language) => (
+                              <span key={language.id}>{language.label}</span>
+                            ))}
+                            <span />
+                          </div>
+                          {selectedLexicon.terms.map((term) => (
+                            <div
+                              className={term.id === selectedTerm?.id ? "domain-term-row active" : "domain-term-row"}
+                              key={term.id}
+                              role="row"
+                            >
+                              <label className="domain-term-enabled">
+                                <input
+                                  checked={term.enabled}
+                                  onChange={(event) => updateSelectedTerm(term.id, { enabled: event.target.checked })}
+                                  type="checkbox"
+                                />
+                              </label>
+                              <input
+                                onChange={(event) => updateSelectedTerm(term.id, { canonical: event.target.value })}
+                                onFocus={() => setSelectedTermId(term.id)}
+                                value={term.canonical}
+                              />
+                              {domainLexiconLanguages.map((language) => (
+                                <input
+                                  key={language.id}
+                                  onChange={(event) => updateTermLabel(term, language.id, event.target.value)}
+                                  onFocus={() => setSelectedTermId(term.id)}
+                                  value={term.labels[language.id] ?? ""}
+                                />
+                              ))}
+                              <button aria-label={`Delete ${term.canonical}`} onClick={() => handleTermDelete(term.id)} type="button">
+                                <Trash2 aria-hidden="true" size={14} strokeWidth={1.8} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+              </section>
+            ) : null}
+
+            {resolvedActiveSection === "runtime" ? (
+              <section className="settings-section">
+                <div className="settings-card">
+                  <label className="settings-row">
+                    <span>
+                      <strong>Tab cache limit</strong>
+                      <small>Logical memory budget for each tab object cache.</small>
+                    </span>
+                    <input
+                      min={32}
+                      max={2048}
+                      onChange={(event) => updateDraft({ tab_cache_max_bytes: Number(event.target.value) * 1024 * 1024 })}
+                      type="number"
+                      value={cacheMb || 256}
+                    />
+                  </label>
+                  <label className="settings-row">
+                    <span>
+                      <strong>Inactive grace</strong>
+                      <small>Minutes before an inactive tab is visually cooled down.</small>
+                    </span>
+                    <input
+                      min={1}
+                      max={1440}
+                      onChange={(event) => updateDraft({ inactive_grace_ms: Number(event.target.value) * 60_000 })}
+                      type="number"
+                      value={inactiveMinutes || 30}
+                    />
+                  </label>
+                </div>
+              </section>
+            ) : null}
+
+            {resolvedActiveSection === "scout" ? (
+              <section className="settings-section">
+                <div className="settings-card">
+                  <label className="settings-row">
+                    <span>
+                      <strong>Scout concurrency</strong>
+                      <small>Maximum background Scout jobs that can run at once.</small>
+                    </span>
+                    <input
+                      min={1}
+                      max={8}
+                      onChange={(event) => updateDraft({ scout_concurrency: Number(event.target.value) })}
+                      type="number"
+                      value={draft?.scout_concurrency ?? 2}
+                    />
+                  </label>
+                </div>
+              </section>
+            ) : null}
+
+            {resolvedActiveSection === "storage" ? (
+              <section className="settings-section">
+                <div className="settings-card settings-path-list">
+                  {Object.entries(storePaths).map(([key, value]) => (
+                    <p key={key}>
+                      <span>{key.replace(/_/g, " ")}</span>
+                      <code>{value}</code>
+                    </p>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            {resolvedActiveSection === "development" ? (
+              <section className="settings-section">
+                <div className="settings-card settings-actions-card">
+                  <button onClick={handleClearCache} type="button">
+                    <RefreshCw aria-hidden="true" size={14} strokeWidth={1.8} />
+                    Clear tab cache
+                  </button>
+                  <button className="danger" onClick={handleClearDevelopmentData} type="button">
+                    <Trash2 aria-hidden="true" size={14} strokeWidth={1.8} />
+                    Clear development data
+                  </button>
+                </div>
+              </section>
+            ) : null}
+          </div>
+        </div>
+
+        <footer className="settings-savebar">
+          <button onClick={onBack} type="button">
+            Back
+          </button>
+          <button className="primary" disabled={!draft} onClick={handleSave} type="button">
+            Save settings
+          </button>
+        </footer>
+      </div>
+    </section>
+  );
+}
+
+function DetachedTabTitleBar({
+  activeTab,
+  onAttach,
+  onClose,
+  onToggleRightSidebar,
+  rightSidebarExpanded,
+}: {
+  activeTab: ExplorationTab;
+  onAttach: () => void;
+  onClose: () => void;
+  onToggleRightSidebar: () => void;
+  rightSidebarExpanded: boolean;
+}): ReactElement {
+  return (
+    <header className="detached-tab-titlebar">
+      <div className="detached-tab-title">
+        <span>SeekStar tab</span>
+        <strong>{activeTab.title}</strong>
+      </div>
+      <div className="detached-tab-actions">
+        <button aria-label="Attach tab to main window" onClick={onAttach} title="Attach to main window" type="button">
+          <PanelLeftOpen aria-hidden="true" size={15} strokeWidth={1.8} />
+        </button>
+        <SidebarToggleButton
+          expanded={rightSidebarExpanded}
+          label="Inspector"
+          onClick={onToggleRightSidebar}
+          side="right"
+        />
+        <button aria-label="Close tab" onClick={onClose} title="Close tab" type="button">
+          <X aria-hidden="true" size={15} strokeWidth={1.8} />
+        </button>
+      </div>
+    </header>
   );
 }
 
@@ -1472,18 +1596,53 @@ function WindowTitleBar({
 function ObservatorySidebar({
   activeTool,
   activeTabId,
+  folderCounts,
+  folders,
   onFocusCommand,
+  onFolderCreate,
+  onFolderDelete,
+  onOpenSettings,
+  onTabClose,
+  onTabCopyCrashLog,
+  onTabDetach,
+  onTabFavorite,
+  onTabFolderAssign,
+  onTabPin,
+  onTabRefresh,
+  onTabReorder,
   onToolSelect,
   onTabSelect,
+  onWorkspaceRename,
+  runtimeTabsById,
   scenes,
+  workspaceName,
 }: {
   activeTool: CanvasTool;
   activeTabId: string;
+  folderCounts: Map<string, number>;
+  folders: WorkspaceFolder[];
   onFocusCommand: () => void;
+  onFolderCreate: () => void;
+  onFolderDelete: (folderId: string) => void;
+  onOpenSettings: () => void;
+  onTabClose: (tabId: string) => void;
+  onTabCopyCrashLog: (tabId: string) => void;
+  onTabDetach: (tabId: string) => void;
+  onTabFavorite: (tabId: string) => void;
+  onTabFolderAssign: (tabId: string, folderId?: string) => void;
+  onTabPin: (tabId: string) => void;
+  onTabRefresh: (tabId: string) => void;
+  onTabReorder: (sourceTabId: string, targetTabId: string) => void;
   onToolSelect: (tool: CanvasTool) => void;
   onTabSelect: (tabId: string) => void;
+  onWorkspaceRename: () => void;
+  runtimeTabsById: Map<string, TabRecord>;
   scenes: TerrainScene[];
+  workspaceName: string;
 }): ReactElement {
+  const [draggingTabId, setDraggingTabId] = useState<string | undefined>();
+  const [dragStartScreenPosition, setDragStartScreenPosition] = useState<{ x: number; y: number } | undefined>();
+
   return (
     <div className="observatory-sidebar" aria-label="SeekStar observatory sidebar">
       <section className="sidebar-nav">
@@ -1499,6 +1658,39 @@ function ObservatorySidebar({
           </span>
           Search current map
         </button>
+      </section>
+
+      <section className="sidebar-section workspace-section">
+        <div className="workspace-section-header">
+          <h2>Workspace</h2>
+          <button aria-label="Rename workspace" onClick={onWorkspaceRename} type="button">
+            Rename
+          </button>
+        </div>
+        <button className="workspace-name" onClick={onWorkspaceRename} type="button">
+          <span className="sidebar-icon">
+            <Folder aria-hidden="true" size={14} strokeWidth={1.8} />
+          </span>
+          <span>{workspaceName}</span>
+        </button>
+        <div className="folder-list">
+          {folders.map((folder) => (
+            <div className="folder-row" key={folder.id}>
+              <span className="sidebar-icon">
+                <Folder aria-hidden="true" size={13} strokeWidth={1.8} />
+              </span>
+              <span className="folder-row-title">{folder.title}</span>
+              <small>{folderCounts.get(folder.id) ?? 0}</small>
+              <button aria-label={`Delete ${folder.title}`} onClick={() => onFolderDelete(folder.id)} title="Delete folder" type="button">
+                <X aria-hidden="true" size={11} strokeWidth={2} />
+              </button>
+            </div>
+          ))}
+          <button className="folder-create" onClick={onFolderCreate} type="button">
+            <FolderPlus aria-hidden="true" size={13} strokeWidth={1.8} />
+            New folder
+          </button>
+        </div>
       </section>
 
       <section className="sidebar-section">
@@ -1541,25 +1733,96 @@ function ObservatorySidebar({
         <div className="exploration-tab-list">
           {scenes.map((scene) => {
             const tab = getActiveTab(scene);
+            const runtimeTab = runtimeTabsById.get(tab.id);
             const isActive = tab.id === activeTabId;
+            const isInactive = isTabVisuallyInactive(runtimeTab);
+            const isCrashed = runtimeTab?.runtime_status === "crashed";
 
             return (
-              <button
-                className={isActive ? "exploration-tab active" : "exploration-tab"}
+              <div
+                className={[
+                  "exploration-tab",
+                  isActive ? "active" : "",
+                  isInactive ? "inactive" : "",
+                  isCrashed ? "crashed" : "",
+                  draggingTabId === tab.id ? "dragging" : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
+                draggable
                 key={tab.id}
-                onClick={() => onTabSelect(tab.id)}
-                type="button"
+                onDragEnd={(event) => {
+                  if (draggingTabId === tab.id && shouldDetachDraggedTab(event, dragStartScreenPosition)) {
+                    onTabDetach(tab.id);
+                  }
+                  setDraggingTabId(undefined);
+                  setDragStartScreenPosition(undefined);
+                }}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                }}
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData("text/plain", tab.id);
+                  setDraggingTabId(tab.id);
+                  setDragStartScreenPosition({ x: event.screenX, y: event.screenY });
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const sourceTabId = event.dataTransfer.getData("text/plain");
+
+                  if (sourceTabId && sourceTabId !== tab.id) {
+                    onTabReorder(sourceTabId, tab.id);
+                  }
+                  setDraggingTabId(undefined);
+                  setDragStartScreenPosition(undefined);
+                }}
               >
-                <span className="exploration-tab-icon" aria-hidden="true">
-                  <Circle size={12} strokeWidth={2} />
-                </span>
-                <span className="exploration-tab-label">{tab.title}</span>
-                {isActive ? (
-                  <span aria-hidden="true" className="exploration-tab-close">
-                    <X size={12} strokeWidth={2} />
+                <button className="exploration-tab-main" onClick={() => onTabSelect(tab.id)} type="button">
+                  <span className="exploration-tab-icon" aria-hidden="true">
+                    <Circle size={12} strokeWidth={2} />
                   </span>
+                  <span className="exploration-tab-label">{tab.title}</span>
+                </button>
+                <div className="exploration-tab-actions">
+                  <button aria-label={`Pin ${tab.title}`} className={runtimeTab?.pinned ? "active" : ""} onClick={() => onTabPin(tab.id)} title="Pin" type="button">
+                    <Pin aria-hidden="true" size={12} strokeWidth={2} />
+                  </button>
+                  <button aria-label={`Favorite ${tab.title}`} className={runtimeTab?.favorite ? "active" : ""} onClick={() => onTabFavorite(tab.id)} title="Favorite" type="button">
+                    <Star aria-hidden="true" size={12} strokeWidth={2} />
+                  </button>
+                  <button aria-label={`Refresh ${tab.title}`} onClick={() => onTabRefresh(tab.id)} title="Refresh" type="button">
+                    <RefreshCw aria-hidden="true" size={12} strokeWidth={2} />
+                  </button>
+                  {isCrashed ? (
+                    <button aria-label={`Copy crash log for ${tab.title}`} onClick={() => onTabCopyCrashLog(tab.id)} title="Copy crash log" type="button">
+                      <Copy aria-hidden="true" size={12} strokeWidth={2} />
+                    </button>
+                  ) : null}
+                  <button aria-label={`Open ${tab.title} in new window`} onClick={() => onTabDetach(tab.id)} title="Detach" type="button">
+                    <ExternalLink aria-hidden="true" size={12} strokeWidth={2} />
+                  </button>
+                  <button aria-label={`Close ${tab.title}`} disabled={scenes.length <= 1} onClick={() => onTabClose(tab.id)} title="Close" type="button">
+                    <Trash2 aria-hidden="true" size={12} strokeWidth={2} />
+                  </button>
+                </div>
+                {folders.length > 0 ? (
+                  <select
+                    aria-label={`Folder for ${tab.title}`}
+                    className="exploration-tab-folder"
+                    onChange={(event) => onTabFolderAssign(tab.id, event.target.value || undefined)}
+                    onClick={(event) => event.stopPropagation()}
+                    value={runtimeTab?.folder_id ?? ""}
+                  >
+                    <option value="">No folder</option>
+                    {folders.map((folder) => (
+                      <option key={folder.id} value={folder.id}>
+                        {folder.title}
+                      </option>
+                    ))}
+                  </select>
                 ) : null}
-              </button>
+              </div>
             );
           })}
           <button className="exploration-tab-new" onClick={onFocusCommand} type="button">
@@ -1571,7 +1834,7 @@ function ObservatorySidebar({
         </div>
       </section>
 
-      <button className="sidebar-settings" type="button">
+      <button className="sidebar-settings" onClick={onOpenSettings} type="button">
         <span className="sidebar-icon">
           <Settings aria-hidden="true" size={15} strokeWidth={1.8} />
         </span>
@@ -1579,6 +1842,47 @@ function ObservatorySidebar({
       </button>
     </div>
   );
+}
+
+function shouldDetachDraggedTab(event: DragEvent<HTMLElement>, start?: { x: number; y: number }): boolean {
+  if (!start) {
+    return false;
+  }
+
+  const travel = Math.hypot(event.screenX - start.x, event.screenY - start.y);
+
+  if (travel < 96) {
+    return false;
+  }
+
+  const left = window.screenX;
+  const top = window.screenY;
+  const right = left + window.outerWidth;
+  const bottom = top + window.outerHeight;
+
+  return event.screenX < left - 24 || event.screenX > right + 24 || event.screenY < top - 24 || event.screenY > bottom + 24;
+}
+
+function isTabVisuallyInactive(tab?: TabRecord): boolean {
+  if (!tab) {
+    return false;
+  }
+
+  if (tab.runtime_status === "suspended") {
+    return true;
+  }
+
+  if (tab.runtime_status !== "inactive") {
+    return false;
+  }
+
+  const lastAccessedAt = Date.parse(tab.last_accessed_at);
+
+  if (!Number.isFinite(lastAccessedAt)) {
+    return true;
+  }
+
+  return Date.now() - lastAccessedAt >= tab.cache_policy.inactive_grace_ms;
 }
 
 function WorkbenchHeader({
@@ -1649,33 +1953,30 @@ function CommandComposer({
   commandInputRef,
   commandValue,
   isCommandModalOpen,
+  onAddToCurrentPage,
   onCommandChange,
   onCommandFocus,
   onCommandKeyDown,
-  onScoutDirectUrl,
   onSearchCurrentTab,
   onUseAsSeed,
 }: {
   commandInputRef: RefObject<HTMLInputElement | null>;
   commandValue: string;
   isCommandModalOpen: boolean;
+  onAddToCurrentPage: () => void;
   onCommandChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onCommandFocus: () => void;
   onCommandKeyDown: (event: KeyboardEvent<HTMLInputElement>) => void;
-  onScoutDirectUrl: () => void;
   onSearchCurrentTab: () => void;
   onUseAsSeed: () => void;
 }): ReactElement {
-  const canScoutDirectUrl = isDirectHttpUrl(commandValue.trim());
-
   return (
     <div className="command-composer">
       <div className="command-composer-inner">
         {isCommandModalOpen ? (
           <CommandActionCard
-            canScoutDirectUrl={canScoutDirectUrl}
             value={commandValue.trim()}
-            onScoutDirectUrl={onScoutDirectUrl}
+            onAddToCurrentPage={onAddToCurrentPage}
             onSearchCurrentTab={onSearchCurrentTab}
             onUseAsSeed={onUseAsSeed}
           />
@@ -1688,10 +1989,10 @@ function CommandComposer({
             onChange={onCommandChange}
             onFocus={onCommandFocus}
             onKeyDown={onCommandKeyDown}
-            placeholder="Enter a direction, word, or search this map"
             ref={commandInputRef}
             type="text"
             value={commandValue}
+            placeholder="Add a keyword, start a new Seek, or search this map"
           />
           <button
             aria-label="Submit"
@@ -1711,13 +2012,11 @@ function CommandComposer({
 function SelectionActionCard({
   nodeCount,
   onDismiss,
-  onRunAction,
   onSaveSelection,
   onUseAsSeed,
 }: {
   nodeCount: number;
   onDismiss: () => void;
-  onRunAction: (kind: MockRegionActionKind) => void;
   onSaveSelection: () => void;
   onUseAsSeed: () => void;
 }): ReactElement {
@@ -1733,21 +2032,6 @@ function SelectionActionCard({
         <button onClick={onSaveSelection} type="button">
           Save to tray
         </button>
-        <button onClick={() => onRunAction("explain")} type="button">
-          Mock explain
-        </button>
-        <button onClick={() => onRunAction("questions")} type="button">
-          Generate questions
-        </button>
-        <button onClick={() => onRunAction("learning_path")} type="button">
-          Learning path
-        </button>
-        <button onClick={() => onRunAction("compare")} type="button">
-          Mock compare
-        </button>
-        <button onClick={() => onRunAction("export")} type="button">
-          Mock export
-        </button>
         <button className="selection-action-wide" onClick={onUseAsSeed} type="button">
           Use region as new seed
         </button>
@@ -1759,21 +2043,16 @@ function SelectionActionCard({
 function InspectorSidebar({
   activeTab,
   basketItems,
-  mockActionResults,
   onBacklinkFocus,
   onAddSource,
-  onCancelCartographerJob,
   onConvertScoutObservation,
   onClearBasket,
   onClearSelection,
-  onFailCartographerJob,
   onRemoveBasketItem,
-  onRetryCartographerJob,
-  onRunBasketAction,
-  onRunCartographerJob,
   onRunScoutPlan,
   onScoutSourceLinks,
   onLayerSelect,
+  onResetWorkspace,
   onSaveSelectionToTray,
   onSearchResultSelect,
   onUseNodeAsSeed,
@@ -1788,21 +2067,16 @@ function InspectorSidebar({
 }: {
   activeTab: ExplorationTab;
   basketItems: SelectionBasketItem[];
-  mockActionResults: MockRegionActionResult[];
   onBacklinkFocus: (backlink: NonNullable<ExplorationTab["parent_backlink"]>) => void;
   onAddSource: (input: SourceIngestionInput) => void;
-  onCancelCartographerJob: (job: AgentJob) => void;
   onConvertScoutObservation: (observation: ScoutObservation) => void;
   onClearBasket: () => void;
   onClearSelection: () => void;
-  onFailCartographerJob: (job: AgentJob) => void;
   onRemoveBasketItem: (itemId: string) => void;
-  onRetryCartographerJob: (job: AgentJob) => void;
-  onRunBasketAction: (item: SelectionBasketItem, kind: MockRegionActionKind) => void;
-  onRunCartographerJob: (mode: MockCartographerMode, targetNodes: TerrainNode[]) => void;
   onRunScoutPlan: (plan: ScoutPlan) => void;
   onScoutSourceLinks: (node: TerrainNode, source: SourceRef) => void;
   onLayerSelect: (layer: LayerId, focusNodeId?: string) => void;
+  onResetWorkspace: () => void;
   onSaveSelectionToTray: () => void;
   onSearchResultSelect: (nodeId: string) => void;
   onUseNodeAsSeed: (node: TerrainNode) => void;
@@ -1837,7 +2111,6 @@ function InspectorSidebar({
           <SelectedNodePanel
             node={selectedNode}
             onNodeSelect={onSearchResultSelect}
-            onRunCartographerJob={onRunCartographerJob}
             onScoutSourceLinks={onScoutSourceLinks}
             onLayerSelect={onLayerSelect}
             onSaveSelectionToTray={onSaveSelectionToTray}
@@ -1845,17 +2118,20 @@ function InspectorSidebar({
             scene={scene}
           />
         ) : (
-          <SceneOverviewPanel activeTab={activeTab} fogCount={fogCount} onBacklinkFocus={onBacklinkFocus} scene={scene} />
+          <SceneOverviewPanel
+            activeTab={activeTab}
+            fogCount={fogCount}
+            onBacklinkFocus={onBacklinkFocus}
+            onResetWorkspace={onResetWorkspace}
+            scene={scene}
+          />
         )}
         <SearchResultsPanel query={searchQuery} results={searchResults} onResultSelect={onSearchResultSelect} />
         <CartographerOutputPanel
           observations={scene.scout_observations ?? []}
           outputs={scene.cartographer_outputs ?? []}
           scene={scene}
-          onCancelJob={onCancelCartographerJob}
-          onFailJob={onFailCartographerJob}
           onNodeSelect={onSearchResultSelect}
-          onRetryJob={onRetryCartographerJob}
           onRunScoutPlan={onRunScoutPlan}
         />
         <ScoutObservationPanel
@@ -1868,9 +2144,7 @@ function InspectorSidebar({
           items={basketItems}
           onClearBasket={onClearBasket}
           onRemoveItem={onRemoveBasketItem}
-          onRunAction={onRunBasketAction}
         />
-        <MockRegionOutputPanel results={mockActionResults} />
       </div>
     </div>
   );
@@ -1933,19 +2207,13 @@ function SourceIngestionPanel({ onAddSource }: { onAddSource: (input: SourceInge
 
 function CartographerOutputPanel({
   observations,
-  onCancelJob,
-  onFailJob,
   onNodeSelect,
-  onRetryJob,
   onRunScoutPlan,
   outputs,
   scene,
 }: {
   observations: ScoutObservation[];
-  onCancelJob: (job: AgentJob) => void;
-  onFailJob: (job: AgentJob) => void;
   onNodeSelect: (nodeId: string) => void;
-  onRetryJob: (job: AgentJob) => void;
   onRunScoutPlan: (plan: ScoutPlan) => void;
   outputs: CartographerOutput[];
   scene: TerrainScene;
@@ -1989,23 +2257,6 @@ function CartographerOutputPanel({
               ) : null}
               {job.status === "cancelled" ? <small>No terrain patch was applied.</small> : null}
               {job.error_message ? <small className="cartographer-job-error">{job.error_message}</small> : null}
-              {job.status === "queued" || job.status === "running" ? (
-                <div className="cartographer-job-actions">
-                  <button onClick={() => onCancelJob(job)} type="button">
-                    Cancel
-                  </button>
-                  <button onClick={() => onFailJob(job)} type="button">
-                    Mock fail
-                  </button>
-                </div>
-              ) : null}
-              {job.status === "failed" || job.status === "cancelled" || job.status === "completed" ? (
-                <div className="cartographer-job-actions">
-                  <button onClick={() => onRetryJob(job)} type="button">
-                    {job.status === "completed" ? "Rerun" : "Retry"}
-                  </button>
-                </div>
-              ) : null}
             </article>
           ))}
         </div>
@@ -2097,7 +2348,7 @@ function ScoutObservationPanel({
           >
             <div className="cartographer-output-meta">
               <span>{observation.status.replace("_", " ")}</span>
-              <span>{observation.adapter ?? "mock"}</span>
+              <span>{observation.adapter ?? "local"}</span>
               <span>{observation.source_type ?? "unknown"}</span>
             </div>
             <strong>{observation.title}</strong>
@@ -2121,11 +2372,13 @@ function SceneOverviewPanel({
   activeTab,
   fogCount,
   onBacklinkFocus,
+  onResetWorkspace,
   scene,
 }: {
   activeTab: ExplorationTab;
   fogCount: number;
   onBacklinkFocus: (backlink: NonNullable<ExplorationTab["parent_backlink"]>) => void;
+  onResetWorkspace: () => void;
   scene: TerrainScene;
 }): ReactElement {
   const activeLayer = getActiveLayer(scene);
@@ -2156,13 +2409,16 @@ function SceneOverviewPanel({
         </div>
         <p>
           {activeLayer
-            ? `${activeLayer.label}: ${currentLayerNodes.length} visible mock terrain node${currentLayerNodes.length === 1 ? "" : "s"}.`
+            ? `${activeLayer.label}: ${currentLayerNodes.length} visible local terrain node${currentLayerNodes.length === 1 ? "" : "s"}.`
             : "Current layer is not described by this scene."}
         </p>
         {activeLayer?.breadcrumb ? <small>{activeLayer.breadcrumb.join(" / ")}</small> : null}
       </div>
       {activeTab.parent_backlink ? <BacklinkPanel backlink={activeTab.parent_backlink} onBacklinkFocus={onBacklinkFocus} /> : null}
       <SourceReadinessPanel scene={scene} />
+      <button className="inspect-action" onClick={onResetWorkspace} type="button">
+        Reset local workspace
+      </button>
     </section>
   );
 }
@@ -2202,12 +2458,12 @@ function SourceReadinessPanel({ scene }: { scene: TerrainScene }): ReactElement 
     <div className="source-readiness-panel" aria-label="Source readiness">
       <div className="source-readiness-header">
         <h2>Source readiness</h2>
-        <span>{scene.sources.length === 0 ? "mock only" : `${scene.sources.length} sources`}</span>
+        <span>{scene.sources.length === 0 ? "local only" : `${scene.sources.length} sources`}</span>
       </div>
       <p>
         {sourceBackedCount > 0
           ? "Some terrain is source-backed. Generated and inferred nodes remain visually marked."
-          : "This map is source-free mock terrain. No factual node is presented as source-backed yet."}
+          : "This map is local-only terrain. No factual node is presented as source-backed yet."}
       </p>
       <dl className="source-state-list">
         {(["source_backed", "generated", "agent_inferred", "weak_hypothesis", "fog"] satisfies SourceState[]).map((state) => (
@@ -2228,7 +2484,6 @@ function SourceReadinessPanel({ scene }: { scene: TerrainScene }): ReactElement 
 function SelectedNodePanel({
   node,
   onNodeSelect,
-  onRunCartographerJob,
   onScoutSourceLinks,
   onLayerSelect,
   onSaveSelectionToTray,
@@ -2237,7 +2492,6 @@ function SelectedNodePanel({
 }: {
   node: TerrainNode;
   onNodeSelect: (nodeId: string) => void;
-  onRunCartographerJob: (mode: MockCartographerMode, targetNodes: TerrainNode[]) => void;
   onScoutSourceLinks: (node: TerrainNode, source: SourceRef) => void;
   onLayerSelect: (layer: LayerId, focusNodeId?: string) => void;
   onSaveSelectionToTray: () => void;
@@ -2296,25 +2550,6 @@ function SelectedNodePanel({
           sourceChildren={sourceChildren}
         />
       ) : null}
-      {source && node.source_state === "source_backed" ? (
-        <button className="inspect-action" onClick={() => onRunCartographerJob("source_distiller", [node])} type="button">
-          Distill source into terrain
-        </button>
-      ) : null}
-      {node.type === "fog_region" ? (
-        <button className="inspect-action" onClick={() => onRunCartographerJob("web_scout_planner", [node])} type="button">
-          Plan scout from fog
-        </button>
-      ) : null}
-      <button className="inspect-action" onClick={() => onRunCartographerJob("layer_cartographer", [node])} type="button">
-        Map adjacent paths
-      </button>
-      <button className="inspect-action" onClick={() => onRunCartographerJob("question_generator", [node])} type="button">
-        Generate questions
-      </button>
-      <button className="inspect-action" onClick={() => onRunCartographerJob("learning_path_mapper", [node])} type="button">
-        Create learning path
-      </button>
       {zoomTarget ? (
         <button className="inspect-action" onClick={() => onLayerSelect(zoomTarget.layer, zoomTarget.node_id)} type="button">
           Zoom in to {zoomTarget.layer}
@@ -2381,7 +2616,7 @@ function SourceEvidenceCard({
           </div>
           <strong>{scoutObservation.title}</strong>
           <small>{scoutObservation.query}</small>
-          <small>{scoutObservation.adapter ?? "mock"} adapter</small>
+          <small>{scoutObservation.adapter ?? "local"} adapter</small>
           {scoutObservation.retrieved_at ? <small>Observed {formatTimestamp(scoutObservation.retrieved_at)}</small> : null}
         </div>
       ) : null}
@@ -2498,7 +2733,7 @@ function SelectionRegionPanel({
           <dd>{fogCount}</dd>
         </div>
         <div>
-          <dt>Mock / inferred</dt>
+          <dt>Local / inferred</dt>
           <dd>{generatedCount}</dd>
         </div>
       </dl>
@@ -2518,12 +2753,10 @@ function SideTrayPanel({
   items,
   onClearBasket,
   onRemoveItem,
-  onRunAction,
 }: {
   items: SelectionBasketItem[];
   onClearBasket: () => void;
   onRemoveItem: (itemId: string) => void;
-  onRunAction: (item: SelectionBasketItem, kind: MockRegionActionKind) => void;
 }): ReactElement {
   return (
     <section className="inspect-section side-tray-panel">
@@ -2536,7 +2769,7 @@ function SideTrayPanel({
         ) : null}
       </div>
       {items.length === 0 ? (
-        <p>Save selected nodes or lassoed regions here as local mock context.</p>
+        <p>Save selected nodes or lassoed regions here as local selection context.</p>
       ) : (
         <div className="side-tray-list">
           {items.map((item) => (
@@ -2548,23 +2781,6 @@ function SideTrayPanel({
                     {item.nodeIds.length} nodes - {item.sourceStates.join(", ")}
                   </small>
                 </div>
-                <div className="side-tray-item-actions" aria-label={`Mock actions for ${item.title}`}>
-                  <button onClick={() => onRunAction(item, "explain")} type="button">
-                    Explain
-                  </button>
-                  <button onClick={() => onRunAction(item, "questions")} type="button">
-                    Questions
-                  </button>
-                  <button onClick={() => onRunAction(item, "learning_path")} type="button">
-                    Path
-                  </button>
-                  <button onClick={() => onRunAction(item, "compare")} type="button">
-                    Compare
-                  </button>
-                  <button onClick={() => onRunAction(item, "export")} type="button">
-                    Export
-                  </button>
-                </div>
               </div>
               <button aria-label={`Remove ${item.title}`} onClick={() => onRemoveItem(item.id)} type="button">
                 x
@@ -2573,34 +2789,6 @@ function SideTrayPanel({
           ))}
         </div>
       )}
-    </section>
-  );
-}
-
-function MockRegionOutputPanel({ results }: { results: MockRegionActionResult[] }): ReactElement | null {
-  if (results.length === 0) {
-    return null;
-  }
-
-  return (
-    <section className="inspect-section mock-output-panel">
-      <div className="mock-output-header">
-        <h2>Cartographer notes</h2>
-        <span>mock generated</span>
-      </div>
-      <div className="mock-output-list">
-        {results.map((result) => (
-          <article className="mock-output-item" key={result.id}>
-            <div className="mock-output-meta">
-              <span>{result.kind}</span>
-              <span>{result.nodeCount} nodes</span>
-              <span>{result.sourceState.replace("_", " ")}</span>
-            </div>
-            <h3>{result.title}</h3>
-            <p>{result.body}</p>
-          </article>
-        ))}
-      </div>
     </section>
   );
 }
@@ -2637,321 +2825,5 @@ function StatusStrip({
       <span>{formatPersistenceStatus(persistenceStatus)}</span>
       <span>{jobState}</span>
     </footer>
-  );
-}
-
-function getActiveTab(scene: TerrainScene): ExplorationTab {
-  return scene.tabs.find((tab) => tab.id === scene.active_tab_id) ?? scene.tabs[0];
-}
-
-function getActiveLayer(scene: TerrainScene): TerrainScene["layers"][number] | undefined {
-  return scene.layers.find((layer) => layer.id === scene.viewport.layer);
-}
-
-function getActiveLayerLabel(scene: TerrainScene): string {
-  return scene.layers.find((layer) => layer.id === scene.viewport.layer)?.label ?? scene.viewport.layer;
-}
-
-function getRelationNodes(scene: TerrainScene, relation: TerrainRelation): { from?: TerrainNode; to?: TerrainNode } {
-  return {
-    from: scene.nodes.find((node) => node.id === relation.from),
-    to: scene.nodes.find((node) => node.id === relation.to),
-  };
-}
-
-function getSourceForNode(scene: TerrainScene, node: TerrainNode): SourceRef | undefined {
-  if (node.source_id) {
-    return scene.sources.find((source) => source.id === node.source_id);
-  }
-
-  return scene.sources.find((source) => {
-    if (node.source_url && source.url === node.source_url) {
-      return true;
-    }
-
-    return Boolean(node.source_title && source.title === node.source_title);
-  });
-}
-
-function getSourceRelationsForNode(scene: TerrainScene, node: TerrainNode): TerrainRelation[] {
-  return scene.relations.filter((relation) => relation.from === node.id || relation.to === node.id);
-}
-
-function getSourceStateCounts(nodes: TerrainNode[]): Partial<Record<SourceState, number>> {
-  return nodes.reduce<Partial<Record<SourceState, number>>>((counts, node) => {
-    counts[node.source_state] = (counts[node.source_state] ?? 0) + 1;
-    return counts;
-  }, {});
-}
-
-function getJobStatusCounts(jobs: AgentJob[]): Partial<Record<AgentJobStatus, number>> {
-  return jobs.reduce<Partial<Record<AgentJobStatus, number>>>((counts, job) => {
-    counts[job.status] = (counts[job.status] ?? 0) + 1;
-    return counts;
-  }, {});
-}
-
-function formatSourceState(state: SourceState): string {
-  return state.replace(/_/g, " ");
-}
-
-function resolveFrontierTrigger(scene: TerrainScene, viewport: TerrainScene["viewport"]): FrontierTrigger | undefined {
-  if (!isMacroLayer(viewport.layer)) {
-    return undefined;
-  }
-
-  const positionedNodes = scene.nodes.filter((node) => node.layer === viewport.layer && node.position_hint);
-
-  if (positionedNodes.length === 0) {
-    return undefined;
-  }
-
-  const xs = positionedNodes.map((node) => node.position_hint?.x ?? 0);
-  const ys = positionedNodes.map((node) => node.position_hint?.y ?? 0);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  const margin = 520;
-  let direction: FrontierDirection | undefined;
-
-  if (viewport.x > maxX + margin) {
-    direction = "east";
-  } else if (viewport.x < minX - margin) {
-    direction = "west";
-  } else if (viewport.y > maxY + margin) {
-    direction = "south";
-  } else if (viewport.y < minY - margin) {
-    direction = "north";
-  }
-
-  if (!direction) {
-    return undefined;
-  }
-
-  const bucketX = Math.round(viewport.x / 900);
-  const bucketY = Math.round(viewport.y / 900);
-
-  return {
-    id: `${scene.active_tab_id}-${viewport.layer}-${direction}-${bucketX}-${bucketY}`,
-    direction,
-    layer: viewport.layer,
-    viewport,
-  };
-}
-
-function createFrontierScoutPlan(scene: TerrainScene, trigger: FrontierTrigger, createdAt: string): ScoutPlan {
-  const activeTab = getActiveTab(scene);
-  const layer = scene.layers.find((candidate) => candidate.id === trigger.layer);
-  const seed = activeTab.seed || scene.metadata.title;
-  const query = `${seed} ${layer?.label ?? trigger.layer} ${trigger.direction} adjacent sources`;
-
-  return {
-    id: `scout-plan-frontier-${trigger.id}-${Date.now()}`,
-    title: `Frontier Scout: ${trigger.direction} ${trigger.layer}`,
-    target_node_ids: scene.nodes
-      .filter((node) => node.layer === trigger.layer)
-      .slice(0, 3)
-      .map((node) => node.id),
-    candidate_queries: [query],
-    discovery_mode: "frontier_web_search",
-    source_type_targets: ["webpage", "article"],
-    priority: "medium",
-    stop_conditions: ["Return candidate observations only; do not create terrain facts."],
-    deduplication_notes: [`Frontier ${trigger.id} should run once per viewport bucket.`],
-    created_at: createdAt,
-  };
-}
-
-function positionFrontierObservations(
-  observations: ScoutObservation[],
-  scene: TerrainScene,
-  trigger: FrontierTrigger,
-): ScoutObservation[] {
-  const directionVector = getFrontierDirectionVector(trigger.direction);
-  const perpendicular = {
-    x: -directionVector.y,
-    y: directionVector.x,
-  };
-  const baseDistance = 420;
-  const spacing = 96;
-  const centerOffset = (observations.length - 1) / 2;
-
-  return observations.map((observation, index) => ({
-    ...observation,
-    layer: trigger.layer,
-    frontier_id: trigger.id,
-    discovery_mode: observation.discovery_mode ?? "frontier_web_search",
-    confidence: observation.confidence ?? (observation.status === "failed" ? 0.2 : 0.62),
-    position_hint: {
-      x:
-        trigger.viewport.x +
-        directionVector.x * (baseDistance + (index % 3) * 42) +
-        perpendicular.x * (index - centerOffset) * spacing,
-      y:
-        trigger.viewport.y +
-        directionVector.y * (baseDistance + (index % 3) * 42) +
-        perpendicular.y * (index - centerOffset) * spacing,
-    },
-    updated_at: new Date().toISOString(),
-    tab_id: scene.active_tab_id,
-  }));
-}
-
-function positionAnchoredScoutObservations(
-  observations: ScoutObservation[],
-  scene: TerrainScene,
-  placement: ScoutObservationPlacement,
-): ScoutObservation[] {
-  const radius = placement.radius ?? 300;
-  const angleStep = (Math.PI * 2) / Math.max(1, observations.length);
-
-  return observations.map((observation, index) => {
-    const angle = -Math.PI / 2 + angleStep * index;
-    const ringOffset = Math.floor(index / 8) * 88;
-
-    return {
-      ...observation,
-      layer: placement.layer,
-      frontier_id: placement.frontierId,
-      discovery_mode: observation.discovery_mode ?? placement.discoveryMode,
-      confidence: observation.confidence ?? (observation.status === "failed" ? 0.2 : 0.66),
-      position_hint: {
-        x: placement.anchor.x + Math.cos(angle) * (radius + ringOffset),
-        y: placement.anchor.y + Math.sin(angle) * (radius + ringOffset),
-      },
-      tab_id: scene.active_tab_id,
-      updated_at: new Date().toISOString(),
-    };
-  });
-}
-
-function getFrontierDirectionVector(direction: FrontierDirection): { x: number; y: number } {
-  if (direction === "east") {
-    return { x: 1, y: 0 };
-  }
-
-  if (direction === "west") {
-    return { x: -1, y: 0 };
-  }
-
-  if (direction === "south") {
-    return { x: 0, y: 1 };
-  }
-
-  return { x: 0, y: -1 };
-}
-
-function isMacroLayer(layer: LayerId): boolean {
-  return layer === "L-3" || layer === "L-2" || layer === "L-1" || layer === "L0";
-}
-
-function formatTimestamp(value: string): string {
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleString(undefined, {
-    dateStyle: "short",
-    timeStyle: "short",
-  });
-}
-
-function isDirectHttpUrl(value: string): boolean {
-  const trimmed = value.trim();
-  const candidate = trimmed.startsWith("www.") ? `https://${trimmed}` : trimmed;
-
-  try {
-    const url = new URL(candidate);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-function formatPersistenceStatus(status: PersistenceStatus): string {
-  if (status === "loading") {
-    return "Loading local trail";
-  }
-
-  if (status === "saving") {
-    return "Saving trail";
-  }
-
-  if (status === "saved") {
-    return "Trail saved";
-  }
-
-  if (status === "error") {
-    return "Trail save issue";
-  }
-
-  if (status === "unavailable") {
-    return "Trail local only";
-  }
-
-  return "Unsaved changes";
-}
-
-function isWorkspaceSnapshot(value: unknown): value is WorkspaceSnapshot {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-
-  const candidate = value as Partial<WorkspaceSnapshot>;
-
-  return (
-    candidate.version === 1 &&
-    typeof candidate.active_tab_id === "string" &&
-    typeof candidate.scenes_by_tab_id === "object" &&
-    candidate.scenes_by_tab_id !== null &&
-    typeof candidate.basket_by_tab_id === "object" &&
-    candidate.basket_by_tab_id !== null &&
-    typeof candidate.mock_action_results_by_tab_id === "object" &&
-    candidate.mock_action_results_by_tab_id !== null
-  );
-}
-
-function ensureDeepZoomScene(scenesByTabId: Record<string, TerrainScene>): Record<string, TerrainScene> {
-  if (scenesByTabId[unknownUnknownsDeepZoomScene.active_tab_id]) {
-    return scenesByTabId;
-  }
-
-  return {
-    [unknownUnknownsDeepZoomScene.active_tab_id]: unknownUnknownsDeepZoomScene,
-    ...scenesByTabId,
-  };
-}
-
-function getAgentJobState(statuses: AgentJobStatus[]): string {
-  if (statuses.length === 0) {
-    return "Idle";
-  }
-
-  if (statuses.some((status) => status === "running")) {
-    return "Running";
-  }
-
-  if (statuses.some((status) => status === "queued")) {
-    return "Queued";
-  }
-
-  if (statuses.some((status) => status === "failed")) {
-    return "Needs review";
-  }
-
-  return "Complete";
-}
-
-function isMockCartographerMode(mode: AgentJob["mode"]): mode is MockCartographerMode {
-  return (
-    mode === "region_explainer" ||
-    mode === "source_distiller" ||
-    mode === "web_scout_planner" ||
-    mode === "layer_cartographer" ||
-    mode === "question_generator" ||
-    mode === "learning_path_mapper"
   );
 }

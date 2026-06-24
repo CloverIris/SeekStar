@@ -42,5 +42,5 @@ Development mode opens detached DevTools by default. Restart Electron fully afte
 - `AGENTS.md`: agent operating rules.
 - `ARCHITECTURE_AND_UI_SPEC.md`: architecture and UI specification.
 - `UI_STYLE_GUIDE.md`: visual system and shell standards.
-- `docs/architecture/`: scaffold and data-contract notes.
+- `docs/architecture/`: scaffold, terrain contract, exploration runtime.
 - `docs/decisions/`: architecture decision records.

@@ -81,6 +81,16 @@ Scout observations are candidate stars until provenance and user confirmation pr
 
 The star map and its camera are the product center. Macro Star Gallery, document tile fields, and text-grain depth are focal-length changes of the same instrument. Panels and input surfaces support the telescope; they do not replace it.
 
+### 3.9 Three focal bands are SeekStar
+
+SeekStar is the telescope and the star map together. The product should be understood as three continuous focal bands:
+
+* **Star Gallery** is the macro / domain band. It is where domains, topic regions, fog, weak possibilities, and candidate stars become navigable before the user knows the right query.
+* **Tile Field** is the content band. Confirmed webpages, documents, papers, encyclopedia entries, and source snapshots appear as full tile-based surfaces, not ranked result lists.
+* **Text Grain** is the detail band. Sections, paragraphs, sentences, phrases, words, characters, Unicode detail, and dictionary entries are individually inspectable and seedable.
+
+Zooming in means moving toward detail. Zooming out means recovering macro orientation. Horizontal movement means exploring adjacent existence and frontier possibilities on the same semantic layer. Clicking, lassoing, brushing, dragging, and viewport movement are telescope operations first; search and chat are supporting actions.
+
 ## 4. Target Users
 
 ### 4.1 Exploratory learner
@@ -140,6 +150,18 @@ Pain:
 * unknown terms cannot easily become new exploration seeds.
 
 ## 5. Core Concepts
+
+## 5.0 Product Surface Model
+
+The product surface must stay map-first:
+
+* the macro domain layer is experienced as Star Gallery;
+* the content layer is experienced as a tile field of source-backed webpages and documents;
+* the detail layer is experienced as clickable text grains, down to individual keywords, words, characters, and dictionary / Unicode detail.
+
+Every visible object belongs to a scene, data pool, and derived object pool. Rendering surfaces subscribe to those structures. User actions pass through typed events that mutate objects or request Scout observations. The UI must not depend on AI to decide frame-by-frame interaction.
+
+AI enters where organization, synthesis, explanation, or uncertain adjacent possibilities are needed. Heuristics, local source parsing, object pools, and Playwright Scout observations should carry as much of the ordinary exploration loop as possible before asking a model.
 
 ## 5.1 Workspace
 
@@ -763,131 +785,16 @@ P2 starts with real local product capability while keeping the map-first model:
 
 P2.1-P2.7 close the first local source-backed exploration loop. They still do not implement Playwright retrieval, AI source distillation, real graph layout, browser navigation, durable source-cache indexing, or real Markdown export.
 
-## 9.5 P3 Current Implementation Boundary
+## 9.5 Superseded Prototype Notes
 
-P3.1 starts the AI cartographer surface as a structured local job boundary:
+Earlier local-only Cartographer and visual-spine prototypes are no longer part of the product path. P5.8 removed renderer-local preview output, and P5.9 moved core semantics into the Constellation Engine.
 
-* cartographer jobs are visible in the right inspector and app status;
-* region explain, source distill, and fog scout planning create mock completed jobs;
-* outputs become generated / inferred / weak / fog terrain patches on the canvas;
-* scout plans are only candidate directions and do not run Playwright;
-* source-backed nodes remain the only factual terrain, while generated outputs stay marked.
+The retained product boundary is:
 
-P3.1 does not implement real AI calls, Playwright retrieval, real web search, browser navigation, source-backed AI claims, full job cancellation, cost accounting, or real Markdown export.
-
-P3.2 adds a local mock job lifecycle:
-
-* cartographer jobs move through queued, running, completed, cancelled, and failed states;
-* only completed jobs add terrain patches and outputs to the map;
-* cancelled and failed jobs remain inspectable but do not create facts or source-backed terrain;
-* progress is a local UI affordance, not real token, cost, or network progress.
-
-## 9.6 Deep Zoom Spine Prototype Boundary
-
-The Deep Zoom Spine prototype makes the Z axis verifiable beyond L0-L2:
-
-* mock layers run from L0 seed through L10 new seed loop;
-* paragraph, sentence, phrase/word, character, and Unicode/dictionary grains render as distinct terrain forms;
-* `zoom_target`, semantic breadcrumb, source range, token range, and seedability are explicit node metadata;
-* seedable grains create independent mock tabs with origin backlinks;
-* all deep zoom fixture content is generated/mock and must not look source-backed.
-
-This stage does not implement AI, Playwright, real webpage content, browser navigation, real dictionary lookup, real search, or a new persistence system.
-
-P3.3 improves the prototype without widening scope:
-
-* mock cartographer jobs can be retried or rerun from failed, cancelled, or completed states;
-* deep zoom shows muted parent/child ghost context for orientation;
-* a compact mini-map summarizes the semantic spine and current layer.
-
-These are local interaction affordances only, not real Agent execution, web retrieval, or search.
-
-P3.4 adds the first mock Layer Cartographer pathing action:
-
-* selected nodes can generate adjacent paths as structured terrain patches;
-* outputs appear as generated questions, weak adjacent-route nodes, and fog regions;
-* the action strengthens unknown-unknown discovery without turning the interface into chat or a ranked result list;
-* no source-backed facts are created by this mock action.
-
-This remains local-only and mock-only. It does not connect AI, Playwright, real search, browser navigation, or source-backed extraction.
-
-P3.5 turns generated questions and learning paths into map terrain:
-
-* lasso selections, side-tray items, and selected nodes can run mock question generation;
-* selected terrain can produce a short mock learning path made of orientation, evidence-readiness, and fog-following nodes;
-* generated questions are prompts for exploration, not answers;
-* learning paths preserve source-state distinctions and do not invent evidence.
-
-This remains local-only and mock-only. It does not implement real AI generation, Playwright retrieval, real citations, real Markdown export, or a search-results surface.
-
-P3.7 closes the mock cartographer seed loop:
-
-* generated questions, adjacent routes, scout-plan questions, learning-path steps, and fog edges can become new seed tabs;
-* new tabs created from generated cartographer terrain preserve `created_from` / backlink context;
-* lassoed or multi-node regions also preserve an origin backlink when used as a seed;
-* new seed tabs remain independent exploration universes and do not inherit camera, search, or job history.
-
-This does not make generated terrain source-backed, does not run AI, and does not perform retrieval.
-
-## 9.7 P4 Preflight Visual Interaction Boundary
-
-Before P4 connects real Playwright scouting, the macro visual interaction contract must be fixed:
-
-* macro layers use a bubble lens gallery rather than normal dashboard cards;
-* edge movement is the intended scout/fog-expansion gesture for macro terrain;
-* the renderer owns every movement frame locally;
-* Playwright may start during frontier discovery, but only returns structured scout observations;
-* scout counts may influence candidate frontier stars, but they must not imply factual result counts;
-* frontier stars must remain typed as pending, observed, failed, duplicate, source candidate, weak, or fog until provenance is available.
-
-This preflight is a design contract only. It does not implement animation, Playwright retrieval, AI summarization, search ranking, or browser navigation.
-
-## 9.8 P4.1 Scout Observation Contract
-
-P4.1 starts the real business-function boundary by introducing Scout observations.
-
-* `ScoutObservation` records what a future Playwright Scout saw or failed to see.
-* Observations may be pending, observed, source candidate, failed, duplicate, or expired.
-* Scout observations are not source-backed terrain by themselves.
-* Running a scout plan may create observation records, but it must not create factual nodes or ranked results directly.
-* Source-backed terrain still requires provenance conversion into `SourceRef`, source nodes, and typed relations.
-
-The current P4.1 implementation may use local mock observations to validate the contract. It does not yet run Playwright, fetch pages, rank results, summarize content, or call AI.
-
-## 9.9 P4.2 Observation To Source Terrain Conversion
-
-P4.2 lets a user-confirmed Scout observation become source-backed terrain.
-
-* Only `source_candidate` or `observed` observations can be converted.
-* Conversion is explicit: the user chooses `Confirm as source terrain`.
-* Conversion creates `SourceRef`, source-backed source/excerpt nodes, and `source_contains` relations.
-* The original observation is marked `converted` to prevent repeated provenance intake.
-* Converted terrain keeps reliability hints showing that this is currently a mock Scout observation, not real Playwright retrieval.
-
-Scout still does not decide meaning. Conversion does not rank results, summarize pages with AI, or open a browser view.
-
-## 9.10 P4.3 Scout Provenance Trace
-
-P4.3 closes the local mock provenance loop between Scout intake and source-backed terrain.
-
-* Converted `SourceRef` records may retain `created_from_observation_id`.
-* Source-backed nodes created from an observation keep `created_from` context.
-* The source evidence card shows the Scout origin, status, query, and observed time when present.
-* This trace is informational provenance, not a claim that the current mock observation came from real retrieval.
-
-This keeps the future Playwright path honest: external observations enter as intake records first, then become source-backed terrain only through explicit conversion.
-
-## 9.11 P4.4 Electron Scout Adapter Boundary
-
-P4.4 moves Scout execution behind an Electron-owned adapter boundary.
-
-* The renderer sends a structured `ScoutRunRequest` containing the current tab and `ScoutPlan`.
-* The Electron main process returns a `ScoutRunResult` containing `ScoutObservation` records.
-* The current adapter is still mock-only and does not install or run Playwright.
-* Adapter failures become failed observations instead of silent UI errors.
-* The renderer remains map-first: observations enter the side inspector and can later be confirmed into source terrain.
-
-Future real Playwright work must replace the adapter implementation behind this boundary. It must still return observations first and must not rank results, drive animation frames, decide meaning, or create source-backed terrain directly.
+* Playwright Scout returns observations or source snapshots, not terrain facts.
+* AI Service returns structured Cartographer output only through a real service boundary.
+* Source-backed terrain requires explicit conversion into `SourceRef`, nodes, relations, and provenance.
+* The renderer must not fabricate explanations, learning paths, comparisons, exports, or source distillation.
 
 ## 9.12 P4.5 Direct URL Playwright Scout Spike
 
@@ -913,7 +820,7 @@ P4.6 starts the real telescope experience.
 * Frontier observations carry layer, position, frontier id, discovery mode, and confidence so they can render as candidate stars.
 * Candidate stars are not facts and are not source-backed until explicit conversion.
 
-This phase is aggressive about moving beyond mock visuals, but it still preserves SeekStar's core boundary: map over list, observations before facts, Playwright as Scout, and explicit source conversion.
+This phase is aggressive about moving beyond prototype visuals, but it still preserves SeekStar's core boundary: map over list, observations before facts, Playwright as Scout, and explicit source conversion.
 
 ## 9.14 P4.7 Source-Anchored Linked Frontier
 
@@ -925,6 +832,147 @@ P4.7 lets a source-backed node act as a telescope anchor.
 * Candidate stars are not facts, are not ranked results, and are not source-backed terrain until the user confirms conversion.
 
 This improves the real discovery loop without adding browser navigation, chat, AI summarization, or automatic meaning decisions.
+
+## 9.15 P5.1 Exploration Runtime And Scene Validation
+
+P5.1 aligns engineering structure with `PHILOSOPHY.md` / `PHILOSOPHY.zh.md`:
+
+* renderer exploration state moves out of monolithic `App.tsx` into `useExplorationSession`;
+* Scout closure remains the primary real-data loop: direct URL, frontier discovery, linked outlinks, user-confirmed conversion;
+* `TerrainScene` hydrate, patch apply, and workspace save pass `validateTerrainScene` / `normalizeTerrainScene`;
+* typed exploration services own scene mutations and Scout plan orchestration;
+P5.1 does not add real HTML tile parsing, heuristic keyword expansion, real AI calls, or a global event bus. Those belong to P5.2+ and must extend the exploration runtime instead of bypassing it.
+
+## 9.16 P5.2 Evented Layer Runtime
+
+P5.2 starts the runtime needed for the real multi-layer telescope.
+
+The three product bands are explanatory focal ranges, not the full layer model:
+
+* Star Gallery describes macro orientation.
+* Tile Field describes source-backed content surfaces.
+* Text Grain describes close reading.
+
+The actual runtime spine preserves deeper semantic layers. The current implementation centers on L0-L10: seed field, concept neighborhood, source cluster, document tile, section, paragraph, sentence, phrase or term, word, character, and Unicode / dictionary detail.
+
+P5.2 adds:
+
+* canonical semantic layer definitions in `@seekstar/core-schema`;
+* shared deep-zoom stops used by the canvas;
+* typed exploration events for selection, viewport movement, layer changes, and Scout observation intake;
+* a derived object pool indexing nodes, relations, sources, Scout observations, layer membership, and source-state counts.
+
+P5.2 does not add real HTML parsing, persistent object storage, model calls, vector search, or a full pub/sub framework.
+
+The fastest next product path after P5.2 is:
+
+1. convert confirmed source snapshots into L3-L8 terrain;
+2. make phrase / word / character grains seedable;
+3. add heuristic keyword and adjacent-possibility suggestions before relying on AI;
+4. attach real AI Cartographer calls behind the same event and validation path.
+
+## 9.17 P5.3 Source Snapshot Terrain
+
+P5.3 begins the next product breakthrough: source material becomes zoomable terrain.
+
+The first implementation converts manually provided text and user-confirmed Scout snippets into source-backed nodes:
+
+* L2 source anchor;
+* L3 document / webpage tile;
+* L4 section;
+* L5 paragraph;
+* L6 sentence;
+* L7 phrase;
+* L8 word.
+
+Generated source terrain preserves source metadata, source ranges, token ranges where available, `source_contains` relations, and zoom targets. Phrase and word grains can become new exploration seeds.
+
+P5.3 does not yet implement full HTML DOM parsing, page styling, asset capture, browser rendering, L9 character generation, L10 Unicode / dictionary lookup, or AI source distillation. It deliberately gets the telescope loop working first: a real source enters the map, the user zooms into text grains, and grounded grains become future Scout or Cartographer anchors.
+
+## 9.18 P5.4 Character Unicode Seed Loop
+
+P5.4 extends source-backed close reading beyond words.
+
+For generated L8 word nodes, the system now creates bounded child grains:
+
+* L9 character nodes;
+* L10 local Unicode / dictionary cards.
+
+L9 character nodes are source-backed because the character exists in the source text and preserves a source range. L10 Unicode / dictionary cards are local deterministic expansions, not external dictionary facts, so they remain `local_only`.
+
+P5.4 keeps the node count bounded by expanding only a small number of characters per word. This proves the telescope path without making long pasted sources unreadable.
+
+P5.4 does not add full dictionary lookup, translation, morphology, corpus examples, L11 expanded dictionary surfaces, or a dedicated `grain.seed.created` event.
+
+## 9.19 P5.5 Heuristic Candidate Pool
+
+P5.5 adds a local candidate pool before real AI calls.
+
+When a confirmed source enters the map, SeekStar derives seedable candidate concepts from source-backed paragraph, sentence, phrase, and word grains. These candidates appear as L1 concept nodes around the source context.
+
+Rules:
+
+* candidates are `local_only`, not source-backed facts;
+* candidates preserve source range and token range for traceability;
+* candidates are seedable;
+* candidate relations are `semantic_similarity` and `local_only`;
+* the system must not present candidates as ranked search results or AI conclusions.
+
+P5.5 does not add vector search, real AI keywording, automatic Scout execution, workspace-wide candidate ranking, or user-tunable extraction settings.
+
+## 9.20 P5.6 App Framework Tab Runtime
+
+P5.6 starts the real desktop app framework:
+
+* Electron main owns `TabRecord`, per-tab session partitions, folders, settings, cache budgets, detached windows, and crash records;
+* Playwright Scout runs as a background service with per-tab context reuse and utility-process isolation when available;
+* the renderer talks through narrow preload APIs for tabs, settings, Scout, and workspace storage;
+* the JSON workspace store is treated as a replaceable `WorkspaceStore` API, not as the future database design.
+
+P5.6 does not migrate to SQLite/FTS and does not make every main-window tab renderer isolated.
+
+## 9.21 P5.7 Main-Window Tab Docking
+
+P5.7 makes the Chrome-like tab model real inside the main window.
+
+The main observatory shell owns:
+
+* title bar;
+* workspace and folder sidebar;
+* tab controls;
+* settings;
+* the dock rectangle for the active telescope tab.
+
+The active tab owns:
+
+* telescope workbench;
+* Pixi terrain canvas;
+* command composer;
+* inspector;
+* per-tab scene hydration and save merge.
+
+Electron main docks the active tab's `WebContentsView` into the shell-provided rectangle using `runtimeSurface=docked`. Detached windows use `runtimeSurface=detached`. A tab renderer crash should be recorded on the tab and replaced with local crash HTML without destroying the shell.
+
+P5.7 also stops using preview seed terrain for new tabs. New seed tabs now start as local deterministic `local_only` / `fog` objects on the L0-L10 telescope spine. They are seedable and structured, but they do not claim source-backed facts or AI synthesis before Scout/source intake happens.
+
+## 9.22 P5.8 Pixi Runtime Spine And Simulated Path Removal
+
+P5.8 is a destructive prototype cleanup.
+
+SeekStar removes renderer-local Cartographer and region-action preview behavior from the product path. The product should not fabricate local explanations, questions, learning paths, comparisons, exports, source distillation, or adjacent path maps while those capabilities do not have a real service boundary.
+
+P5.8 keeps only real local telescope operations:
+
+* pan, zoom, layer movement, selection, and lasso;
+* saving selected context;
+* creating a new seed from a selected region or grain;
+* manual source intake;
+* Playwright Scout observations;
+* user-confirmed conversion of observations into source-backed terrain.
+
+The workspace snapshot schema intentionally drops deprecated region action state. Earlier local snapshots are not considered compatible in this prototype slice.
+
+P5.8 also begins moving core presentation logic behind a PixiJS runtime boundary. React remains the shell and control surface. PixiJS owns the telescope stage, and a projection layer decides which terrain objects, relations, and Scout candidates enter the stage for the current viewport.
 
 ## 10. UI Layout
 
@@ -1171,3 +1219,32 @@ Contains:
 8. How much browser behavior should be internal versus external system browser?
 9. Should annotations be private by default even if sources are public?
 10. What is the minimum acceptable citation format for generated Markdown?
+
+## 14. P5.9 Modular Runtime Direction
+
+P5.9 establishes the corrected product architecture:
+
+* App Electron Framework: desktop shell, windows, tab surfaces, settings, IPC, and service hosting.
+* Constellation Engine: the SeekStar core. It owns telescope events, object pools, semantic layers, tab scene state, service requests, and Pixi projection data.
+* Scout / DataService: Playwright-backed observation and source snapshot service.
+* AI Service: encrypted key boundary, context management, structured Cartographer output, and unavailable status when not configured.
+* Storage / Cache Service: JSON adapter now, SQLite/FTS and cache policy later.
+
+The Constellation Engine has two internal layers:
+
+* Constellation Core: domain events, object-pool mutation, scene state, source and AI service ports.
+* Pixi Runtime Adapter: renderable terrain projection, visible relation filtering, candidate observation placement, and later hit-testing/draw commands.
+
+Each module must have a terminal harness that accepts structured parameters and returns structured JSON. These harnesses are for protocol verification, not product fallback behavior.
+
+## 15. P5.10 Engine-Owned Terrain Direction
+
+P5.10 continues reducing App coupling:
+
+* seed scene scaffolding belongs to the Constellation Engine;
+* source snapshots become source-backed terrain through `source.snapshot.ingested`;
+* text grains and heuristic candidate seeds are generated inside the engine;
+* Pixi interaction math belongs to the Pixi Runtime Adapter;
+* desktop React components subscribe, render controls, and forward events, but do not own terrain semantics.
+
+The engine exposes service ports for Scout, AI, Storage, and source snapshot services so future implementations can move behind Electron utility processes, SQLite/FTS, native modules, or remote APIs without changing the product semantics.

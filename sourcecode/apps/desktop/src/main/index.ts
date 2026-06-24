@@ -1,17 +1,34 @@
-import { app, BrowserWindow, shell } from "electron";
+import { app, BaseWindow, WebContentsView, shell } from "electron";
 import { join } from "node:path";
+import { registerAppSettingsStore } from "./appSettingsStore";
 import { registerScoutAdapter } from "./scoutAdapter";
+import { TabRuntimeManager } from "./tabRuntimeManager";
 import { registerWindowBridge } from "./windowBridge";
 import { registerWorkspaceStore } from "./workspaceStore";
 
-app.disableHardwareAcceleration();
+const tabRuntimeManager = new TabRuntimeManager();
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!hasSingleInstanceLock) {
+  app.quit();
+}
 
 registerWindowBridge();
-registerWorkspaceStore();
+registerWorkspaceStore({
+  onClearDevelopmentData: async () => {
+    await tabRuntimeManager.resetDevelopmentState();
+  },
+});
 registerScoutAdapter();
+registerAppSettingsStore({
+  onSave: async (settings) => {
+    await tabRuntimeManager.applySettings(settings);
+  },
+});
+tabRuntimeManager.registerIpc();
 
-function createMainWindow(): BrowserWindow {
-  const window = new BrowserWindow({
+function createMainWindow(): BaseWindow {
+  const window = new BaseWindow({
     width: 1600,
     height: 900,
     minWidth: 1280,
@@ -19,6 +36,7 @@ function createMainWindow(): BrowserWindow {
     title: "SeekStar",
     backgroundColor: "#00000000",
     show: false,
+    roundedCorners: true,
     titleBarStyle: "hidden",
     ...(process.platform !== "darwin"
       ? {
@@ -30,6 +48,12 @@ function createMainWindow(): BrowserWindow {
         }
       : {}),
     ...(process.platform === "win32" ? { backgroundMaterial: "acrylic" as const } : {}),
+  });
+  if (process.platform === "win32") {
+    window.setBackgroundColor("#00000000");
+    window.setBackgroundMaterial("acrylic");
+  }
+  const shellView = new WebContentsView({
     webPreferences: {
       preload: join(__dirname, "../preload/index.cjs"),
       contextIsolation: true,
@@ -37,46 +61,73 @@ function createMainWindow(): BrowserWindow {
       sandbox: true,
     },
   });
+  shellView.setBackgroundColor("#00000000");
 
-  window.webContents.once("did-finish-load", () => {
-    if (!app.isPackaged) {
-      window.webContents.openDevTools({ mode: "detach" });
-    }
+  window.contentView.addChildView(shellView);
+  shellView.setBounds(getWindowContentBounds(window));
+  window.on("resize", () => {
+    shellView.setBounds(getWindowContentBounds(window));
+  });
+  window.on("closed", () => {
+    closeWebContentsIfAlive(shellView);
   });
 
-  window.webContents.setWindowOpenHandler(({ url }) => {
+  shellView.webContents.once("did-finish-load", () => {
+    if (!app.isPackaged) {
+      shellView.webContents.openDevTools({ mode: "detach" });
+    }
+    window.show();
+  });
+
+  shellView.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
     return { action: "deny" };
   });
 
   if (process.env.ELECTRON_RENDERER_URL) {
-    void window.loadURL(process.env.ELECTRON_RENDERER_URL);
+    tabRuntimeManager.setRendererUrl(process.env.ELECTRON_RENDERER_URL);
+    void shellView.webContents.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
-    void window.loadFile(join(__dirname, "../renderer/index.html"));
+    void shellView.webContents.loadFile(join(__dirname, "../renderer/index.html"));
   }
 
   return window;
 }
 
-app.whenReady().then(() => {
-  const window = createMainWindow();
+function getWindowContentBounds(window: BaseWindow): Electron.Rectangle {
+  const [width, height] = window.getContentSize();
+  return { x: 0, y: 0, width, height };
+}
 
-  window.once("ready-to-show", () => {
-    window.show();
+function closeWebContentsIfAlive(view: WebContentsView): void {
+  try {
+    if (!view.webContents.isDestroyed()) {
+      view.webContents.close();
+    }
+  } catch {
+    // BaseWindow owns the view during shutdown; destroyed views are already gone.
+  }
+}
+
+if (hasSingleInstanceLock) {
+  app.on("second-instance", () => {
+    tabRuntimeManager.focusMainWindow();
   });
 
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      const nextWindow = createMainWindow();
-      nextWindow.once("ready-to-show", () => {
-        nextWindow.show();
-      });
+  app.whenReady().then(async () => {
+    await tabRuntimeManager.load();
+    tabRuntimeManager.setMainWindow(createMainWindow());
+
+    app.on("activate", () => {
+      if (BaseWindow.getAllWindows().length === 0) {
+        tabRuntimeManager.setMainWindow(createMainWindow());
+      }
+    });
+  });
+
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") {
+      app.quit();
     }
   });
-});
-
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
-});
+}

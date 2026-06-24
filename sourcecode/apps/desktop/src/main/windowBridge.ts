@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import type { WebContents } from "electron";
 
 export type WindowAction =
   | "reload"
@@ -29,9 +30,7 @@ function registerHandler(
   ipcMain.handle(channel, handler);
 }
 
-function executeWindowAction(window: BrowserWindow, action: WindowAction): void {
-  const contents = window.webContents;
-
+function executeWindowAction(contents: WebContents, window: BrowserWindow | null, action: WindowAction): void {
   switch (action) {
     case "reload":
       contents.reload();
@@ -73,15 +72,26 @@ function executeWindowAction(window: BrowserWindow, action: WindowAction): void 
       contents.setZoomFactor(1);
       break;
     case "toggle-fullscreen":
-      window.setFullScreen(!window.isFullScreen());
+      if (window) {
+        window.setFullScreen(!window.isFullScreen());
+      }
       break;
     case "about":
-      void dialog.showMessageBox(window, {
-        type: "info",
-        title: "SeekStar",
-        message: "SeekStar",
-        detail: "P0 cognitive cartography prototype.",
-      });
+      if (window) {
+        void dialog.showMessageBox(window, {
+          type: "info",
+          title: "SeekStar",
+          message: "SeekStar",
+          detail: "P0 cognitive cartography prototype.",
+        });
+      } else {
+        void dialog.showMessageBox({
+          type: "info",
+          title: "SeekStar",
+          message: "SeekStar",
+          detail: "P0 cognitive cartography prototype.",
+        });
+      }
       break;
     default:
       console.warn(`[SeekStar] Unknown window action: ${String(action)}`);
@@ -90,18 +100,14 @@ function executeWindowAction(window: BrowserWindow, action: WindowAction): void 
 
 export function registerWindowBridge(): void {
   registerHandler("window:go-back", (event) => {
-    const window = getWindowFromEvent(event);
-
-    if (window?.webContents.canGoBack()) {
-      window.webContents.goBack();
+    if (event.sender.canGoBack()) {
+      event.sender.goBack();
     }
   });
 
   registerHandler("window:go-forward", (event) => {
-    const window = getWindowFromEvent(event);
-
-    if (window?.webContents.canGoForward()) {
-      window.webContents.goForward();
+    if (event.sender.canGoForward()) {
+      event.sender.goForward();
     }
   });
 
@@ -109,13 +115,8 @@ export function registerWindowBridge(): void {
     const action = args[0] as WindowAction;
     const window = getWindowFromEvent(event);
 
-    if (!window) {
-      console.warn(`[SeekStar] No window for action: ${action}`);
-      return;
-    }
-
     try {
-      executeWindowAction(window, action);
+      executeWindowAction(event.sender, window, action);
     } catch (error) {
       console.error(`[SeekStar] Failed to run action "${action}"`, error);
       throw error;

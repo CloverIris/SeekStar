@@ -25,7 +25,7 @@ SeekStar must persist workspaces, tabs, nodes, relations, layers, camera positio
   - Official docs to check during app scaffold: IndexedDB and Origin Private File System references.
   - Notes: convenient for renderer-only prototypes, but less ideal for Electron-owned source caches and export files.
 - File-based JSON snapshots:
-  - Notes: easy for early fixtures and tests, but risky as the main store once source snapshots and indexes grow.
+  - Notes: easy for early seed scaffolds and tests, but risky as the main store once source snapshots and indexes grow.
 
 ## Performance Constraints
 
@@ -62,7 +62,7 @@ Current P2.1 snapshot scope:
 - camera and semantic layer state through `ViewportState`;
 - current selection state;
 - side tray items;
-- local generated cartographer notes.
+- local AI output notes.
 
 ## Rejected Approaches
 
@@ -77,7 +77,7 @@ Durable local persistence, transactions, and search indexing are not SeekStar's 
 
 ## Fallback Plan
 
-If SQLite integration slows the initial shell, keep fixtures and JSON snapshots for the first visible prototype, but do not let renderer components depend on the JSON shape directly.
+If SQLite integration slows the initial shell, keep seed scaffolds and JSON snapshots for the first visible prototype, but do not let renderer components depend on the JSON shape directly.
 
 ## Open Questions
 

@@ -20,6 +20,20 @@ The architecture must separate:
 
 The app should never depend on AI for frame-by-frame interaction. AI generates terrain. The local application renders and navigates terrain.
 
+The core runtime metaphor is a telescope:
+
+```text
+Telescope operation
+  -> typed exploration event
+  -> scene / data-pool / object-pool mutation
+  -> subscribed rendering and inspector surfaces
+  -> optional Scout or Cartographer job when the event needs external observation or synthesis
+```
+
+Zooming changes semantic depth. Panning explores same-layer adjacency. Selection, lasso, brush, keyword promotion, and edge movement are product events before they are UI callbacks. The renderer should be able to keep the user moving through Star Gallery, Tile Field, and Text Grain without waiting for AI.
+
+AI Agent involvement should be sparse and explicit: organize unknowns, propose adjacent possibilities, explain selected regions, synthesize source-backed material, or create structured Cartographer patches. Routine discovery should prefer local heuristics, source snapshots, object-pool indexes, and Playwright Scout observations before model calls.
+
 ## 2. Recommended High-level Architecture
 
 ### 2.1 Electron Host Layer
@@ -61,6 +75,29 @@ Responsibilities:
 Design principle:
 The renderer receives structured scene data. It does not ask AI how to draw every frame.
 
+P5.1-P5.9 implementation note:
+The renderer shell subscribes to exploration state through `useExplorationSession`, while core scene mutation, object-pool derivation, Scout planning, and Pixi projection now live in `@seekstar/constellation-engine`. See `docs/architecture/p5-9-service-contracts-and-constellation-engine.md`.
+
+P5.2-P5.9 implementation note:
+The runtime has a typed event entry and derived object pool. `selection.changed`, `viewport.changed`, `layer.changed`, and `scout.observations.appended` wrap the scene mutation helpers in the Constellation Engine. `ExplorationObjectPool` indexes the active scene for canvas, inspector, search, and source-conversion subscribers. The canonical layer model lives in `@seekstar/core-schema/src/semanticLayers.ts`; Star Gallery, Tile Field, and Text Grain are focal bands over the deeper L0-L10 semantic spine, not a replacement for it.
+
+These events are the telescope operation protocol. Viewport movement may reveal same-layer frontiers. Layer changes move between macro orientation, source-backed tile surfaces, and text-grain detail. Selection and lasso create addressable regions that can be inspected, promoted, exported, or passed to AI only when the user asks for interpretation.
+
+P5.6 implementation note:
+The Electron host now owns the first Chrome-like tab runtime boundary. `TabRuntimeManager` stores `TabRecord` metadata, WebContentsView instances, session partition strings, detached tab windows, workspace folders, crash records, and cache budgets. Renderer tab controls call the runtime through the preload bridge, while `TerrainScene` remains the per-tab durable exploration snapshot. The first `WorkspaceStore` boundary remains JSON-backed so SQLite/FTS can be introduced through a migration ADR instead of leaking file shape into the renderer. See `docs/architecture/p5-6-app-framework-tab-runtime.md`.
+
+P5.7 implementation note:
+The main observatory shell now provides a dock rectangle instead of rendering the active telescope tab itself. Electron main docks the active tab `WebContentsView` into that rectangle with `runtimeSurface=docked`; detached windows reload the same tab surface with `runtimeSurface=detached`. This is the first main-window crash-isolation boundary: shell UI and tab UI are separate renderer surfaces, while `WorkspaceStore` and `TabRuntimeManager` remain host-owned.
+
+P5.8 implementation note:
+Renderer-local Cartographer and region action preview behavior has been removed from the product path. Selection, seed creation, source intake, Playwright Scout observations, and source conversion remain; explanation, distillation, learning paths, comparison, and export must return only through future real service boundaries. The canvas renderable-object decision is moving behind a PixiJS projection boundary so React shell code no longer owns core presentation filtering.
+
+P5.9 implementation note:
+The corrected high-level module boundary is now App Electron Framework, Constellation Engine, Scout/DataService, AI Service, and Storage/Cache Service. The Constellation Engine is split into Constellation Core and Pixi Runtime Adapter. `@seekstar/constellation-engine` owns telescope events, object pools, workspace schema revision 59, semantic lens mapping, Scout planning, and Pixi projection data. `@seekstar/scout-service`, `@seekstar/ai-service`, and `@seekstar/storage-service` define independently testable service contracts with CLI harnesses. Electron remains the app framework and service host rather than the owner of terrain semantics.
+
+P5.10 implementation note:
+Seed scene scaffolding, source snapshot ingestion, source-backed text-grain terrain construction, heuristic candidate extraction, and Pixi interaction math now live in `@seekstar/constellation-engine`. The desktop renderer consumes these through engine exports and dispatches `source.snapshot.ingested` instead of constructing terrain locally. The engine also exposes pure TypeScript service ports for Scout, AI, Storage, and source snapshot services.
+
 ### 2.3 Agent Orchestration Layer
 
 Responsibilities:
@@ -91,6 +128,8 @@ Responsibilities:
 Design principle:
 Playwright is a scout, not a browser UI replacement.
 
+Scout may be triggered by telescope events such as direct URL intake, source-anchored outlink exploration, or drifting near a same-layer frontier. It returns structured observations into the data pool. It must not drive animation, rank truth, decide meaning, or directly create source-backed terrain.
+
 ### 2.5 Local Data Layer
 
 Responsibilities:
@@ -110,8 +149,13 @@ Responsibilities:
 Design principle:
 Everything visible in the canvas should be reconstructable from stored structured data.
 
+The data layer owns the durable pool of scenes, sources, observations, generated outputs, selections, and trails. Derived object pools may be rebuilt from it and subscribed to by canvas, inspector, local search, side tray, export, and future reading surfaces.
+
 P2 implementation note:
-The first durable store is an Electron-owned JSON workspace snapshot behind the preload bridge. It persists tabs, `TerrainScene` objects, viewport, selection, side tray items, and local generated notes. This is a small bridge to real product use, not the final source-cache database or full-text index.
+The first durable store is an Electron-owned JSON workspace snapshot behind the preload bridge. It persists tabs, `TerrainScene` objects, viewport, selection, side tray items, and local notes. This is a small bridge to real product use, not the final source-cache database or full-text index.
+
+P5.6 implementation note:
+The JSON store is now hidden behind the `WorkspaceStore` interface in the Electron host. Runtime tab records, folders, settings, and development reset paths are host-owned concerns exposed only through narrow preload APIs. The renderer should not depend on JSON filenames, storage paths, or future SQLite table shapes.
 
 ### 2.6 Search and Index Layer
 
@@ -217,7 +261,7 @@ Evaluate:
 
 Decision criteria:
 
-* force simulation;
+* force-directed layout;
 * non-overlap;
 * relation rendering;
 * thousands of nodes;
@@ -644,7 +688,7 @@ The trace does not promote observations automatically and does not let Playwrigh
 
 P4.4 places Scout execution behind the Electron observatory boundary.
 
-The renderer invokes `window.seekstar.scout.runPlan(tabId, plan)` through the preload bridge. The main process validates the request and returns a `ScoutRunResult` with `ScoutObservation` records. The current adapter is mock-only, but its location and contract match the future Playwright Scout role:
+The renderer invokes `window.seekstar.scout.runPlan(tabId, plan)` through the preload bridge. The main process validates the request and returns a `ScoutRunResult` with `ScoutObservation` records. The current adapter is Playwright-backed and keeps source observations separate from source-backed terrain until user confirmation:
 
 * renderer owns canvas state and UI response;
 * Electron main owns Scout task orchestration;
@@ -660,7 +704,7 @@ P4.5 enables a narrow real Scout path for direct HTTP(S) URLs.
 
 The renderer can route a direct URL through the command card into a `ScoutPlan`. The preload bridge sends that plan to the Electron main process. The main-process adapter uses Playwright Library to run a headless Chromium observation and returns structured `ScoutObservation` records.
 
-P4.5 deliberately does not perform keyword search. If a candidate query is not a URL, it must not be sent to a search engine or rendered as results. It should remain mock, pending, or failed depending on the plan path.
+P4.5 deliberately does not perform keyword search. If a candidate query is not a URL, it must not be sent to a search engine or rendered as results. It should remain a typed failed or unavailable observation unless a real Scout mode supports that input.
 
 The Playwright adapter may collect:
 
@@ -1150,61 +1194,11 @@ Later:
 * token usage;
 * cache hit.
 
-P3.1 implements only the local structured job surface:
+P5.9 removes the earlier local Cartographer prototype path from the architecture baseline.
 
-* completed mock cartographer jobs;
-* generated `CartographerOutput` records;
-* terrain patches added to `TerrainScene`;
-* scout plans as candidate directions only.
+Agent calls now belong behind `@seekstar/ai-service`. If no configured provider exists, the service returns an explicit unavailable status instead of fabricating output. Any future Cartographer result must be structured, cancellable, cacheable, and validated before it can mutate `TerrainScene`.
 
-P3.2 adds renderer-local lifecycle simulation:
-
-* queued and running states;
-* progress bands;
-* cancellation before patch application;
-* mock failure before patch application;
-* completed jobs as the only patch-producing state.
-
-It does not connect OpenAI, Playwright, real retrieval, cost accounting, tracing, external cancellation, worker orchestration, or source-backed AI claims.
-
-P3.4 adds a mock Layer Cartographer action over the same boundary:
-
-* selected terrain can request adjacent paths;
-* output is a `TerrainPatch` containing generated questions, weak route nodes, and fog regions;
-* the right inspector remains provenance and control surface only;
-* the canvas remains the primary product surface.
-
-This does not add model calls, Playwright retrieval, browser behavior, real search, or source-backed claims.
-
-P3.5 adds generated questions and learning paths as terrain-producing jobs:
-
-* `question_generator` creates generated next-question nodes from selected terrain;
-* `learning_path_mapper` creates a mock path through orientation, evidence readiness, and fog;
-* lasso selections, side-tray items, and selected nodes share the same job boundary;
-* outputs are inspectable map patches, not chat answers.
-
-This does not add model calls, retrieval, real citations, Markdown file writing, or source-backed synthesis.
-
-P3.7 adds the cartographer output seed loop:
-
-* generated cartographer terrain may expose seed creation only when marked `can_create_seed`;
-* `created_from` records the origin node, layer, and label for backlink context;
-* new tabs remain independent exploration universes;
-* returning to origin uses backlink focus rather than browser history.
-
-This does not add AI, Playwright, real search, real persistence changes, or factual promotion of generated terrain.
-
-### 15.6.1 Deep Zoom Spine Prototype
-
-The Deep Zoom Spine keeps `TerrainScene` as the renderer contract while proving recursive semantic depth.
-
-* Layers L0-L10 are navigable in the semantic rail.
-* Nodes may carry optional source ranges, token ranges, semantic breadcrumbs, zoom targets, seedability, and created-from refs.
-* The renderer changes visible terrain by semantic layer instead of treating zoom as a visual-only scale.
-* Text grain nodes use paragraph, sentence, word, character, and dictionary visual treatments.
-* Seedable grains create independent tabs with backlinks, not browser history.
-
-The prototype is mock-only. Real webpages, Playwright observations, AI cartography, dictionary lookup, and source-backed claims must attach to this spine later rather than bypassing it.
+The semantic deep-zoom spine remains part of the product model, but the owner is now the Constellation Engine rather than renderer-local prototype logic.
 
 ### 15.7 Empty states
 
@@ -1239,7 +1233,7 @@ If source is unavailable:
 ## 16. Strongest Product Differentiators
 
 1. The input box is no longer the center of cognition.
-2. Unknown unknowns become fog regions.
+2. Unseen questions become fog regions.
 3. Any grain of information can become a seed.
 4. Zoom is semantic, not only visual.
 5. Lasso and brush turn visual attention into AI context.

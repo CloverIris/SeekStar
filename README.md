@@ -160,7 +160,8 @@ SeekStar 目前处于早期原型阶段。
 当前版本仍是早期原型，但已超出纯 mock 壳层：
 
 * 已有 Pixi 星图画布、Deep Zoom Spine mock、lasso 与本地工作区持久化；
-* Playwright Scout adapter 已可观察直接 URL 与部分 frontier 模式；
+* **P5.1 探索运行时**：`useExplorationSession`、Scout 服务层、`validateTerrainScene`；
+* Playwright Scout adapter 可观察直接 URL 与部分 frontier 模式；
 * 尚无真实 AI 制图调用、完整 HTML tile 平面、关键词级网页渲染与完整浏览器替代。
 
 ---

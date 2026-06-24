@@ -1,0 +1,110 @@
+{
+  "id": "scene-p5-9-minimal",
+  "active_tab_id": "tab-p5-9",
+  "tabs": [
+    {
+      "id": "tab-p5-9",
+      "title": "P5.9 Harness Seed",
+      "seed": "P5.9 Harness Seed",
+      "source_mode": "new_seed",
+      "current_layer": "L0",
+      "viewport": {
+        "x": 0,
+        "y": 0,
+        "zoom": 1,
+        "layer": "L0"
+      },
+      "node_ids": ["node-seed", "node-frontier"],
+      "relation_ids": ["rel-seed-frontier"],
+      "source_ids": [],
+      "created_at": "2026-06-24T00:00:00.000Z",
+      "updated_at": "2026-06-24T00:00:00.000Z"
+    }
+  ],
+  "layers": [
+    {
+      "id": "L0",
+      "label": "Seed Field",
+      "child_layer_ids": ["L1"],
+      "breadcrumb": ["P5.9 Harness Seed"]
+    },
+    {
+      "id": "L1",
+      "label": "Topic Neighborhood",
+      "parent_layer_id": "L0",
+      "child_layer_ids": [],
+      "breadcrumb": ["P5.9 Harness Seed", "Topic Neighborhood"]
+    }
+  ],
+  "nodes": [
+    {
+      "id": "node-seed",
+      "type": "domain",
+      "title": "P5.9 Harness Seed",
+      "layer": "L0",
+      "source_state": "local_only",
+      "confidence": 1,
+      "importance": 1,
+      "tags": ["harness"],
+      "position_hint": {
+        "x": 0,
+        "y": 0
+      },
+      "created_at": "2026-06-24T00:00:00.000Z",
+      "updated_at": "2026-06-24T00:00:00.000Z"
+    },
+    {
+      "id": "node-frontier",
+      "type": "fog_region",
+      "title": "Adjacent unknown edge",
+      "layer": "L0",
+      "source_state": "fog",
+      "confidence": 0.3,
+      "importance": 0.6,
+      "tags": ["frontier"],
+      "position_hint": {
+        "x": 420,
+        "y": 0
+      },
+      "created_at": "2026-06-24T00:00:00.000Z",
+      "updated_at": "2026-06-24T00:00:00.000Z"
+    }
+  ],
+  "relations": [
+    {
+      "id": "rel-seed-frontier",
+      "from": "node-seed",
+      "to": "node-frontier",
+      "type": "semantic_similarity",
+      "confidence": 0.4,
+      "explanation": "Harness relation for protocol validation.",
+      "source_state": "local_only"
+    }
+  ],
+  "sources": [],
+  "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 1,
+    "layer": "L0"
+  },
+  "selection": {
+    "id": "selection-p5-9",
+    "tab_id": "tab-p5-9",
+    "node_ids": ["node-seed"],
+    "source_ids": [],
+    "text_ranges": [],
+    "created_at": "2026-06-24T00:00:00.000Z"
+  },
+  "agent_jobs": [],
+  "cartographer_outputs": [],
+  "scout_observations": [],
+  "metadata": {
+    "title": "P5.9 Harness Seed",
+    "description": "Protocol fixture for Constellation Engine CLI verification.",
+    "source_state": "local_only",
+    "generated_by": "user",
+    "created_at": "2026-06-24T00:00:00.000Z",
+    "updated_at": "2026-06-24T00:00:00.000Z"
+  }
+}

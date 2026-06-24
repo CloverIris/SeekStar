@@ -148,6 +148,65 @@ export interface Workspace {
   name: string;
   active_tab_id: string;
   tabs: ExplorationTab[];
+  tab_records?: TabRecord[];
+  folders?: WorkspaceFolder[];
+  created_at: string;
+  updated_at: string;
+}
+
+export type TabRuntimeStatus =
+  | "booting"
+  | "active"
+  | "inactive"
+  | "suspended"
+  | "crashed"
+  | "closing";
+
+export type TabWindowState =
+  | "main"
+  | "detached"
+  | "hidden";
+
+export interface TabCachePolicy {
+  max_bytes: number;
+  inactive_grace_ms: number;
+  eviction: "lru_lfu";
+}
+
+export interface TabCrashReport {
+  tab_id: string;
+  reason: string;
+  exit_code?: number;
+  last_event?: string;
+  occurred_at: string;
+  details?: string;
+}
+
+export interface TabRecord {
+  id: string;
+  title: string;
+  seed: string;
+  order: number;
+  pinned: boolean;
+  favorite: boolean;
+  folder_id?: string;
+  workspace_id?: string;
+  window_state: TabWindowState;
+  runtime_status: TabRuntimeStatus;
+  session_partition: string;
+  cache_policy: TabCachePolicy;
+  cache_bytes: number;
+  last_accessed_at: string;
+  crash_report?: TabCrashReport;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceFolder {
+  id: string;
+  title: string;
+  parent_id?: string;
+  order: number;
   created_at: string;
   updated_at: string;
 }
@@ -316,7 +375,7 @@ export interface ScoutObservation {
   id: string;
   tab_id: string;
   status: ScoutObservationStatus;
-  adapter?: "mock" | "playwright";
+  adapter?: "playwright";
   layer?: LayerId;
   position_hint?: PositionHint;
   frontier_id?: string;
@@ -343,7 +402,7 @@ export interface ScoutRunRequest {
 }
 
 export interface ScoutRunResult {
-  adapter: "mock" | "playwright";
+  adapter: "playwright";
   observations: ScoutObservation[];
   completed_at: string;
 }
@@ -368,7 +427,7 @@ export interface TerrainSceneMetadata {
   title: string;
   description?: string;
   source_state: SourceState;
-  generated_by: "fixture" | "agent" | "user" | "import";
+  generated_by: "agent" | "user" | "import";
   created_at: string;
   updated_at: string;
 }
@@ -388,3 +447,25 @@ export interface TerrainScene {
   scout_observations?: ScoutObservation[];
   metadata: TerrainSceneMetadata;
 }
+
+export {
+  assertValidTerrainScene,
+  normalizeTerrainScene,
+  validateTerrainScene,
+  type TerrainValidationIssue,
+  type TerrainValidationResult,
+  type TerrainValidationSeverity,
+} from "./validateTerrainScene.js";
+
+export {
+  CANONICAL_LAYER_DEFINITIONS,
+  getDeepZoomLayerStops,
+  getLayerDefinition,
+  getLayerFocalBand,
+  getLayerOrder,
+  isMacroLayer,
+  isTextGrainLayer,
+  isTileLayer,
+  type SemanticFocalBand,
+  type SemanticLayerDefinition,
+} from "./semanticLayers.js";

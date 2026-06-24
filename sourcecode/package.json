@@ -9,9 +9,9 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "npm --workspace @seekstar/desktop run dev",
-    "build": "npm run build --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "dev": "npm --workspace @seekstar/core-schema run build && npm --workspace @seekstar/constellation-engine run build && npm --workspace @seekstar/ai-service run build && npm --workspace @seekstar/scout-service run build && npm --workspace @seekstar/storage-service run build && npm --workspace @seekstar/desktop run dev",
+    "build": "npm --workspace @seekstar/core-schema run build && npm --workspace @seekstar/constellation-engine run build && npm --workspace @seekstar/ai-service run build && npm --workspace @seekstar/scout-service run build && npm --workspace @seekstar/storage-service run build && npm --workspace @seekstar/desktop run build",
+    "typecheck": "npm --workspace @seekstar/core-schema run typecheck && npm --workspace @seekstar/constellation-engine run typecheck && npm --workspace @seekstar/ai-service run typecheck && npm --workspace @seekstar/scout-service run typecheck && npm --workspace @seekstar/storage-service run typecheck && npm --workspace @seekstar/desktop run typecheck",
     "clean": "npm run clean --workspaces --if-present"
   },
   "engines": {

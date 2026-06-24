@@ -5,6 +5,17 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
+    build: {
+      rollupOptions: {
+        input: {
+          index: resolve("src/main/index.ts"),
+          scoutWorker: resolve("src/main/scoutWorker.ts"),
+        },
+        output: {
+          entryFileNames: "[name].js",
+        },
+      },
+    },
   },
   preload: {
     plugins: [externalizeDepsPlugin()],

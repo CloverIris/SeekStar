@@ -1,0 +1,6 @@
+{
+  "type": "selection.changed",
+  "nodeIds": ["node-frontier"],
+  "focusNodeId": "node-frontier",
+  "intent": "inspect"
+}
