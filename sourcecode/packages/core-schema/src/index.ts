@@ -139,6 +139,25 @@ export interface ViewportState {
 
 export type CameraState = ViewportState;
 
+export type TileAbsorptionTrigger = "threshold" | "click" | "command";
+export type TileAbsorptionStatus = "idle" | "absorbed";
+
+export interface BrowserTileAbsorptionState {
+  status: TileAbsorptionStatus;
+  node_id?: string;
+  source_id?: string;
+  source_url?: string;
+  entered_at?: string;
+  exit_layer: LayerId;
+  trigger?: TileAbsorptionTrigger;
+}
+
+export interface TerrainRuntimeState {
+  focused_node_id?: string;
+  browser_absorption: BrowserTileAbsorptionState;
+  updated_at: string;
+}
+
 export interface Workspace {
   id: string;
   name: string;
@@ -441,6 +460,7 @@ export interface TerrainScene {
   agent_jobs: AgentJob[];
   cartographer_outputs: CartographerOutput[];
   scout_observations?: ScoutObservation[];
+  runtime: TerrainRuntimeState;
   metadata: TerrainSceneMetadata;
 }
 

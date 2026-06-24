@@ -298,6 +298,30 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     [openSeedScene],
   );
 
+  const handleUseHyperlinkAsSeed = useCallback(
+    (input: { originNodeId?: string; originSourceId?: string; originTitle?: string; title?: string; url: string }) => {
+      const url = input.url.trim();
+
+      if (!url) {
+        return;
+      }
+
+      openSeedScene(
+        createSeedScene(input.title?.trim() || url, {
+          sourceMode: "hyperlink",
+          parentBacklink: {
+            tab_id: activeTabId,
+            node_id: input.originNodeId,
+            source_id: input.originSourceId,
+            label: input.originTitle ? `Hyperlink from ${input.originTitle}` : "Hyperlink",
+            excerpt: url,
+          },
+        }),
+      );
+    },
+    [activeTabId, openSeedScene],
+  );
+
   const handleExploreInCurrentTab = useCallback(
     (seed: string): SelectionSyncResult | undefined => {
       const title = seed.trim();
@@ -538,6 +562,51 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     },
     [activeTabId, replaceScene, scene],
   );
+
+  const handleTileFocus = useCallback(
+    (nodeId: string): SelectionSyncResult => {
+      const result = applyExplorationEvent(scene, {
+        type: "tile.focused",
+        nodeId,
+      });
+      replaceScene(activeTabId, result.scene);
+
+      return {
+        selectedNodeIds: result.selectedNodeIds ?? result.scene.selection.node_ids,
+        focusNodeId: result.focusNodeId,
+      };
+    },
+    [activeTabId, replaceScene, scene],
+  );
+
+  const handleTileAbsorptionEnter = useCallback(
+    (nodeId: string, trigger: "threshold" | "click" | "command" = "click"): SelectionSyncResult => {
+      const result = applyExplorationEvent(scene, {
+        type: "tile.absorption.entered",
+        nodeId,
+        trigger,
+      });
+      replaceScene(activeTabId, result.scene);
+
+      return {
+        selectedNodeIds: result.selectedNodeIds ?? result.scene.selection.node_ids,
+        focusNodeId: result.focusNodeId,
+      };
+    },
+    [activeTabId, replaceScene, scene],
+  );
+
+  const handleTileAbsorptionExit = useCallback((): SelectionSyncResult => {
+    const result = applyExplorationEvent(scene, {
+      type: "tile.absorption.exited",
+    });
+    replaceScene(activeTabId, result.scene);
+
+    return {
+      selectedNodeIds: result.selectedNodeIds ?? result.scene.selection.node_ids,
+      focusNodeId: result.focusNodeId,
+    };
+  }, [activeTabId, replaceScene, scene]);
 
   const handleRunScoutPlan = useCallback(
     async (plan: ScoutPlan, placement?: ScoutObservationPlacement): Promise<ScoutObservation | undefined> => {
@@ -804,10 +873,14 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     syncSceneSelection,
     syncSceneViewport,
     handleLayerSelect,
+    handleTileFocus,
+    handleTileAbsorptionEnter,
+    handleTileAbsorptionExit,
     handleResetWorkspace,
     handleExploreInCurrentTab,
     handleApplyDomainLexiconToDefaultSeek,
     handleUseAsSeed,
+    handleUseHyperlinkAsSeed,
     handleTabSelect,
     handleCloseTab,
     handleReorderTabs,

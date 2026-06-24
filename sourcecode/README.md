@@ -48,3 +48,23 @@ Development mode opens detached DevTools by default. Restart Electron fully afte
 - `UI_STYLE_GUIDE.md`: visual system and shell standards.
 - `docs/architecture/`: architecture slices, service contracts, 12Level telescope runtime.
 - `docs/decisions/`: architecture decision records.
+
+## Current Mainline Status
+
+SeekStar is past mock fallback cleanup and is in core usability construction. The five-module boundary is active: Electron App Framework, Constellation Engine, Scout/DataService, AI Service, and Storage/Cache Service.
+
+The current usable spine includes:
+
+- canonical 12Level terrain schema and Pixi projection;
+- Constellation Engine event reducer, object pool, source terrain intake, and workspace session helpers;
+- Electron tab/window runtime with docked and detached tab surfaces;
+- L3 tile projection with visible-tile thumbnail prewarm and absorbed live browser surfaces;
+- `TerrainScene.runtime` for focused tile and browser absorption session state.
+
+Remaining before practical daily use:
+
+- source-backed hyperlink tabs through Scout snapshot ingestion;
+- animated click/zoom absorption transitions;
+- stronger workspace/session runtime moved out of desktop React glue;
+- AI Cartographer parent-context patches for orphan linked pages;
+- Storage Service workspace adapter hardening before SQLite/FTS.

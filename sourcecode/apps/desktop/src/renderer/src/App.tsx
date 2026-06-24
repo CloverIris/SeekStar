@@ -1,4 +1,5 @@
 ﻿import type { ExplorationTab, LayerId, ScoutObservation, ScoutPlan, SourceRef, TerrainNode, TerrainScene } from "@seekstar/core-schema";
+import { isTileLayer } from "@seekstar/core-schema";
 import type { CanvasTool, SourceIngestionInput } from "@seekstar/constellation-engine";
 import type { SeekStarSettings } from "../../main/appSettingsStore";
 import type { TabRuntimeSnapshot } from "../../main/tabRuntimeManager";
@@ -43,9 +44,13 @@ export function App(): ReactElement {
     syncSceneSelection,
     syncSceneViewport,
     handleLayerSelect: selectLayer,
+    handleTileFocus,
+    handleTileAbsorptionEnter,
+    handleTileAbsorptionExit,
     handleExploreInCurrentTab: exploreInCurrentTab,
     handleApplyDomainLexiconToDefaultSeek: applyDomainLexiconToDefaultSeek,
     handleUseAsSeed: createSeedTab,
+    handleUseHyperlinkAsSeed: createHyperlinkTab,
     handleTabSelect: selectTab,
     handleCloseTab: closeTab,
     handleReorderTabs: reorderTabs,
@@ -88,6 +93,40 @@ export function App(): ReactElement {
   useEffect(() => {
     activeTabIdRef.current = activeTabId;
   }, [activeTabId]);
+
+  useEffect(() => {
+    if (!runtimeTabId) {
+      return undefined;
+    }
+
+    return window.seekstar.tiles.onLinkActivated((event) => {
+      if (event.tabId !== activeTabIdRef.current) {
+        return;
+      }
+
+      createHyperlinkTab({
+        originNodeId: event.nodeId,
+        originSourceId: event.sourceId,
+        originTitle: event.title,
+        title: event.url,
+        url: event.url,
+      });
+    });
+  }, [createHyperlinkTab, runtimeTabId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void window.seekstar.settings.load().then((loadedSettings) => {
+      if (!cancelled) {
+        setSettings(loadedSettings);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -368,6 +407,14 @@ export function App(): ReactElement {
 
   function handleNodeSelect(nodeId: string): void {
     const node = scene.nodes.find((candidate) => candidate.id === nodeId);
+
+    if (node && isAbsorbableCanvasTile(node)) {
+      const isSameFocusedTile = scene.runtime.focused_node_id === nodeId || (selectedNodeIds.length === 1 && selectedNodeIds[0] === nodeId);
+
+      applySelection(isSameFocusedTile ? handleTileAbsorptionEnter(nodeId, "click") : handleTileFocus(nodeId));
+      setRightSidebarCollapsed(false);
+      return;
+    }
 
     if (node && selectedNodeIds.length === 1 && selectedNodeIds[0] === nodeId && node.zoom_target) {
       handleLayerSelect(node.zoom_target.layer, node.zoom_target.node_id);
@@ -789,8 +836,11 @@ export function App(): ReactElement {
             <div className="workbench-canvas-wrap">
               <TerrainCanvas
                 activeTool={activeCanvasTool}
-                focusedNodeId={viewportFocusNodeId}
+                focusedNodeId={scene.runtime.focused_node_id ?? viewportFocusNodeId}
                 highlightedNodeIds={highlightedNodeIds}
+                onBrowserModeExit={() => {
+                  applySelection(handleTileAbsorptionExit());
+                }}
                 onFrontierDiscovery={(viewport) => {
                   handleCanvasFrontierDiscovery(viewport);
                   setRightSidebarCollapsed(false);
@@ -799,11 +849,15 @@ export function App(): ReactElement {
                 onObservationSelect={handleScoutObservationSelect}
                 onRelationSelect={handleRelationSelect}
                 onSelectionChange={handleSceneSelection}
+                onTileAbsorptionThreshold={(nodeId) => {
+                  applySelection(handleTileAbsorptionEnter(nodeId, "threshold"));
+                }}
                 onViewportChange={handleSceneViewport}
                 scene={scene}
                 selectedNodeIds={selectedNodeIds}
                 selectedObservationId={selectedObservationId}
                 selectedRelationId={selectedRelationId}
+                tileFieldTargetCount={settings?.tile_field_target_count}
                 viewport={scene.viewport}
               />
               {selectedNodeIds.length === 0 ? (
@@ -877,5 +931,13 @@ export function App(): ReactElement {
         </div>
       )}
     </main>
+  );
+}
+
+function isAbsorbableCanvasTile(node: TerrainNode): boolean {
+  return Boolean(
+    node.source_url &&
+      isTileLayer(node.layer) &&
+      (node.type === "source" || node.type === "webpage" || node.type === "document" || node.type === "section"),
   );
 }

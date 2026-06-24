@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import type { ScoutPlan, ScoutRunResult } from "@seekstar/core-schema";
 import type { SeekStarSettings } from "../main/appSettingsStore";
 import type { TabRuntimeSnapshot } from "../main/tabRuntimeManager";
+import type { TileSurfaceLinkEvent, TileSurfaceThumbnailEvent } from "../main/tileSurfaceManager";
 
 export type WindowAction =
   | "reload"
@@ -68,6 +69,20 @@ contextBridge.exposeInMainWorld("seekstar", {
         plan,
         requested_at: new Date().toISOString(),
       }),
+  },
+  tiles: {
+    clear: (tabId: string): Promise<void> => ipcRenderer.invoke("tiles:clear", tabId),
+    onLinkActivated: (callback: (event: TileSurfaceLinkEvent) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: TileSurfaceLinkEvent): void => callback(payload);
+      ipcRenderer.on("tiles:link-activated", listener);
+      return () => ipcRenderer.removeListener("tiles:link-activated", listener);
+    },
+    onThumbnailUpdated: (callback: (event: TileSurfaceThumbnailEvent) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: TileSurfaceThumbnailEvent): void => callback(payload);
+      ipcRenderer.on("tiles:thumbnail-updated", listener);
+      return () => ipcRenderer.removeListener("tiles:thumbnail-updated", listener);
+    },
+    sync: (input: unknown): Promise<void> => ipcRenderer.invoke("tiles:sync", input),
   },
   window: {
     goBack: (): Promise<void> => ipcRenderer.invoke("window:go-back"),

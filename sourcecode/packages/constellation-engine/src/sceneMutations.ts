@@ -1,5 +1,5 @@
-import { normalizeTerrainScene, validateTerrainScene } from "@seekstar/core-schema";
-import type { LayerId, ScoutObservation, TerrainScene, ViewportState } from "@seekstar/core-schema";
+import { isTileLayer, normalizeTerrainScene, validateTerrainScene } from "@seekstar/core-schema";
+import type { LayerId, ScoutObservation, TerrainNode, TerrainScene, TileAbsorptionTrigger, ViewportState } from "@seekstar/core-schema";
 import { WORKSPACE_SCHEMA_REVISION, type HydratedWorkspace, type WorkspaceSnapshot } from "./types.js";
 import { resolveZoomForLayer } from "./lens.js";
 import { createSourceTerrainPatch, type SourceIngestionInput } from "./sourceTerrain.js";
@@ -90,6 +90,7 @@ export function applySceneSelection(
   focusNodeId?: string,
 ): { scene: TerrainScene; focusNodeId?: string } {
   const focusNode = focusNodeId ? scene.nodes.find((node) => node.id === focusNodeId) : undefined;
+  const updatedAt = new Date().toISOString();
   const nextViewport: ViewportState = {
     ...scene.viewport,
     x: focusNode?.position_hint?.x ?? scene.viewport.x,
@@ -103,9 +104,17 @@ export function applySceneSelection(
         ...scene,
         selection: {
           ...scene.selection,
-          node_ids: nodeIds,
-        },
+        node_ids: nodeIds,
       },
+      runtime: {
+        ...scene.runtime,
+        browser_absorption: shouldClearAbsorptionForFocus(scene.runtime.browser_absorption.node_id, focusNode)
+          ? createIdleAbsorptionState()
+          : scene.runtime.browser_absorption,
+        focused_node_id: focusNode?.id,
+        updated_at: updatedAt,
+      },
+    },
       nextViewport,
     ),
   };
@@ -122,6 +131,12 @@ export function applySceneViewport(scene: TerrainScene, viewport: ViewportState,
       selection: {
         ...scene.selection,
         node_ids: layerSelectedNodeIds,
+      },
+      runtime: {
+        ...scene.runtime,
+        browser_absorption: createIdleAbsorptionState(),
+        focused_node_id: layerSelectedNodeIds[0],
+        updated_at: new Date().toISOString(),
       },
     },
     viewport,
@@ -155,9 +170,146 @@ export function applyLayerSelect(
           ...scene.selection,
           node_ids: selectedNodeIds,
         },
+        runtime: {
+          ...scene.runtime,
+          browser_absorption: createIdleAbsorptionState(),
+          focused_node_id: focusNode?.id,
+          updated_at: new Date().toISOString(),
+        },
       },
       nextViewport,
     ),
+  };
+}
+
+export function applyTileFocus(scene: TerrainScene, nodeId: string): { scene: TerrainScene; focusNodeId?: string; selectedNodeIds: string[] } {
+  const focusNode = scene.nodes.find((node) => node.id === nodeId);
+
+  if (!focusNode) {
+    return {
+      focusNodeId: scene.runtime.focused_node_id,
+      scene,
+      selectedNodeIds: scene.selection.node_ids,
+    };
+  }
+
+  const updatedAt = new Date().toISOString();
+  const nextViewport = {
+    ...scene.viewport,
+    x: focusNode.position_hint?.x ?? scene.viewport.x,
+    y: focusNode.position_hint?.y ?? scene.viewport.y,
+    layer: focusNode.layer,
+  };
+  const nextScene = withSceneViewport(
+    {
+      ...scene,
+      selection: {
+        ...scene.selection,
+        node_ids: [focusNode.id],
+      },
+      runtime: {
+        ...scene.runtime,
+        browser_absorption: shouldClearAbsorptionForFocus(scene.runtime.browser_absorption.node_id, focusNode)
+          ? createIdleAbsorptionState()
+          : scene.runtime.browser_absorption,
+        focused_node_id: focusNode.id,
+        updated_at: updatedAt,
+      },
+    },
+    nextViewport,
+  );
+
+  return {
+    focusNodeId: focusNode.id,
+    scene: nextScene,
+    selectedNodeIds: [focusNode.id],
+  };
+}
+
+export function applyTileAbsorptionEnter(
+  scene: TerrainScene,
+  nodeId: string,
+  trigger: TileAbsorptionTrigger,
+): { scene: TerrainScene; focusNodeId?: string; selectedNodeIds: string[] } {
+  const focusNode = scene.nodes.find((node) => node.id === nodeId);
+
+  if (!focusNode || !isAbsorbableTileNode(focusNode)) {
+    return applyTileFocus(scene, nodeId);
+  }
+
+  const updatedAt = new Date().toISOString();
+  const nextViewport = {
+    ...scene.viewport,
+    x: focusNode.position_hint?.x ?? scene.viewport.x,
+    y: focusNode.position_hint?.y ?? scene.viewport.y,
+    layer: focusNode.layer,
+  };
+  const nextScene = withSceneViewport(
+    {
+      ...scene,
+      selection: {
+        ...scene.selection,
+        node_ids: [focusNode.id],
+      },
+      runtime: {
+        ...scene.runtime,
+        browser_absorption: {
+          status: "absorbed",
+          node_id: focusNode.id,
+          source_id: focusNode.source_id,
+          source_url: focusNode.source_url,
+          entered_at: updatedAt,
+          exit_layer: "L4",
+          trigger,
+        },
+        focused_node_id: focusNode.id,
+        updated_at: updatedAt,
+      },
+    },
+    nextViewport,
+  );
+
+  return {
+    focusNodeId: focusNode.id,
+    scene: nextScene,
+    selectedNodeIds: [focusNode.id],
+  };
+}
+
+export function applyTileAbsorptionExit(scene: TerrainScene): { scene: TerrainScene; focusNodeId?: string; selectedNodeIds: string[] } {
+  const absorbedNodeId = scene.runtime.browser_absorption.node_id;
+  const absorbedNode = absorbedNodeId ? scene.nodes.find((node) => node.id === absorbedNodeId) : undefined;
+  const exitLayer = scene.runtime.browser_absorption.exit_layer ?? "L4";
+  const updatedAt = new Date().toISOString();
+  const nextViewport = {
+    ...scene.viewport,
+    x: absorbedNode?.position_hint?.x ?? scene.viewport.x,
+    y: absorbedNode?.position_hint?.y ?? scene.viewport.y,
+    layer: exitLayer,
+    zoom: resolveZoomForLayer(exitLayer),
+  };
+  const selectedNodeIds = absorbedNode ? [absorbedNode.id] : scene.selection.node_ids;
+  const nextScene = withSceneViewport(
+    {
+      ...scene,
+      selection: {
+        ...scene.selection,
+        node_ids: selectedNodeIds,
+      },
+      runtime: {
+        ...scene.runtime,
+        browser_absorption: createIdleAbsorptionState(),
+        focused_node_id: absorbedNode?.id ?? scene.runtime.focused_node_id,
+        updated_at: updatedAt,
+      },
+    },
+    nextViewport,
+  );
+
+  return {
+    focusNodeId: absorbedNode?.id ?? scene.runtime.focused_node_id,
+    scene: nextScene,
+    selectedNodeIds,
   };
 }
 
@@ -259,4 +411,19 @@ function withSceneViewport(scene: TerrainScene, viewport: ViewportState): Terrai
         : tab,
     ),
   };
+}
+
+function createIdleAbsorptionState(): TerrainScene["runtime"]["browser_absorption"] {
+  return {
+    status: "idle",
+    exit_layer: "L4",
+  };
+}
+
+function shouldClearAbsorptionForFocus(absorbedNodeId: string | undefined, focusNode: TerrainNode | undefined): boolean {
+  return Boolean(absorbedNodeId && absorbedNodeId !== focusNode?.id);
+}
+
+function isAbsorbableTileNode(node: TerrainNode): boolean {
+  return Boolean(node.source_url && isTileLayer(node.layer) && (node.type === "source" || node.type === "webpage" || node.type === "document" || node.type === "section"));
 }

@@ -44,7 +44,7 @@ const settingsSectionMeta: Record<SettingsSectionId, { title: string; descriptio
   },
   runtime: {
     title: "Runtime",
-    description: "Default tab memory behavior and inactive cooling.",
+    description: "Tab memory behavior, inactive cooling, and content tile density.",
   },
   scout: {
     title: "Scout service",
@@ -89,6 +89,9 @@ export function SettingsPage({
 
   const cacheMb = Math.round((draft?.tab_cache_max_bytes ?? 0) / 1024 / 1024);
   const inactiveMinutes = Math.round((draft?.inactive_grace_ms ?? 0) / 60_000);
+  const tileFieldTargetCount = draft?.tile_field_target_count ?? 25;
+  const tileLiveSurfaceLimit = draft?.tile_live_surface_limit ?? 1;
+  const tileThumbnailPrewarmConcurrency = draft?.tile_thumbnail_prewarm_concurrency ?? 2;
   const domainLexicons = draft?.domain_lexicons ?? cloneDomainLexicons(DEFAULT_DOMAIN_LEXICONS);
   const selectedLexicon =
     domainLexicons.find((lexicon) => lexicon.id === selectedLexiconId) ??
@@ -384,6 +387,45 @@ export function SettingsPage({
                       value={inactiveMinutes || 30}
                     />
                   </label>
+                  <label className="settings-row">
+                    <span>
+                      <strong>Tile field density</strong>
+                      <small>Target visible L3 content tiles per viewport before browser absorption.</small>
+                    </span>
+                    <input
+                      min={4}
+                      max={80}
+                      onChange={(event) => updateDraft({ tile_field_target_count: Number(event.target.value) })}
+                      type="number"
+                      value={tileFieldTargetCount}
+                    />
+                  </label>
+                  <label className="settings-row">
+                    <span>
+                      <strong>Thumbnail prewarm concurrency</strong>
+                      <small>Background offscreen webpage captures allowed at once for visible L3 tiles.</small>
+                    </span>
+                    <input
+                      min={1}
+                      max={6}
+                      onChange={(event) => updateDraft({ tile_thumbnail_prewarm_concurrency: Number(event.target.value) })}
+                      type="number"
+                      value={tileThumbnailPrewarmConcurrency}
+                    />
+                  </label>
+                  <label className="settings-row">
+                    <span>
+                      <strong>Live tile limit</strong>
+                      <small>Interactive WebContentsView surfaces allowed at once after absorption.</small>
+                    </span>
+                    <input
+                      min={1}
+                      max={8}
+                      onChange={(event) => updateDraft({ tile_live_surface_limit: Number(event.target.value) })}
+                      type="number"
+                      value={tileLiveSurfaceLimit}
+                    />
+                  </label>
                 </div>
               </section>
             ) : null}
@@ -612,6 +654,9 @@ function createSettingsDraft(settings?: SeekStarSettings): SeekStarSettings {
     tab_cache_max_bytes: settings?.tab_cache_max_bytes ?? 256 * 1024 * 1024,
     inactive_grace_ms: settings?.inactive_grace_ms ?? 30 * 60 * 1000,
     scout_concurrency: settings?.scout_concurrency ?? 2,
+    tile_live_surface_limit: settings?.tile_live_surface_limit ?? 1,
+    tile_field_target_count: settings?.tile_field_target_count ?? 25,
+    tile_thumbnail_prewarm_concurrency: settings?.tile_thumbnail_prewarm_concurrency ?? 2,
     active_domain_lexicon_id: settings?.active_domain_lexicon_id ?? DEFAULT_DOMAIN_LEXICON_ID,
     domain_lexicons: settings?.domain_lexicons ?? cloneDomainLexicons(DEFAULT_DOMAIN_LEXICONS),
   };

@@ -269,12 +269,36 @@ At webpage and document level, content appears as non-overlapping flat tiles on 
 
 The tile field behaves like:
 
-* Windows tiles;
-* iOS Photos grid;
-* infinite canvas;
-* document wall.
+* Windows 10 Phone live tiles: asymmetric blocks, clear grouping, and strong scan rhythm;
+* Windows 11 task view: many live surfaces visible at once without becoming a ranked result list;
+* an infinite canvas;
+* a document wall.
 
 Each tile can be zoomed internally. Page tiles contain sections; sections contain paragraphs; paragraphs contain sentences; sentences contain phrases; phrases contain words; words contain characters.
+
+Tile density:
+
+* the default same-viewport target is 25 tiles;
+* the tile count is configurable in Settings;
+* off-viewport tiles do not load embedded webpage/document renderers;
+* near-viewport tiles may keep lightweight thumbnails, metadata, and source state only;
+* focused tiles receive loading priority.
+
+Browser absorption mode:
+
+* when zooming toward a focused L3 tile, the tile grows until it occupies more than 80% of the viewport;
+* after crossing that threshold, SeekStar animates the tile to the viewport center, matches tile size to the viewport, and snaps it into a full browser-like surface;
+* clicking the focused tile before the threshold runs the same absorption animation directly;
+* while absorbed, the embedded webpage/document owns scroll and pointer behavior, so mouse wheel no longer drives SeekStar zoom;
+* a half-hidden top label must remain visible: "Click exit browser mode to keep exploring downward";
+* exiting browser mode returns wheel ownership to SeekStar and continues semantic descent into L4 section, L5 paragraph, L6 sentence, L7 phrase, and L8 word terrain.
+
+Hyperlinks inside absorbed tiles:
+
+* normal hyperlink activation opens a new SeekStar tab at the absorbed webpage/document tile level;
+* the origin tab remains unchanged and stores backlink context;
+* an explicit external-browser action remains available;
+* when a link creates an orphan tile without enough upper-layer context, upward exploration requests AI Service to summarize or synthesize the missing parent topic/source context as structured Cartographer output, marked with the correct source state.
 
 ## 5.8 Side Tray
 
@@ -1244,3 +1268,24 @@ P5.10 continues reducing App coupling:
 * desktop React components subscribe, render controls, and forward events, but do not own terrain semantics.
 
 The engine exposes service ports for Scout, AI, Storage, and source snapshot services so future implementations can move behind Electron utility processes, SQLite/FTS, native modules, or remote APIs without changing the product semantics.
+
+## 16. P5.11 Web Tile Field Direction
+
+P5.11 defines L3 content terrain as a real tile field:
+
+* webpage/document/PDF/image tiles use a Windows 10 Phone-style asymmetric tile layout and Windows 11 task-view-style live surface density;
+* the default visible density is 25 tiles per viewport and is configurable;
+* off-viewport tiles do not load embedded webpage/document renderers;
+* a focused tile can absorb the viewport after crossing 80% viewport area or when clicked;
+* absorbed tiles temporarily own scroll and pointer input like a browser;
+* SeekStar keeps an exit label so the user can return control to the telescope and continue downward exploration;
+* hyperlinks inside absorbed tiles open new SeekStar tabs at the webpage/document tile level with backlink context;
+* orphan parent context is filled only through AI Service as structured, marked Cartographer output.
+
+Implementation status as of P5.11/P5.12:
+
+* the core schema now carries `TerrainScene.runtime` for focused tile and browser absorption state;
+* visible/focused L3 tiles can be prewarmed as offscreen thumbnails without stealing telescope input;
+* absorbed tiles use Electron native live surfaces and retain the top exit label;
+* clicking an already focused L3 tile and crossing the 80% viewport threshold now route through Constellation Engine events;
+* remaining usability work is source-backed hyperlink tabs, Scout snapshot ingestion into L3 tile scenes, animated absorption transitions, and AI parent-context patches for orphan linked pages.

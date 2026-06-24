@@ -384,6 +384,14 @@ export function createSeedScene(seedText: string, options: SeedSceneOptions = {}
     agent_jobs: [],
     cartographer_outputs: [],
     scout_observations: [],
+    runtime: {
+      focused_node_id: undefined,
+      browser_absorption: {
+        status: "idle",
+        exit_layer: "L4",
+      },
+      updated_at: createdAt,
+    },
     metadata: {
       title: seed,
       description: `Local telescope seed for "${seed}". It has object-pool structure and the canonical L0-L11 12Level depth, but no source-backed facts until Scout or source intake confirms material.`,

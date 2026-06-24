@@ -256,6 +256,18 @@ Rules:
 - Ghost context nodes are muted, dashed, and non-primary. They should help orientation without competing with current-layer terrain.
 - The deep zoom mini-map is a compact layer indicator. It should not resemble a search result list, outline tree, or browser navigation.
 
+## Web Tile Field
+
+- L3 webpage, document, PDF, and image tiles should read as a dense source surface, not a dashboard of cards.
+- Use Windows 10 Phone-style asymmetric tile rhythm and Windows 11 task-view-style live surface grouping as the visual reference.
+- The default composition should target 25 visible tiles in one viewport, with clear spacing, stable bounds, and no overlap.
+- Tiles may show source state, title, thumbnail, and loading state, but must not become ranked search results.
+- Off-viewport tiles should be visually represented only by lightweight metadata or placeholders; they should not imply that a full webpage renderer is loaded.
+- A focused tile should visibly prepare for absorption as it grows, centers, and approaches viewport size.
+- Browser absorption mode must keep a minimal top exit label visible: "Click exit browser mode to keep exploring downward".
+- Absorbed webpage/document surfaces may feel browser-like only while reading that tile; the surrounding shell must still feel like SeekStar's telescope.
+- Hyperlink actions should feel like opening a new exploration universe with backlink context, not replacing the current page.
+
 ## Current Scope
 
 This guide covers the current core development surface: Electron shell, Pixi telescope canvas, canonical L0-L11 12Level spine, local/source-backed terrain, Scout observations, seed creation, settings, and service-boundary UI. It does not make chat, ranked search results, or fabricated preview output the product center.

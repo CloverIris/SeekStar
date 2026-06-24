@@ -1,16 +1,73 @@
-import type { ScoutObservation, TerrainNode, TerrainRelation, TerrainScene, ViewportState } from "@seekstar/core-schema";
+import { isTileLayer } from "@seekstar/core-schema";
+import type { LayerId, ScoutObservation, SourceState, TerrainNode, TerrainRelation, TerrainScene, ViewportState } from "@seekstar/core-schema";
+import { resolveZoomForLayer } from "./lens.js";
 
 export interface TerrainPixiProjection {
   candidateObservations: ScoutObservation[];
   renderedNodes: TerrainNode[];
+  tileSurfaces: TerrainTileSurface[];
   visibleNodes: TerrainNode[];
   visibleNodeIds: Set<string>;
   visibleRelations: TerrainRelation[];
 }
 
-const candidateStatuses = new Set<ScoutObservation["status"]>(["pending", "observed", "source_candidate", "failed"]);
+export type TileSurfaceVisibility = "off_viewport" | "near_viewport" | "visible" | "focused";
+export type TileSurfaceLoadPriority = "none" | "low" | "medium" | "high";
+export type TileSurfaceLoadState = "metadata_only" | "thumbnail_ready" | "renderer_visible" | "renderer_focused";
 
-export function createTerrainPixiProjection(scene: TerrainScene, viewport: ViewportState): TerrainPixiProjection {
+export interface ProjectionRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface ProjectionViewportBounds {
+  width: number;
+  height: number;
+}
+
+export interface TileAbsorptionState {
+  progress: number;
+  shouldAbsorb: boolean;
+  threshold: number;
+  viewportShare: number;
+}
+
+export interface TerrainTileSurface {
+  absorption: TileAbsorptionState;
+  layer: LayerId;
+  loadPriority: TileSurfaceLoadPriority;
+  loadState: TileSurfaceLoadState;
+  nodeId: string;
+  screenBounds?: ProjectionRect;
+  sourceId?: string;
+  sourceState: SourceState;
+  sourceUrl?: string;
+  title: string;
+  type: TerrainNode["type"];
+  visibility: TileSurfaceVisibility;
+  worldBounds: ProjectionRect;
+}
+
+export interface TerrainPixiProjectionOptions {
+  absorbedNodeId?: string;
+  focusedNodeId?: string;
+  tileFieldTargetCount?: number;
+  viewportBounds?: ProjectionViewportBounds;
+}
+
+const candidateStatuses = new Set<ScoutObservation["status"]>(["pending", "observed", "source_candidate", "failed"]);
+const TILE_ABSORPTION_VIEWPORT_SHARE = 0.8;
+const DEFAULT_TILE_FIELD_TARGET_COUNT = 25;
+const TILE_ASPECT_RATIO = 16 / 10;
+const PRELOAD_VIEWPORT_MARGIN = 0.35;
+
+export function createTerrainPixiProjection(
+  scene: TerrainScene,
+  viewport: ViewportState,
+  options: TerrainPixiProjectionOptions = {},
+): TerrainPixiProjection {
   const currentLayer = scene.layers.find((layer) => layer.id === viewport.layer);
   const parentLayerId = currentLayer?.parent_layer_id;
   const childLayerIds = currentLayer?.child_layer_ids ?? [];
@@ -36,8 +93,199 @@ export function createTerrainPixiProjection(scene: TerrainScene, viewport: Viewp
   return {
     candidateObservations,
     renderedNodes,
+    tileSurfaces: createTileSurfaces(layerNodes, viewport, options),
     visibleNodes: layerNodes,
     visibleNodeIds: layerNodeIds,
     visibleRelations: scene.relations.filter((relation) => renderedNodeIds.has(relation.from) && renderedNodeIds.has(relation.to)),
   };
+}
+
+export function resolveTileAbsorption(
+  viewportShare: number,
+  focused: boolean,
+  threshold = TILE_ABSORPTION_VIEWPORT_SHARE,
+  absorbed = false,
+): TileAbsorptionState {
+  const normalizedShare = Math.max(0, viewportShare);
+  const progress = absorbed ? 1 : focused ? Math.min(1, normalizedShare / threshold) : 0;
+
+  return {
+    progress,
+    shouldAbsorb: absorbed || (focused && normalizedShare >= threshold),
+    threshold,
+    viewportShare: normalizedShare,
+  };
+}
+
+export function clampTileFieldTargetCount(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_TILE_FIELD_TARGET_COUNT;
+  }
+
+  return Math.min(80, Math.max(4, Math.round(value)));
+}
+
+function createTileSurfaces(
+  nodes: TerrainNode[],
+  viewport: ViewportState,
+  options: TerrainPixiProjectionOptions,
+): TerrainTileSurface[] {
+  if (!isTileLayer(viewport.layer)) {
+    return [];
+  }
+
+  const viewportWorldBounds = options.viewportBounds ? createViewportWorldBounds(viewport, options.viewportBounds) : undefined;
+  const nearWorldBounds = viewportWorldBounds ? inflateRect(viewportWorldBounds, PRELOAD_VIEWPORT_MARGIN) : undefined;
+  const tileSize = resolveTileWorldSize(viewport, options.viewportBounds, options.tileFieldTargetCount);
+
+  return nodes
+    .filter((node) => node.layer === viewport.layer && isTileSurfaceNode(node))
+    .map((node) => {
+      const position = node.position_hint ?? { x: 0, y: 0 };
+      const worldBounds = {
+        x: position.x - tileSize.width / 2,
+        y: position.y - tileSize.height / 2,
+        width: tileSize.width,
+        height: tileSize.height,
+      };
+      const screenBounds = options.viewportBounds ? projectWorldRect(worldBounds, viewport, options.viewportBounds) : undefined;
+      const absorbed = node.id === options.absorbedNodeId;
+      const focused = absorbed || node.id === options.focusedNodeId;
+      const visible = viewportWorldBounds ? rectsIntersect(worldBounds, viewportWorldBounds) : true;
+      const near = nearWorldBounds ? rectsIntersect(worldBounds, nearWorldBounds) : visible;
+      const visibility = resolveTileVisibility({ focused, near, visible });
+      const viewportShare = screenBounds && options.viewportBounds
+        ? (screenBounds.width * screenBounds.height) / Math.max(1, options.viewportBounds.width * options.viewportBounds.height)
+        : 0;
+
+      return {
+        absorption: resolveTileAbsorption(viewportShare, focused, TILE_ABSORPTION_VIEWPORT_SHARE, absorbed),
+        layer: node.layer,
+        loadPriority: resolveTileLoadPriority(visibility),
+        loadState: resolveTileLoadState(visibility),
+        nodeId: node.id,
+        screenBounds,
+        sourceId: node.source_id,
+        sourceState: node.source_state,
+        sourceUrl: node.source_url,
+        title: node.title,
+        type: node.type,
+        visibility,
+        worldBounds,
+      };
+    });
+}
+
+function isTileSurfaceNode(node: TerrainNode): boolean {
+  return node.type === "source" || node.type === "webpage" || node.type === "document" || node.type === "section";
+}
+
+function resolveTileWorldSize(
+  viewport: ViewportState,
+  viewportBounds: ProjectionViewportBounds | undefined,
+  tileFieldTargetCount: number | undefined,
+): { width: number; height: number } {
+  if (!viewportBounds) {
+    return { width: 360, height: 225 };
+  }
+
+  const targetCount = clampTileFieldTargetCount(tileFieldTargetCount);
+  const targetScreenArea = Math.max(1, (viewportBounds.width * viewportBounds.height) / targetCount);
+  const screenWidth = Math.sqrt(targetScreenArea * TILE_ASPECT_RATIO);
+  const screenHeight = screenWidth / TILE_ASPECT_RATIO;
+  const baseZoom = resolveZoomForLayer(viewport.layer);
+
+  return {
+    width: clamp(screenWidth / baseZoom, 220, 760),
+    height: clamp(screenHeight / baseZoom, 140, 520),
+  };
+}
+
+function createViewportWorldBounds(viewport: ViewportState, bounds: ProjectionViewportBounds): ProjectionRect {
+  const width = bounds.width / viewport.zoom;
+  const height = bounds.height / viewport.zoom;
+
+  return {
+    x: viewport.x - width / 2,
+    y: viewport.y - height / 2,
+    width,
+    height,
+  };
+}
+
+function projectWorldRect(rect: ProjectionRect, viewport: ViewportState, bounds: ProjectionViewportBounds): ProjectionRect {
+  return {
+    x: bounds.width / 2 + (rect.x - viewport.x) * viewport.zoom,
+    y: bounds.height / 2 + (rect.y - viewport.y) * viewport.zoom,
+    width: rect.width * viewport.zoom,
+    height: rect.height * viewport.zoom,
+  };
+}
+
+function resolveTileVisibility(input: { focused: boolean; near: boolean; visible: boolean }): TileSurfaceVisibility {
+  if (input.focused) {
+    return "focused";
+  }
+
+  if (input.visible) {
+    return "visible";
+  }
+
+  if (input.near) {
+    return "near_viewport";
+  }
+
+  return "off_viewport";
+}
+
+function resolveTileLoadPriority(visibility: TileSurfaceVisibility): TileSurfaceLoadPriority {
+  if (visibility === "focused") {
+    return "high";
+  }
+
+  if (visibility === "visible") {
+    return "medium";
+  }
+
+  if (visibility === "near_viewport") {
+    return "low";
+  }
+
+  return "none";
+}
+
+function resolveTileLoadState(visibility: TileSurfaceVisibility): TileSurfaceLoadState {
+  if (visibility === "focused") {
+    return "renderer_focused";
+  }
+
+  if (visibility === "visible") {
+    return "renderer_visible";
+  }
+
+  if (visibility === "near_viewport") {
+    return "thumbnail_ready";
+  }
+
+  return "metadata_only";
+}
+
+function inflateRect(rect: ProjectionRect, ratio: number): ProjectionRect {
+  const deltaX = rect.width * ratio;
+  const deltaY = rect.height * ratio;
+
+  return {
+    x: rect.x - deltaX,
+    y: rect.y - deltaY,
+    width: rect.width + deltaX * 2,
+    height: rect.height + deltaY * 2,
+  };
+}
+
+function rectsIntersect(a: ProjectionRect, b: ProjectionRect): boolean {
+  return a.x <= b.x + b.width && a.x + a.width >= b.x && a.y <= b.y + b.height && a.y + a.height >= b.y;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
 }

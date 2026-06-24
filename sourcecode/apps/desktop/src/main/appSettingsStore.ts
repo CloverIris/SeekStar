@@ -13,6 +13,9 @@ export interface SeekStarSettings {
   tab_cache_max_bytes: number;
   inactive_grace_ms: number;
   scout_concurrency: number;
+  tile_live_surface_limit: number;
+  tile_field_target_count: number;
+  tile_thumbnail_prewarm_concurrency: number;
   active_domain_lexicon_id: string;
   domain_lexicons: DomainLexicon[];
 }
@@ -28,6 +31,9 @@ export const defaultSettings: SeekStarSettings = {
   tab_cache_max_bytes: 256 * 1024 * 1024,
   inactive_grace_ms: 30 * 60 * 1000,
   scout_concurrency: 2,
+  tile_live_surface_limit: 1,
+  tile_field_target_count: 25,
+  tile_thumbnail_prewarm_concurrency: 2,
   active_domain_lexicon_id: DEFAULT_DOMAIN_LEXICON_ID,
   domain_lexicons: cloneDomainLexicons(DEFAULT_DOMAIN_LEXICONS),
 };
@@ -95,6 +101,14 @@ function normalizeSettings(value: unknown): SeekStarSettings {
     tab_cache_max_bytes: clampNumber(candidate.tab_cache_max_bytes, 32 * 1024 * 1024, 2048 * 1024 * 1024, defaultSettings.tab_cache_max_bytes),
     inactive_grace_ms: clampNumber(candidate.inactive_grace_ms, 60_000, 24 * 60 * 60 * 1000, defaultSettings.inactive_grace_ms),
     scout_concurrency: clampNumber(candidate.scout_concurrency, 1, 8, defaultSettings.scout_concurrency),
+    tile_live_surface_limit: clampNumber(candidate.tile_live_surface_limit, 1, 8, defaultSettings.tile_live_surface_limit),
+    tile_field_target_count: clampNumber(candidate.tile_field_target_count, 4, 80, defaultSettings.tile_field_target_count),
+    tile_thumbnail_prewarm_concurrency: clampNumber(
+      candidate.tile_thumbnail_prewarm_concurrency,
+      1,
+      6,
+      defaultSettings.tile_thumbnail_prewarm_concurrency,
+    ),
     active_domain_lexicon_id: activeDomainLexiconId,
     domain_lexicons: lexicons,
   };

@@ -535,6 +535,15 @@ Layout:
 * source cards at high level;
 * text blocks at close level.
 
+P5.11 tile field contract:
+
+* The default target density is 25 visible tiles per viewport, configurable from Settings.
+* Tile placement should support asymmetric Windows 10 Phone-style live tile blocks and Windows 11 task-view-style live surfaces, not uniform search-result cards.
+* The Pixi projection should expose tile bounds, focus state, visibility state, loading priority, and absorption progress.
+* Off-viewport tiles must not load embedded webpage/document renderers. They keep only metadata, thumbnails, and source state.
+* Near-viewport tiles may prewarm lightweight snapshots if cache budget allows.
+* The renderer may load full webpage/document content only for visible or focused tiles.
+
 ## 7.2 Tile Internal Zoom
 
 Each tile has its own scale of detail:
@@ -548,6 +557,20 @@ Each tile has its own scale of detail:
 * character layer.
 
 The global camera controls outer scale. The tile controls internal detail based on effective scale.
+
+Browser absorption mode:
+
+* When a focused L3 tile reaches more than 80% of viewport area, the telescope animation snaps it to the center and matches it to the viewport.
+* Clicking the focused tile triggers the same animation without requiring more wheel zoom.
+* In absorbed mode, the embedded webpage/document surface owns scroll and primary pointer handling.
+* SeekStar must keep a minimal top exit label visible: "Click exit browser mode to keep exploring downward".
+* Exiting browser mode returns wheel ownership to the telescope and continues semantic descent into section, paragraph, sentence, phrase, word, character, Unicode/dictionary, or new seed layers.
+* The App Electron Framework owns the embedded web surface lifecycle and security boundary.
+* The Constellation Engine owns the semantic state transition, tile focus, absorption threshold, target layer intent, and follow-up service requests.
+* The Pixi Runtime Adapter owns projection data and animation geometry, not webpage DOM behavior.
+
+Implementation note:
+`TerrainScene.runtime` is the canonical owner of focused tile and browser absorption session state. React may mirror selection for UI controls, but it must not be the source of truth for browser absorption. The Electron tile surface manager subscribes to projection/runtime state and materializes thumbnails or live `WebContentsView` surfaces accordingly.
 
 P2 implementation note:
 Manual source ingestion creates source-backed terrain from user-provided text or URL metadata before Playwright retrieval exists. The source enters the map as `SourceRef`, source-backed nodes, and `source_contains` relations. It must not appear as a ranked result list or chat answer.
@@ -563,6 +586,14 @@ Preferred product behavior:
 * normal click: new SeekStar tab;
 * modified click: system browser;
 * context menu: open externally, copy link, inspect source, add to map.
+
+Absorbed tile behavior:
+
+* normal hyperlink activation opens a new SeekStar tab at the absorbed L3 webpage/document tile level;
+* the origin tab keeps backlink context;
+* the new tab does not inherit scroll history or browser history;
+* if the linked page enters as an orphan tile, upward exploration can ask AI Service for a structured parent summary, topic, source orientation, or missing context patch;
+* AI-created parent context must remain marked generated or agent-inferred until source-backed material confirms it.
 
 New hyperlink tab:
 

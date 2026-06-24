@@ -1,12 +1,14 @@
 import { app, BaseWindow, WebContentsView, shell } from "electron";
 import { join } from "node:path";
-import { registerAppSettingsStore } from "./appSettingsStore";
+import { defaultSettings, loadSettings, registerAppSettingsStore } from "./appSettingsStore";
 import { registerScoutAdapter } from "./scoutAdapter";
 import { TabRuntimeManager } from "./tabRuntimeManager";
+import { TileSurfaceManager } from "./tileSurfaceManager";
 import { registerWindowBridge } from "./windowBridge";
 import { registerWorkspaceStore } from "./workspaceStore";
 
 const tabRuntimeManager = new TabRuntimeManager();
+const tileSurfaceManager = new TileSurfaceManager((tabId) => tabRuntimeManager.getTabSurfaceHost(tabId));
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 if (!hasSingleInstanceLock) {
@@ -23,9 +25,11 @@ registerScoutAdapter();
 registerAppSettingsStore({
   onSave: async (settings) => {
     await tabRuntimeManager.applySettings(settings);
+    tileSurfaceManager.applySettings(settings);
   },
 });
 tabRuntimeManager.registerIpc();
+tileSurfaceManager.registerIpc();
 
 function createMainWindow(): BaseWindow {
   const window = new BaseWindow({
@@ -115,6 +119,9 @@ if (hasSingleInstanceLock) {
   });
 
   app.whenReady().then(async () => {
+    const settings = await loadSettings().catch(() => defaultSettings);
+
+    tileSurfaceManager.applySettings(settings);
     await tabRuntimeManager.load();
     tabRuntimeManager.setMainWindow(createMainWindow());
 

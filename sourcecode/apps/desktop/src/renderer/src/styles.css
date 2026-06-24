@@ -1711,6 +1711,36 @@ button {
   opacity: 0.48;
 }
 
+.browser-absorption-exit {
+  position: absolute;
+  z-index: 18;
+  top: -2px;
+  left: 50%;
+  min-width: 280px;
+  max-width: min(520px, calc(100% - 48px));
+  height: 32px;
+  padding: 0 14px;
+  overflow: hidden;
+  border: 1px solid rgb(110 159 255 / 24%);
+  border-top: 0;
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  color: var(--text-secondary);
+  background: rgb(9 12 18 / 82%);
+  box-shadow: 0 14px 38px rgb(0 0 0 / 32%);
+  transform: translateX(-50%);
+  backdrop-filter: blur(16px);
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-absorption-exit:hover {
+  color: var(--text-primary);
+  border-color: rgb(110 159 255 / 44%);
+  background: rgb(15 20 31 / 92%);
+}
+
 .node-hover-preview {
   position: absolute;
   z-index: 12;

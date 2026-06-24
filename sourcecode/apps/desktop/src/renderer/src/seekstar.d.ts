@@ -1,6 +1,7 @@
 import type { ScoutPlan, ScoutRunResult } from "@seekstar/core-schema";
 import type { SeekStarSettings } from "../../main/appSettingsStore";
 import type { TabRuntimeSnapshot } from "../../main/tabRuntimeManager";
+import type { TileSurfaceLinkEvent, TileSurfaceThumbnailEvent } from "../../main/tileSurfaceManager";
 
 export type WindowAction =
   | "reload"
@@ -63,12 +64,37 @@ export interface SeekStarScoutApi {
   runPlan: (tabId: string, plan: ScoutPlan) => Promise<ScoutRunResult>;
 }
 
+export interface TileSurfaceSyncInput {
+  surfaces: TileSurfaceSyncItem[];
+  tabId: string;
+}
+
+export interface TileSurfaceSyncItem {
+  bounds: { x: number; y: number; width: number; height: number };
+  loadPriority: "none" | "low" | "medium" | "high";
+  loadState: "metadata_only" | "thumbnail_ready" | "renderer_visible" | "renderer_focused";
+  nodeId: string;
+  renderMode: "thumbnail" | "live";
+  sourceId?: string;
+  sourceUrl: string;
+  title: string;
+  visibility: "off_viewport" | "near_viewport" | "visible" | "focused";
+}
+
+export interface SeekStarTilesApi {
+  clear: (tabId: string) => Promise<void>;
+  onLinkActivated: (callback: (event: TileSurfaceLinkEvent) => void) => () => void;
+  onThumbnailUpdated: (callback: (event: TileSurfaceThumbnailEvent) => void) => () => void;
+  sync: (input: TileSurfaceSyncInput) => Promise<void>;
+}
+
 export interface SeekStarBridge {
   appName: string;
   scaffoldVersion: string;
   scout: SeekStarScoutApi;
   settings: SeekStarSettingsApi;
   tabs: SeekStarTabsApi;
+  tiles: SeekStarTilesApi;
   workspace: SeekStarWorkspaceApi;
   window: SeekStarWindowApi;
 }

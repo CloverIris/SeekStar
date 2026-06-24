@@ -1,6 +1,15 @@
-import type { LayerId, ScoutObservation, TerrainScene, ViewportState } from "@seekstar/core-schema";
+import type { LayerId, ScoutObservation, TerrainScene, TileAbsorptionTrigger, ViewportState } from "@seekstar/core-schema";
 import type { SourceIngestionInput } from "./sourceTerrain.js";
-import { appendScoutObservations, applyLayerSelect, applySceneSelection, applySceneViewport, ingestSourceSnapshot } from "./sceneMutations.js";
+import {
+  appendScoutObservations,
+  applyLayerSelect,
+  applySceneSelection,
+  applySceneViewport,
+  applyTileAbsorptionEnter,
+  applyTileAbsorptionExit,
+  applyTileFocus,
+  ingestSourceSnapshot,
+} from "./sceneMutations.js";
 
 export type ExplorationEvent =
   | {
@@ -18,6 +27,18 @@ export type ExplorationEvent =
       type: "layer.changed";
       layer: LayerId;
       focusNodeId?: string;
+    }
+  | {
+      type: "tile.focused";
+      nodeId: string;
+    }
+  | {
+      type: "tile.absorption.entered";
+      nodeId: string;
+      trigger: TileAbsorptionTrigger;
+    }
+  | {
+      type: "tile.absorption.exited";
     }
   | {
       type: "scout.observations.appended";
@@ -59,6 +80,12 @@ export function applyExplorationEvent(scene: TerrainScene, event: ExplorationEve
       };
     case "layer.changed":
       return applyLayerSelect(scene, event.layer, event.focusNodeId);
+    case "tile.focused":
+      return applyTileFocus(scene, event.nodeId);
+    case "tile.absorption.entered":
+      return applyTileAbsorptionEnter(scene, event.nodeId, event.trigger);
+    case "tile.absorption.exited":
+      return applyTileAbsorptionExit(scene);
     case "scout.observations.appended":
       return {
         scene: appendScoutObservations(scene, event.observations, {

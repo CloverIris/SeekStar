@@ -113,6 +113,7 @@ export function normalizeTerrainScene(scene: TerrainScene): TerrainScene {
       text_ranges: scene.selection?.text_ranges ?? [],
     },
     viewport: scene.viewport ?? { x: 0, y: 0, zoom: 1, layer: "L0" },
+    runtime: normalizeRuntimeState(scene.runtime),
   };
 }
 
@@ -212,5 +213,35 @@ function isViewportState(value: unknown): value is ViewportState {
     typeof candidate.zoom === "number" &&
     typeof candidate.layer === "string"
   );
+}
+
+function normalizeRuntimeState(value: unknown): TerrainScene["runtime"] {
+  const candidate = typeof value === "object" && value !== null ? (value as Partial<TerrainScene["runtime"]>) : {};
+  const absorption =
+    typeof candidate.browser_absorption === "object" && candidate.browser_absorption !== null
+      ? candidate.browser_absorption
+      : undefined;
+  const now = new Date().toISOString();
+  const status = absorption?.status === "absorbed" ? "absorbed" : "idle";
+
+  return {
+    focused_node_id:
+      typeof candidate.focused_node_id === "string" && candidate.focused_node_id.trim()
+        ? candidate.focused_node_id.trim()
+        : undefined,
+    browser_absorption: {
+      status,
+      node_id: typeof absorption?.node_id === "string" && absorption.node_id.trim() ? absorption.node_id.trim() : undefined,
+      source_id: typeof absorption?.source_id === "string" && absorption.source_id.trim() ? absorption.source_id.trim() : undefined,
+      source_url: typeof absorption?.source_url === "string" && absorption.source_url.trim() ? absorption.source_url.trim() : undefined,
+      entered_at: typeof absorption?.entered_at === "string" ? absorption.entered_at : undefined,
+      exit_layer: typeof absorption?.exit_layer === "string" ? absorption.exit_layer : "L4",
+      trigger:
+        absorption?.trigger === "threshold" || absorption?.trigger === "click" || absorption?.trigger === "command"
+          ? absorption.trigger
+          : undefined,
+    },
+    updated_at: typeof candidate.updated_at === "string" ? candidate.updated_at : now,
+  };
 }
 

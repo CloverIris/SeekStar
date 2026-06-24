@@ -25,7 +25,20 @@ export {
   type ConstellationSourceSnapshotPort,
   type ConstellationStoragePort,
 } from "./ports.js";
-export { createTerrainPixiProjection, type TerrainPixiProjection } from "./pixiRuntime.js";
+export {
+  clampTileFieldTargetCount,
+  createTerrainPixiProjection,
+  resolveTileAbsorption,
+  type ProjectionRect,
+  type ProjectionViewportBounds,
+  type TerrainPixiProjection,
+  type TerrainPixiProjectionOptions,
+  type TerrainTileSurface,
+  type TileAbsorptionState,
+  type TileSurfaceLoadPriority,
+  type TileSurfaceLoadState,
+  type TileSurfaceVisibility,
+} from "./pixiRuntime.js";
 export {
   clampZoom,
   fitViewportToNodes,

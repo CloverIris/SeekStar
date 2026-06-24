@@ -22,6 +22,11 @@ export interface TabRuntimeSnapshot {
   updated_at: string;
 }
 
+export interface TabSurfaceHost {
+  bounds: Rectangle;
+  window: BaseWindow;
+}
+
 interface RuntimeEntry {
   record: TabRecord;
   view?: WebContentsView;
@@ -612,6 +617,27 @@ export class TabRuntimeManager {
     } catch {
       this.mainWindow = undefined;
     }
+  }
+
+  getTabSurfaceHost(tabId: string): TabSurfaceHost | undefined {
+    const entry = this.entriesByTabId.get(tabId);
+
+    if (!entry?.owner || !entry.view || entry.view.webContents.isDestroyed() || isWindowDestroyed(entry.owner)) {
+      return undefined;
+    }
+
+    const bounds = entry.owner === this.mainWindow && entry.viewSurface === "docked"
+      ? this.dockBounds
+      : getWindowViewBounds(entry.owner);
+
+    if (!bounds) {
+      return undefined;
+    }
+
+    return {
+      bounds,
+      window: entry.owner,
+    };
   }
 
   private ensureTabView(tabId: string, surface: TabViewSurface = "docked"): WebContentsView {
