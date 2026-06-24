@@ -81,6 +81,24 @@ The renderer shell subscribes to exploration state through `useExplorationSessio
 P5.2-P5.11 implementation note:
 The runtime has a typed event entry and derived object pool. `selection.changed`, `viewport.changed`, `layer.changed`, and `scout.observations.appended` wrap the scene mutation helpers in the Constellation Engine. `ExplorationObjectPool` indexes the active scene for canvas, inspector, search, and source-conversion subscribers. The canonical layer model lives in `@seekstar/core-schema/src/semanticLayers.ts`; Star Gallery, Tile Field, and Text Grain are focal bands over the L0-L11 12Level semantic spine, not a replacement for it.
 
+P5.12 implementation note:
+`WorkspacePersistenceCoordinator` now lives in the Constellation Engine and owns workspace hydrate/persist merge rules through a storage port. Desktop React still subscribes to scene state and Electron bridge events, but it no longer hand-builds workspace snapshots or decides latest-snapshot merge behavior.
+
+Scout job implementation note:
+`ScoutJobCoordinator` now lives in the Constellation Engine and owns Scout plan execution/writeback rules through a Scout port. This includes failed observations, anchored/frontier placement, direct URL hyperlink intake into source-backed L3 terrain, and user-confirmed observation-to-source conversion.
+
+Tab session implementation note:
+`TabSessionCoordinator` now lives in the Constellation Engine and owns open, close, reorder, and activate tab-session transactions through Storage and App Framework tab runtime ports. React applies prepared transactions to local state, then commits them through the coordinator, keeping the ordering rules for close tombstones and runtime activation outside component code.
+
+Tab runtime boundary note:
+Only the shell renderer may register, activate, reorder, or otherwise mutate the Electron tab runtime. Docked and detached tab renderers may hydrate their own `TerrainScene` from workspace changes, but they must not call runtime registration paths that can activate another tab. This prevents workspace change propagation from turning into active-tab ping-pong between the default New Seek tab and newly created seed tabs.
+
+Workspace activation note:
+When the shell renderer receives an external workspace change, it must respect the snapshot's `active_tab_id` instead of preferring the shell's stale current tab. Runtime tab renderers still hydrate against their fixed `runtimeTabId`. This keeps "create seed as new tab" from briefly activating the new runtime tab and then being pulled back to the tab that issued the command.
+
+Tab close persistence note:
+Closing a tab removes its scene from workspace before closing the Electron runtime entry. If a closed tab renderer has a stale locked-tab autosave in flight, `createPersistableWorkspaceSnapshot` treats absence from the latest workspace snapshot as a close tombstone and refuses to recreate the scene. This keeps a deleted tab from reappearing as a leftover scene at the bottom of the tab list.
+
 These events are the telescope operation protocol. Viewport movement may reveal same-layer frontiers. Layer changes move between macro orientation, source-backed tile surfaces, and text-grain detail. Selection and lasso create addressable regions that can be inspected, promoted, exported, or passed to AI only when the user asks for interpretation.
 
 P5.6 implementation note:
@@ -571,6 +589,9 @@ Browser absorption mode:
 
 Implementation note:
 `TerrainScene.runtime` is the canonical owner of focused tile and browser absorption session state. React may mirror selection for UI controls, but it must not be the source of truth for browser absorption. The Electron tile surface manager subscribes to projection/runtime state and materializes thumbnails or live `WebContentsView` surfaces accordingly.
+
+Hyperlink implementation note:
+Links activated inside an absorbed tile create a new tab, run direct URL Scout with that tab id, convert the resulting observation into source-backed terrain, and set the new scene's initial layer to L3. Storage Service workspace change notifications propagate the saved source-backed terrain to docked and detached tab renderers without forcing a tab refresh.
 
 P2 implementation note:
 Manual source ingestion creates source-backed terrain from user-provided text or URL metadata before Playwright retrieval exists. The source enters the map as `SourceRef`, source-backed nodes, and `source_contains` relations. It must not appear as a ranked result list or chat answer.

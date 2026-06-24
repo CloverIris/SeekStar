@@ -1,6 +1,7 @@
-import { app, ipcMain } from "electron";
+import { app, ipcMain, webContents } from "electron";
 import { mkdir, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
+import type { WorkspaceChangeEvent, WorkspaceChangeKind } from "@seekstar/storage-service";
 
 const STORE_FILE_NAME = "seekstar-workspace-snapshot.json";
 const TAB_RUNTIME_FILE_NAME = "seekstar-tab-runtime.json";
@@ -92,27 +93,50 @@ export class JsonWorkspaceStore implements WorkspaceStore {
 
 export function registerWorkspaceStore(options: RegisterWorkspaceStoreOptions = {}): void {
   const store = options.store ?? new JsonWorkspaceStore();
+  let workspaceRevision = 0;
 
   ipcMain.handle("workspace:load", async () => {
     return store.loadSnapshot();
   });
 
-  ipcMain.handle("workspace:save", async (_event, snapshot: unknown) => {
+  ipcMain.handle("workspace:save", async (event, snapshot: unknown) => {
     await store.saveSnapshot(snapshot);
+    broadcastWorkspaceChange(createWorkspaceChangeEvent("saved", ++workspaceRevision), event.sender.id);
   });
 
-  ipcMain.handle("workspace:clear", async () => {
+  ipcMain.handle("workspace:clear", async (event) => {
     await store.clearSnapshot();
+    broadcastWorkspaceChange(createWorkspaceChangeEvent("cleared", ++workspaceRevision), event.sender.id);
   });
 
-  ipcMain.handle("workspace:clear-development-data", async () => {
+  ipcMain.handle("workspace:clear-development-data", async (event) => {
     await store.clearDevelopmentData();
     await options.onClearDevelopmentData?.();
+    broadcastWorkspaceChange(createWorkspaceChangeEvent("development_data_cleared", ++workspaceRevision), event.sender.id);
   });
 
   ipcMain.handle("workspace:get-store-paths", () => {
     return store.getStorePaths();
   });
+}
+
+function createWorkspaceChangeEvent(kind: WorkspaceChangeKind, revision: number): WorkspaceChangeEvent {
+  return {
+    kind,
+    revision,
+    source: "storage-service",
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function broadcastWorkspaceChange(payload: WorkspaceChangeEvent, excludeWebContentsId: number): void {
+  for (const targetWebContents of webContents.getAllWebContents()) {
+    if (targetWebContents.id === excludeWebContentsId || targetWebContents.isDestroyed()) {
+      continue;
+    }
+
+    targetWebContents.send("workspace:changed", payload);
+  }
 }
 
 function getStorePath(): string {

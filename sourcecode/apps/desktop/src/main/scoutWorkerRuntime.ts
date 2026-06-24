@@ -328,7 +328,7 @@ async function observeUrl({
     });
     const title = normalizeWhitespace(await page.title());
     const bodyText = normalizeWhitespace(await page.locator("body").innerText({ timeout: 5_000 }).catch(() => ""));
-    const snippet = bodyText ? bodyText.slice(0, 420) : "Playwright observed the page, but no body text was available.";
+    const snippet = bodyText ? bodyText.slice(0, 6_000) : "Playwright observed the page, but no body text was available.";
 
     return {
       id: `observation-${plan.id}-${toSlug(url.hostname)}-${Date.now()}-${index + 1}`,

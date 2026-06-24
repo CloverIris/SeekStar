@@ -108,6 +108,11 @@ This keeps the telescope honest: existence comes from observed content, while un
 - `TerrainScene.runtime` now stores focused tile state and browser absorption state. Desktop triggers events; Constellation Engine decides the persistent session transition.
 - Clicking an already focused L3 tile enters browser absorption. Zooming past the 80% viewport threshold also enters absorption through the same engine event path.
 - Exiting browser absorption clears the native live surface and asks the engine to descend to the configured exit layer, currently L4.
+- Hyperlink-created tabs now run direct URL Scout under the new tab id, ingest the observed page as source-backed terrain, and place the new scene at L3 webpage/document tile level.
+- Storage Service workspace change notifications now propagate saved source intake to docked and detached tab renderers without forcing tab refresh.
+- `WorkspacePersistenceCoordinator` in the Constellation Engine now owns hydrate/persist snapshot merge rules through a storage port, so desktop React no longer hand-builds workspace snapshots.
+- `ScoutJobCoordinator` in the Constellation Engine now owns Scout plan execution, failure observations, frontier/outlink placement, hyperlink L3 source intake, and observation-to-source conversion through a Scout port.
+- `TabSessionCoordinator` in the Constellation Engine now owns open, close, reorder, and activate tab-session transactions through Storage and App Framework tab runtime ports.
 
 ## Remaining Usability Gap
 
@@ -115,8 +120,7 @@ SeekStar is structurally past mock/prototype scaffolding, but it is not yet a co
 
 The shortest path to usable is:
 
-1. Make hyperlink-created tabs source-backed L3 scenes through Scout source snapshot intake, not generic seed terrain.
-2. Persist absorption/session runtime through the Storage Service workspace adapter instead of desktop-only glue.
-3. Add tile click-to-absorb animation state, not only final state.
-4. Add Scout snapshot-to-tile loading for real webpage/PDF/image content and failure recovery UI.
-5. Add AI Service orphan-parent Cartographer patches for upward exploration from linked pages.
+1. Move remaining shell-only tab registration and reset helpers behind explicit engine/app-framework ports.
+2. Add tile click-to-absorb animation state, not only final state.
+3. Add richer Scout snapshot-to-tile loading for webpage/PDF/image content and failure recovery UI.
+4. Add AI Service orphan-parent Cartographer patches for upward exploration from linked pages.

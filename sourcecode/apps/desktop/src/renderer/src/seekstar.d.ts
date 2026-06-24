@@ -1,4 +1,5 @@
 import type { ScoutPlan, ScoutRunResult } from "@seekstar/core-schema";
+import type { WorkspaceChangeEvent } from "@seekstar/storage-service";
 import type { SeekStarSettings } from "../../main/appSettingsStore";
 import type { TabRuntimeSnapshot } from "../../main/tabRuntimeManager";
 import type { TileSurfaceLinkEvent, TileSurfaceThumbnailEvent } from "../../main/tileSurfaceManager";
@@ -31,6 +32,7 @@ export interface SeekStarWorkspaceApi {
   clearSnapshot: () => Promise<void>;
   getStorePaths: () => Promise<Record<string, string>>;
   loadSnapshot: () => Promise<unknown | undefined>;
+  onChanged: (callback: (event: WorkspaceChangeEvent) => void) => () => void;
   saveSnapshot: (snapshot: unknown) => Promise<void>;
 }
 

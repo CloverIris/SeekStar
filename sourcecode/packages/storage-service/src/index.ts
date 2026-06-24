@@ -15,6 +15,15 @@ export interface CachePolicy {
   eviction: "lru_lfu";
 }
 
+export type WorkspaceChangeKind = "saved" | "cleared" | "development_data_cleared";
+
+export interface WorkspaceChangeEvent {
+  kind: WorkspaceChangeKind;
+  revision: number;
+  source: "storage-service";
+  updated_at: string;
+}
+
 export interface SeekStarStorageService<TBasketItem = unknown> {
   health(): Promise<StorageHealth>;
   loadWorkspaceSnapshot(): Promise<WorkspaceSnapshot<TBasketItem> | undefined>;

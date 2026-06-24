@@ -23,6 +23,20 @@ export interface ConstellationStoragePort<TBasketItem = unknown> {
   clearWorkspaceSnapshot(): Promise<void>;
 }
 
+export interface ConstellationTabCreateInput {
+  activate?: boolean;
+  seed: string;
+  tabId?: string;
+  title: string;
+}
+
+export interface ConstellationTabRuntimePort {
+  activateTab(tabId: string): Promise<void>;
+  closeTab(tabId: string): Promise<void>;
+  createTab(input: ConstellationTabCreateInput): Promise<void>;
+  reorderTabs(sourceTabId: string, targetTabId: string): Promise<void>;
+}
+
 export interface ConstellationSourceSnapshotPort {
   ingestSource(input: SourceIngestionInput): Promise<SourceIngestionInput>;
 }
@@ -32,4 +46,5 @@ export interface ConstellationEnginePorts<TBasketItem = unknown> {
   scout?: ConstellationScoutPort;
   sourceSnapshots?: ConstellationSourceSnapshotPort;
   storage?: ConstellationStoragePort<TBasketItem>;
+  tabRuntime?: ConstellationTabRuntimePort;
 }

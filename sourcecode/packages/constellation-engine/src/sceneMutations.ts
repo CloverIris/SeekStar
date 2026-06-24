@@ -338,14 +338,16 @@ export function ingestSourceSnapshot(
 ): { scene: TerrainScene; focusNodeId?: string; selectedNodeIds: string[] } {
   const patch = createSourceTerrainPatch(input, scene);
   const sourceNode = patch.nodes[0];
+  const initialLayer = input.initialLayer ?? "L2";
+  const focusNode = patch.nodes.find((node) => node.layer === initialLayer) ?? sourceNode;
   const updatedAt = patch.nodes[0]?.updated_at ?? new Date().toISOString();
-  const nextViewport = sourceNode?.position_hint
+  const nextViewport = focusNode?.position_hint
     ? {
         ...scene.viewport,
-        x: sourceNode.position_hint.x,
-        y: sourceNode.position_hint.y,
-        layer: "L2" as LayerId,
-        zoom: Math.max(scene.viewport.zoom, 1.35),
+        x: focusNode.position_hint.x,
+        y: focusNode.position_hint.y,
+        layer: initialLayer,
+        zoom: Math.max(scene.viewport.zoom, resolveZoomForLayer(initialLayer)),
       }
     : scene.viewport;
   const nextScene = normalizeTerrainScene({
@@ -366,8 +368,14 @@ export function ingestSourceSnapshot(
       : scene.scout_observations,
     selection: {
       ...scene.selection,
-      node_ids: sourceNode ? [sourceNode.id] : scene.selection.node_ids,
+      node_ids: focusNode ? [focusNode.id] : scene.selection.node_ids,
       source_ids: [patch.source.id],
+    },
+    runtime: {
+      ...scene.runtime,
+      browser_absorption: createIdleAbsorptionState(),
+      focused_node_id: focusNode?.id ?? scene.runtime.focused_node_id,
+      updated_at: updatedAt,
     },
     viewport: nextViewport,
     tabs: scene.tabs.map((tab) =>
@@ -392,8 +400,8 @@ export function ingestSourceSnapshot(
 
   return {
     scene: nextScene,
-    focusNodeId: sourceNode?.id,
-    selectedNodeIds: sourceNode ? [sourceNode.id] : [],
+    focusNodeId: focusNode?.id,
+    selectedNodeIds: focusNode ? [focusNode.id] : [],
   };
 }
 

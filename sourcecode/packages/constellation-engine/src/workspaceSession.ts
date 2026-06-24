@@ -14,6 +14,7 @@ export interface PreparedWorkspaceLaunch<TBasketItem = unknown> {
 
 export function prepareWorkspaceLaunch<TBasketItem>(input: {
   fallbackScene: TerrainScene;
+  preferredActiveTabId?: string;
   runtimeTabId?: string;
   snapshot: unknown;
 }): PreparedWorkspaceLaunch<TBasketItem> {
@@ -21,23 +22,47 @@ export function prepareWorkspaceLaunch<TBasketItem>(input: {
     [input.fallbackScene.active_tab_id]: input.fallbackScene,
   };
   let basketByTabId: Record<string, TBasketItem[]> = {};
+  let snapshotActiveTabId: string | undefined;
 
   if (isWorkspaceSnapshot<TBasketItem>(input.snapshot)) {
     const hydrated = hydrateWorkspaceSnapshot(input.snapshot, input.fallbackScene);
     scenesByTabId = removeDeprecatedDefaultScenes(hydrated.scenesByTabId, input.fallbackScene);
     basketByTabId = removeDeprecatedBasketEntries(input.snapshot.basket_by_tab_id);
+    snapshotActiveTabId = hydrated.activeTabId;
   }
 
   const activeTabId =
-    input.runtimeTabId && scenesByTabId[input.runtimeTabId]
-      ? input.runtimeTabId
-      : input.fallbackScene.active_tab_id;
+    resolveWorkspaceActiveTabId({
+      fallbackTabId: input.fallbackScene.active_tab_id,
+      preferredActiveTabId: input.preferredActiveTabId,
+      runtimeTabId: input.runtimeTabId,
+      scenesByTabId,
+      snapshotActiveTabId,
+    });
 
   return {
     activeTabId,
     basketByTabId,
     scenesByTabId,
   };
+}
+
+function resolveWorkspaceActiveTabId(input: {
+  fallbackTabId: string;
+  preferredActiveTabId?: string;
+  runtimeTabId?: string;
+  scenesByTabId: Record<string, TerrainScene>;
+  snapshotActiveTabId?: string;
+}): string {
+  const candidates = [
+    input.runtimeTabId,
+    input.preferredActiveTabId,
+    input.snapshotActiveTabId,
+    input.fallbackTabId,
+    Object.keys(input.scenesByTabId)[0],
+  ];
+
+  return candidates.find((tabId): tabId is string => Boolean(tabId && input.scenesByTabId[tabId])) ?? input.fallbackTabId;
 }
 
 export function removeDeprecatedDefaultScenes(
@@ -81,6 +106,15 @@ export function createPersistableWorkspaceSnapshot<TBasketItem>(input: {
       basketByTabId: input.basketByTabId,
       fallbackScene: input.fallbackScene,
       scenesByTabId: input.scenesByTabId,
+    });
+  }
+
+  if (!input.latestSnapshot.scenes_by_tab_id[input.lockedTabId]) {
+    return buildWorkspaceSnapshot({
+      activeTabId: input.latestSnapshot.active_tab_id,
+      basketByTabId: input.latestSnapshot.basket_by_tab_id,
+      fallbackScene: input.fallbackScene,
+      scenesByTabId: input.latestSnapshot.scenes_by_tab_id,
     });
   }
 

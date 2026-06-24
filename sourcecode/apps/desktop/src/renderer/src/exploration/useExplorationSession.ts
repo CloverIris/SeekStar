@@ -2,22 +2,17 @@ import { assertValidTerrainScene, normalizeTerrainScene } from "@seekstar/core-s
 import type { LayerId, ScoutObservation, ScoutPlan, SourceRef, TerrainNode, TerrainScene } from "@seekstar/core-schema";
 import {
   applyExplorationEvent,
-  createPersistableWorkspaceSnapshot,
   createDefaultNewSeekScene,
-  createDirectUrlScoutPlan,
   createExplorationObjectPool,
-  createFailedScoutObservation,
-  createFrontierScoutPlan,
-  createPageOutlinksScoutPlan,
   createSeedScene,
   defaultSeekStarSeedScene,
   isDirectHttpUrl,
   DEPRECATED_DEFAULT_TAB_IDS,
-  positionAnchoredScoutObservations,
-  positionFrontierObservations,
-  prepareWorkspaceLaunch,
   resolveFrontierTrigger,
   resolveActiveDomainLexicon,
+  ScoutJobCoordinator,
+  TabSessionCoordinator,
+  WorkspacePersistenceCoordinator,
   type DomainLexicon,
   type FrontierTrigger,
   type PersistenceStatus,
@@ -43,6 +38,7 @@ interface SyncWorkspaceFromStoreOptions {
   registerRuntimeTabs?: boolean;
   shouldCancel?: () => boolean;
   protectLocalNavigation?: boolean;
+  suppressAutosave?: boolean;
 }
 
 export function useExplorationSession(options: UseExplorationSessionOptions = {}) {
@@ -65,6 +61,52 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
   const frontierTimersRef = useRef<Record<string, number>>({});
   const discoveredFrontiersRef = useRef<Set<string>>(new Set());
   const localNavigationRevisionRef = useRef(0);
+  const lastWorkspaceChangeRevisionRef = useRef(0);
+  const suppressNextAutosaveRef = useRef(false);
+
+  const workspacePersistence = useMemo(
+    () =>
+      new WorkspacePersistenceCoordinator<SelectionBasketItem>({
+        resolveFallbackScene: () => loadConfiguredDefaultScene(initialScene),
+        storage: {
+          clearWorkspaceSnapshot: () => window.seekstar.workspace.clearSnapshot(),
+          loadWorkspaceSnapshot: async () =>
+            (await window.seekstar.workspace.loadSnapshot()) as WorkspaceSnapshot<SelectionBasketItem> | undefined,
+          saveWorkspaceSnapshot: (snapshot) => window.seekstar.workspace.saveSnapshot(snapshot),
+        },
+      }),
+    [initialScene],
+  );
+  const scoutJobs = useMemo(
+    () =>
+      new ScoutJobCoordinator({
+        scout: {
+          runPlan: (tabId, plan) => window.seekstar.scout.runPlan(tabId, plan),
+        },
+      }),
+    [],
+  );
+  const tabSessions = useMemo(
+    () =>
+      new TabSessionCoordinator<SelectionBasketItem>({
+        persistence: workspacePersistence,
+        tabRuntime: {
+          activateTab: async (tabId) => {
+            await window.seekstar.tabs.activate(tabId);
+          },
+          closeTab: async (tabId) => {
+            await window.seekstar.tabs.close(tabId);
+          },
+          createTab: async (input) => {
+            await window.seekstar.tabs.create(input);
+          },
+          reorderTabs: async (sourceTabId, targetTabId) => {
+            await window.seekstar.tabs.reorder(sourceTabId, targetTabId);
+          },
+        },
+      }),
+    [workspacePersistence],
+  );
 
   const scene = scenesByTabId[activeTabId] ?? initialScene;
   const objectPool = useMemo(() => createExplorationObjectPool(scene), [scene]);
@@ -101,8 +143,10 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       const revisionAtStart = localNavigationRevisionRef.current;
 
       try {
-        const configuredDefaultScene = await loadConfiguredDefaultScene(initialScene);
-        const snapshot = await window.seekstar.workspace.loadSnapshot();
+        const launch = await workspacePersistence.hydrate({
+          preferredActiveTabId: syncOptions.preferredActiveTabId,
+          runtimeTabId,
+        });
 
         if (syncOptions.shouldCancel?.()) {
           return undefined;
@@ -112,23 +156,22 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
           return undefined;
         }
 
-        const launch = prepareWorkspaceLaunch<SelectionBasketItem>({
-          fallbackScene: configuredDefaultScene,
-          runtimeTabId: syncOptions.preferredActiveTabId ?? runtimeTabId,
-          snapshot,
-        });
-
-        const nextScene = launch.scenesByTabId[launch.activeTabId] ?? configuredDefaultScene;
         const nextSelection = {
-          selectedNodeIds: nextScene.selection.node_ids,
-          focusNodeId: nextScene.selection.node_ids[0],
+          selectedNodeIds: launch.selectedNodeIds,
+          focusNodeId: launch.focusNodeId,
         };
+
+        if (syncOptions.suppressAutosave) {
+          suppressNextAutosaveRef.current = true;
+        }
 
         setActiveTabId(launch.activeTabId);
         setScenesByTabId(launch.scenesByTabId);
         setBasketByTabId(launch.basketByTabId);
 
-        if (syncOptions.registerRuntimeTabs ?? true) {
+        const shouldRegisterRuntimeTabs = !runtimeTabId && (syncOptions.registerRuntimeTabs ?? true);
+
+        if (shouldRegisterRuntimeTabs) {
           await registerRuntimeScenes(launch.scenesByTabId, launch.activeTabId);
           void closeDeprecatedRuntimeTabs();
         }
@@ -146,7 +189,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         }
       }
     },
-    [initialScene, runtimeTabId],
+    [runtimeTabId, workspacePersistence],
   );
 
   useEffect(() => {
@@ -164,21 +207,43 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
   }, [syncWorkspaceFromStore]);
 
   useEffect(() => {
+    return window.seekstar.workspace.onChanged((event) => {
+      if (event.revision <= lastWorkspaceChangeRevisionRef.current) {
+        return;
+      }
+
+      lastWorkspaceChangeRevisionRef.current = event.revision;
+      void syncWorkspaceFromStore({
+        preferredActiveTabId: runtimeTabId ? activeTabIdRef.current : undefined,
+        protectLocalNavigation: true,
+        registerRuntimeTabs: true,
+        suppressAutosave: true,
+      });
+    });
+  }, [syncWorkspaceFromStore]);
+
+  useEffect(() => {
     if (!workspaceHydrated) {
+      return undefined;
+    }
+
+    if (suppressNextAutosaveRef.current) {
+      suppressNextAutosaveRef.current = false;
+      setPersistenceStatus("saved");
       return undefined;
     }
 
     const timeoutId = window.setTimeout(() => {
       try {
         setPersistenceStatus("saving");
-        void buildPersistableWorkspaceSnapshot({
-          activeTabId,
-          basketByTabId,
-          fallbackScene: initialScene,
-          lockedTabId: runtimeTabId,
-          scenesByTabId,
-        })
-          .then((snapshot) => window.seekstar.workspace.saveSnapshot(snapshot satisfies WorkspaceSnapshot<SelectionBasketItem>))
+        void workspacePersistence
+          .persist({
+            activeTabId,
+            basketByTabId,
+            fallbackScene: initialScene,
+            lockedTabId: runtimeTabId,
+            scenesByTabId,
+          })
           .then(() => {
             setPersistenceStatus("saved");
           })
@@ -195,7 +260,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     return () => {
       clearTimeout(timeoutId);
     };
-  }, [activeTabId, basketByTabId, runtimeTabId, scenesByTabId, workspaceHydrated]);
+  }, [activeTabId, basketByTabId, initialScene, runtimeTabId, scenesByTabId, workspaceHydrated, workspacePersistence]);
 
   const syncSceneSelection = useCallback(
     (nodeIds: string[], focusNodeId?: string): SelectionSyncResult => {
@@ -245,47 +310,41 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     [activeTabId, replaceScene, scene],
   );
 
-  const openSeedScene = useCallback((nextScene: TerrainScene) => {
-    const normalized = assertValidTerrainScene(nextScene, "openSeedScene");
-    const nextTabId = normalized.active_tab_id;
-    const nextTab = normalized.tabs.find((tab) => tab.id === nextTabId) ?? normalized.tabs[0];
-    const nextScenesByTabId = {
-      ...scenesByTabIdRef.current,
-      [nextTabId]: normalized,
-    };
-    const shouldAdoptNewSceneLocally = !runtimeTabId || runtimeTabId === nextTabId;
+  const openSeedScene = useCallback((nextScene: TerrainScene): Promise<TerrainScene> => {
+    const transaction = tabSessions.prepareOpenScene({
+      basketByTabId: basketByTabIdRef.current,
+      nextScene,
+      runtimeTabId,
+      scenesByTabId: scenesByTabIdRef.current,
+    });
 
     localNavigationRevisionRef.current += 1;
-    scenesByTabIdRef.current = nextScenesByTabId;
+    scenesByTabIdRef.current = transaction.scenesByTabId;
 
-    if (shouldAdoptNewSceneLocally) {
-      setScenesByTabId(nextScenesByTabId);
-      setActiveTabId(nextTabId);
+    if (transaction.shouldAdoptLocally) {
+      activeTabIdRef.current = transaction.activeTabId;
+      setScenesByTabId(transaction.scenesByTabId);
+      setActiveTabId(transaction.activeTabId);
     }
 
     setPersistenceStatus("saving");
-    void buildPersistableWorkspaceSnapshot({
-      activeTabId: nextTabId,
-      basketByTabId: basketByTabIdRef.current,
-      fallbackScene: initialScene,
-      scenesByTabId: nextScenesByTabId,
-    })
-      .then((snapshot) => window.seekstar.workspace.saveSnapshot(snapshot satisfies WorkspaceSnapshot<SelectionBasketItem>))
-      .then(() =>
-        window.seekstar.tabs.create({
-          activate: true,
-          tabId: nextTabId,
-          title: nextTab?.title ?? normalized.metadata.title,
-          seed: nextTab?.seed ?? normalized.metadata.title,
-        }),
-      )
+    const savePromise = tabSessions
+      .commitOpenScene({
+        fallbackScene: initialScene,
+        transaction,
+      })
       .then(() => {
         setPersistenceStatus("saved");
+        return transaction.scene;
       })
       .catch(() => {
         setPersistenceStatus("error");
+        return transaction.scene;
       });
-  }, [initialScene, runtimeTabId]);
+
+    void savePromise;
+    return savePromise;
+  }, [initialScene, runtimeTabId, tabSessions]);
 
   const handleUseAsSeed = useCallback(
     (seed: string) => {
@@ -298,6 +357,47 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     [openSeedScene],
   );
 
+  const ingestHyperlinkSourceIntoScene = useCallback(
+    async (
+      openedScene: TerrainScene,
+      url: string,
+      parentBacklink: NonNullable<TerrainScene["tabs"][number]["parent_backlink"]>,
+    ): Promise<void> => {
+      const tabId = openedScene.active_tab_id;
+
+      setPersistenceStatus("saving");
+
+      try {
+        const latestScene = scenesByTabIdRef.current[tabId] ?? openedScene;
+        const { scene: nextScene } = await scoutJobs.ingestHyperlinkSource({
+          parentBacklink,
+          scene: latestScene,
+          tabId,
+          url,
+        });
+        const nextScenesByTabId = {
+          ...scenesByTabIdRef.current,
+          [tabId]: nextScene,
+        };
+
+        scenesByTabIdRef.current = nextScenesByTabId;
+        setScenesByTabId(nextScenesByTabId);
+
+        await workspacePersistence.persist({
+          activeTabId: tabId,
+          basketByTabId: basketByTabIdRef.current,
+          fallbackScene: initialScene,
+          scenesByTabId: nextScenesByTabId,
+        });
+
+        setPersistenceStatus("saved");
+      } catch {
+        setPersistenceStatus("error");
+      }
+    },
+    [initialScene, scoutJobs, workspacePersistence],
+  );
+
   const handleUseHyperlinkAsSeed = useCallback(
     (input: { originNodeId?: string; originSourceId?: string; originTitle?: string; title?: string; url: string }) => {
       const url = input.url.trim();
@@ -306,20 +406,22 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         return;
       }
 
-      openSeedScene(
+      const parentBacklink = {
+        tab_id: activeTabId,
+        node_id: input.originNodeId,
+        source_id: input.originSourceId,
+        label: input.originTitle ? `Hyperlink from ${input.originTitle}` : "Hyperlink",
+        excerpt: url,
+      };
+
+      void openSeedScene(
         createSeedScene(input.title?.trim() || url, {
           sourceMode: "hyperlink",
-          parentBacklink: {
-            tab_id: activeTabId,
-            node_id: input.originNodeId,
-            source_id: input.originSourceId,
-            label: input.originTitle ? `Hyperlink from ${input.originTitle}` : "Hyperlink",
-            excerpt: url,
-          },
+          parentBacklink,
         }),
-      );
+      ).then((openedScene) => ingestHyperlinkSourceIntoScene(openedScene, url, parentBacklink));
     },
-    [activeTabId, openSeedScene],
+    [activeTabId, ingestHyperlinkSourceIntoScene, openSeedScene],
   );
 
   const handleExploreInCurrentTab = useCallback(
@@ -403,17 +505,17 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
 
       localNavigationRevisionRef.current += 1;
       setActiveTabId(tabId);
-      void window.seekstar.tabs.activate(tabId);
+      void tabSessions.activateTab(tabId);
       return {
         selectedNodeIds: nextScene.selection.node_ids,
         focusNodeId: nextScene.selection.node_ids[0],
       };
     },
-    [scenesByTabId],
+    [scenesByTabId, tabSessions],
   );
 
   const handleResetWorkspace = useCallback(async (): Promise<SelectionSyncResult> => {
-    await window.seekstar.workspace.clearSnapshot();
+    await workspacePersistence.clear();
     await window.seekstar.tabs.create({
       tabId: initialTabId,
       title: initialScene.metadata.title,
@@ -435,67 +537,59 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       selectedNodeIds: initialScene.selection.node_ids,
       focusNodeId: initialScene.selection.node_ids[0],
     };
-  }, [initialScene, initialTabId]);
+  }, [initialScene, initialTabId, workspacePersistence]);
 
   const handleCloseTab = useCallback(
     async (tabId: string): Promise<SelectionSyncResult | undefined> => {
-      if (Object.keys(scenesByTabIdRef.current).length <= 1) {
-        return undefined;
-      }
+      const transaction = tabSessions.prepareCloseTab({
+        activeTabId: activeTabIdRef.current,
+        basketByTabId: basketByTabIdRef.current,
+        scenesByTabId: scenesByTabIdRef.current,
+        tabId,
+      });
 
-      const orderedTabIds = Object.keys(scenesByTabIdRef.current);
-      const closingIndex = orderedTabIds.indexOf(tabId);
-      const nextTabId = activeTabIdRef.current === tabId ? orderedTabIds[Math.max(0, closingIndex - 1)] ?? orderedTabIds.find((id) => id !== tabId) : activeTabIdRef.current;
-
-      if (!nextTabId || nextTabId === tabId) {
-        return undefined;
-      }
-
-      const nextScene = scenesByTabIdRef.current[nextTabId];
-
-      if (!nextScene) {
+      if (!transaction) {
         return undefined;
       }
 
       localNavigationRevisionRef.current += 1;
-      setScenesByTabId((current) =>
-        Object.fromEntries(Object.entries(current).filter(([candidateTabId]) => candidateTabId !== tabId)),
-      );
-      setBasketByTabId((current) =>
-        Object.fromEntries(Object.entries(current).filter(([candidateTabId]) => candidateTabId !== tabId)),
-      );
-      setActiveTabId(nextTabId);
-      await window.seekstar.tabs.close(tabId);
-      await window.seekstar.tabs.activate(nextTabId);
+      activeTabIdRef.current = transaction.activeTabId;
+      scenesByTabIdRef.current = transaction.scenesByTabId;
+      basketByTabIdRef.current = transaction.basketByTabId;
+      setScenesByTabId(transaction.scenesByTabId);
+      setBasketByTabId(transaction.basketByTabId);
+      setActiveTabId(transaction.activeTabId);
+      setPersistenceStatus("saving");
+
+      await tabSessions.commitCloseTab({
+        fallbackScene: initialScene,
+        transaction,
+      });
+      setPersistenceStatus("saved");
 
       return {
-        selectedNodeIds: nextScene.selection.node_ids,
-        focusNodeId: nextScene.selection.node_ids[0],
+        selectedNodeIds: transaction.selectedNodeIds,
+        focusNodeId: transaction.focusNodeId,
       };
     },
-    [],
+    [initialScene, tabSessions],
   );
 
   const handleReorderTabs = useCallback(async (sourceTabId: string, targetTabId: string): Promise<void> => {
-    if (sourceTabId === targetTabId) {
+    const transaction = tabSessions.prepareReorderTabs({
+      scenesByTabId: scenesByTabIdRef.current,
+      sourceTabId,
+      targetTabId,
+    });
+
+    if (!transaction) {
       return;
     }
 
-    setScenesByTabId((current) => {
-      const entries = Object.entries(current);
-      const sourceIndex = entries.findIndex(([tabId]) => tabId === sourceTabId);
-      const targetIndex = entries.findIndex(([tabId]) => tabId === targetTabId);
-
-      if (sourceIndex < 0 || targetIndex < 0) {
-        return current;
-      }
-
-      const [source] = entries.splice(sourceIndex, 1);
-      entries.splice(targetIndex, 0, source);
-      return Object.fromEntries(entries);
-    });
-    await window.seekstar.tabs.reorder(sourceTabId, targetTabId);
-  }, []);
+    scenesByTabIdRef.current = transaction.scenesByTabId;
+    setScenesByTabId(transaction.scenesByTabId);
+    await tabSessions.commitReorderTabs(transaction);
+  }, [tabSessions]);
 
   const handleBacklinkFocus = useCallback(
     (backlink: NonNullable<TerrainScene["tabs"][number]["parent_backlink"]>): SelectionSyncResult | undefined => {
@@ -610,54 +704,19 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
 
   const handleRunScoutPlan = useCallback(
     async (plan: ScoutPlan, placement?: ScoutObservationPlacement): Promise<ScoutObservation | undefined> => {
-      const updatedAt = new Date().toISOString();
       const tabId = activeTabIdRef.current;
       const currentScene = scenesByTabIdRef.current[tabId] ?? scene;
+      const result = await scoutJobs.runPlan({
+        plan,
+        placement,
+        scene: currentScene,
+        tabId,
+      });
 
-      try {
-        const runResult = await runScoutPlan(tabId, plan);
-        const observations = placement
-          ? positionAnchoredScoutObservations(runResult.observations, currentScene, placement)
-          : runResult.observations;
-        const result = applyExplorationEvent(currentScene, {
-          type: "scout.observations.appended",
-          observations,
-          viewport: placement
-            ? {
-                ...currentScene.viewport,
-                x: placement.anchor.x,
-                y: placement.anchor.y,
-                layer: placement.layer,
-                zoom: Math.max(currentScene.viewport.zoom, 1.2),
-              }
-            : undefined,
-          description: `${currentScene.metadata.title} now includes ${runResult.adapter} Scout observations. Observations are not source-backed terrain.`,
-        });
-
-        replaceScene(tabId, result.scene);
-        return observations[0];
-      } catch (error) {
-        const failedObservation = createFailedScoutObservation({
-          tabId,
-          plan,
-          title: `Scout adapter failed: ${plan.title}`,
-          failureReason: error instanceof Error ? error.message : "Scout adapter failed before producing observations.",
-          timestamp: updatedAt,
-        });
-        const observations = placement
-          ? positionAnchoredScoutObservations([failedObservation], currentScene, placement)
-          : [failedObservation];
-        const result = applyExplorationEvent(currentScene, {
-          type: "scout.observations.appended",
-          observations,
-          description: `${currentScene.metadata.title} received a failed Scout adapter observation.`,
-        });
-
-        replaceScene(tabId, result.scene);
-        return observations[0];
-      }
+      replaceScene(tabId, result.scene);
+      return result.observation;
     },
-    [replaceScene, scene],
+    [replaceScene, scene, scoutJobs],
   );
 
   const handleScoutDirectUrl = useCallback(
@@ -666,10 +725,19 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         return undefined;
       }
 
-      const plan = createDirectUrlScoutPlan(url.trim(), targetNodeIds, new Date().toISOString());
-      return handleRunScoutPlan(plan);
+      const tabId = activeTabIdRef.current;
+      const currentScene = scenesByTabIdRef.current[tabId] ?? scene;
+      const result = await scoutJobs.runDirectUrl({
+        scene: currentScene,
+        tabId,
+        targetNodeIds,
+        url,
+      });
+
+      replaceScene(tabId, result.scene);
+      return result.observation;
     },
-    [handleRunScoutPlan],
+    [replaceScene, scene, scoutJobs],
   );
 
   const handleScoutSourceLinks = useCallback(
@@ -678,18 +746,23 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         return undefined;
       }
 
-      const plan = createPageOutlinksScoutPlan(node.id, source.url, source.title, new Date().toISOString());
-      const anchor = node.position_hint ?? { x: scene.viewport.x, y: scene.viewport.y };
-
-      return handleRunScoutPlan(plan, {
-        anchor,
-        discoveryMode: "page_outlinks",
-        frontierId: `source-outlinks-${node.id}-${Date.now()}`,
-        layer: node.layer,
-        radius: 340,
+      const tabId = activeTabIdRef.current;
+      const currentScene = scenesByTabIdRef.current[tabId] ?? scene;
+      const result = await scoutJobs.runSourceOutlinks({
+        node,
+        scene: currentScene,
+        source,
+        tabId,
       });
+
+      if (!result) {
+        return undefined;
+      }
+
+      replaceScene(tabId, result.scene);
+      return result.observation;
     },
-    [handleRunScoutPlan, scene.viewport.x, scene.viewport.y],
+    [replaceScene, scene, scoutJobs],
   );
 
   const runFrontierDiscovery = useCallback(
@@ -706,43 +779,15 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         return;
       }
 
-      const createdAt = new Date().toISOString();
-      const plan = createFrontierScoutPlan(currentScene, trigger, createdAt);
+      const result = await scoutJobs.runFrontier({
+        scene: currentScene,
+        tabId,
+        trigger,
+      });
 
-      try {
-        const runResult = await runScoutPlan(tabId, plan);
-        const positionedObservations = positionFrontierObservations(runResult.observations, currentScene, trigger);
-        const result = applyExplorationEvent(currentScene, {
-          type: "scout.observations.appended",
-          observations: positionedObservations,
-          description: `${currentScene.metadata.title} discovered a ${trigger.layer} ${trigger.direction} frontier through Scout observations.`,
-        });
-
-        replaceScene(tabId, result.scene);
-      } catch (error) {
-        const failedObservation = positionFrontierObservations(
-          [
-            createFailedScoutObservation({
-              tabId,
-              plan,
-              discoveryMode: "frontier_web_search",
-              title: `Frontier Scout failed: ${trigger.direction}`,
-              failureReason: error instanceof Error ? error.message : "Frontier Scout failed before producing observations.",
-              timestamp: createdAt,
-              suffix: trigger.id,
-            }),
-          ],
-          currentScene,
-          trigger,
-        );
-        const result = applyExplorationEvent(currentScene, {
-          type: "scout.observations.appended",
-          observations: failedObservation,
-        });
-        replaceScene(tabId, result.scene);
-      }
+      replaceScene(tabId, result.scene);
     },
-    [replaceScene],
+    [replaceScene, scoutJobs],
   );
 
   const handleCanvasFrontierDiscovery = useCallback(
@@ -768,44 +813,23 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
 
   const handleConvertScoutObservation = useCallback(
     (observation: ScoutObservation, activeTabIdForConversion: string): SelectionSyncResult | undefined => {
-      if (observation.status !== "source_candidate" && observation.status !== "observed") {
+      const result = scoutJobs.convertObservationToSource({
+        activeTabIdForConversion,
+        observation,
+        scene,
+      });
+
+      if (!result) {
         return undefined;
       }
 
-      const result = applyExplorationEvent(scene, {
-        type: "source.snapshot.ingested",
-        input: {
-          title: observation.title,
-          url: observation.url,
-          body: observation.snippet ?? observation.query,
-          sourceType: observation.source_type,
-          retrievedAt: observation.retrieved_at,
-          reliabilityHints: [
-            "user-confirmed Scout observation",
-            observation.adapter === "playwright"
-              ? "observed by Playwright Scout adapter"
-              : "non-Playwright Scout observation",
-            `Scout status: ${observation.status.replace("_", " ")}`,
-          ],
-          tags: ["scout-observation"],
-          createdFrom: {
-            tab_id: activeTabIdForConversion,
-            node_id: observation.target_node_ids[0],
-            label: `Scout observation: ${observation.title}`,
-            excerpt: observation.snippet ?? observation.query,
-          },
-          observationId: observation.id,
-        },
-      });
-
       replaceScene(activeTabId, result.scene);
-
       return {
         selectedNodeIds: result.selectedNodeIds ?? [],
         focusNodeId: result.focusNodeId,
       };
     },
-    [activeTabId, replaceScene, scene],
+    [activeTabId, replaceScene, scene, scoutJobs],
   );
 
   const handleUseSelectionAsSeed = useCallback(
@@ -931,27 +955,4 @@ async function closeDeprecatedRuntimeTabs(): Promise<void> {
   for (const tabId of DEPRECATED_DEFAULT_TAB_IDS) {
     await window.seekstar.tabs.close(tabId).catch(() => undefined);
   }
-}
-
-async function buildPersistableWorkspaceSnapshot(input: {
-  activeTabId: string;
-  scenesByTabId: Record<string, TerrainScene>;
-  basketByTabId: WorkspaceSnapshot<SelectionBasketItem>["basket_by_tab_id"];
-  fallbackScene: TerrainScene;
-  lockedTabId?: string;
-}): Promise<WorkspaceSnapshot<SelectionBasketItem>> {
-  const latestSnapshot = await window.seekstar.workspace.loadSnapshot().catch(() => undefined);
-
-  return createPersistableWorkspaceSnapshot({
-    activeTabId: input.activeTabId,
-    basketByTabId: input.basketByTabId,
-    fallbackScene: input.fallbackScene,
-    latestSnapshot,
-    lockedTabId: input.lockedTabId,
-    scenesByTabId: input.scenesByTabId,
-  });
-}
-
-async function runScoutPlan(tabId: string, plan: ScoutPlan): Promise<Awaited<ReturnType<typeof window.seekstar.scout.runPlan>>> {
-  return window.seekstar.scout.runPlan(tabId, plan);
 }

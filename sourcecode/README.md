@@ -56,15 +56,18 @@ SeekStar is past mock fallback cleanup and is in core usability construction. Th
 The current usable spine includes:
 
 - canonical 12Level terrain schema and Pixi projection;
-- Constellation Engine event reducer, object pool, source terrain intake, and workspace session helpers;
+- Constellation Engine event reducer, object pool, source terrain intake, and workspace persistence coordinator;
 - Electron tab/window runtime with docked and detached tab surfaces;
 - L3 tile projection with visible-tile thumbnail prewarm and absorbed live browser surfaces;
-- `TerrainScene.runtime` for focused tile and browser absorption session state.
+- `TerrainScene.runtime` for focused tile and browser absorption session state;
+- hyperlink-created tabs that run direct URL Scout and hydrate into source-backed L3 webpage/document terrain;
+- Storage Service workspace change notifications so saved terrain updates propagate across docked and detached tab renderers without refresh hacks.
+- Constellation Engine `ScoutJobCoordinator` for Scout plan execution, failure observations, frontier/outlink placement, hyperlink intake, and observation-to-source conversion.
+- Constellation Engine `TabSessionCoordinator` for open/close/reorder/activate tab-session transactions over Storage and App Framework tab runtime ports.
 
 Remaining before practical daily use:
 
-- source-backed hyperlink tabs through Scout snapshot ingestion;
 - animated click/zoom absorption transitions;
-- stronger workspace/session runtime moved out of desktop React glue;
+- remaining shell-only tab registration/reset helpers moved out of desktop React glue;
 - AI Cartographer parent-context patches for orphan linked pages;
 - Storage Service workspace adapter hardening before SQLite/FTS.

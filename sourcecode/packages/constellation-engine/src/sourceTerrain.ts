@@ -1,4 +1,4 @@
-import type { CreatedFromRef, SourceRef, SourceType, TerrainNode, TerrainRelation, TerrainScene } from "@seekstar/core-schema";
+import type { CreatedFromRef, LayerId, SourceRef, SourceType, TerrainNode, TerrainRelation, TerrainScene } from "@seekstar/core-schema";
 
 export interface SourceIngestionInput {
   title: string;
@@ -10,6 +10,7 @@ export interface SourceIngestionInput {
   tags?: string[];
   createdFrom?: CreatedFromRef;
   observationId?: string;
+  initialLayer?: LayerId;
 }
 
 export interface SourceTerrainPatch {

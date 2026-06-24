@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { ScoutPlan, ScoutRunResult } from "@seekstar/core-schema";
+import type { WorkspaceChangeEvent } from "@seekstar/storage-service";
 import type { SeekStarSettings } from "../main/appSettingsStore";
 import type { TabRuntimeSnapshot } from "../main/tabRuntimeManager";
 import type { TileSurfaceLinkEvent, TileSurfaceThumbnailEvent } from "../main/tileSurfaceManager";
@@ -29,6 +30,11 @@ contextBridge.exposeInMainWorld("seekstar", {
     clearSnapshot: (): Promise<void> => ipcRenderer.invoke("workspace:clear"),
     getStorePaths: (): Promise<Record<string, string>> => ipcRenderer.invoke("workspace:get-store-paths"),
     loadSnapshot: (): Promise<unknown | undefined> => ipcRenderer.invoke("workspace:load"),
+    onChanged: (callback: (event: WorkspaceChangeEvent) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: WorkspaceChangeEvent): void => callback(payload);
+      ipcRenderer.on("workspace:changed", listener);
+      return () => ipcRenderer.removeListener("workspace:changed", listener);
+    },
     saveSnapshot: (snapshot: unknown): Promise<void> => ipcRenderer.invoke("workspace:save", snapshot),
   },
   tabs: {

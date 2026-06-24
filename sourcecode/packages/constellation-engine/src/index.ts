@@ -24,6 +24,8 @@ export {
   type ConstellationScoutPort,
   type ConstellationSourceSnapshotPort,
   type ConstellationStoragePort,
+  type ConstellationTabCreateInput,
+  type ConstellationTabRuntimePort,
 } from "./ports.js";
 export {
   clampTileFieldTargetCount,
@@ -77,6 +79,13 @@ export {
   positionFrontierObservations,
   resolveFrontierTrigger,
 } from "./scoutPlanning.js";
+export {
+  ScoutJobCoordinator,
+  type HyperlinkSourceIntakeInput,
+  type HyperlinkSourceIntakeResult,
+  type ScoutJobCoordinatorOptions,
+  type ScoutJobResult,
+} from "./scoutJobs.js";
 export { createSourceTerrainPatch, type SourceIngestionInput, type SourceTerrainPatch } from "./sourceTerrain.js";
 export { createSeedScene, type SeedSceneOptions } from "./seedScene.js";
 export {
@@ -96,3 +105,18 @@ export {
   removeDeprecatedDefaultScenes,
   type PreparedWorkspaceLaunch,
 } from "./workspaceSession.js";
+export {
+  WorkspacePersistenceCoordinator,
+  type WorkspaceHydrateOptions,
+  type WorkspaceHydrateResult,
+  type WorkspacePersistInput,
+  type WorkspacePersistenceCoordinatorOptions,
+} from "./workspacePersistence.js";
+export {
+  TabSessionCoordinator,
+  type CloseTabSessionTransaction,
+  type OpenTabSessionTransaction,
+  type ReorderTabSessionTransaction,
+  type TabSelectionResult,
+  type TabSessionCoordinatorOptions,
+} from "./tabSessionCoordinator.js";

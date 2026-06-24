@@ -1288,4 +1288,9 @@ Implementation status as of P5.11/P5.12:
 * visible/focused L3 tiles can be prewarmed as offscreen thumbnails without stealing telescope input;
 * absorbed tiles use Electron native live surfaces and retain the top exit label;
 * clicking an already focused L3 tile and crossing the 80% viewport threshold now route through Constellation Engine events;
-* remaining usability work is source-backed hyperlink tabs, Scout snapshot ingestion into L3 tile scenes, animated absorption transitions, and AI parent-context patches for orphan linked pages.
+* hyperlink-created tabs now run direct URL Scout, ingest the observed page as source-backed terrain, and open at L3 webpage/document tile level;
+* Storage Service workspace change notifications now propagate saved source intake across docked and detached tab renderers without forcing tab refresh;
+* Constellation Engine now owns workspace hydrate/persist merge rules through `WorkspacePersistenceCoordinator`;
+* Constellation Engine now owns Scout job execution/writeback rules through `ScoutJobCoordinator`;
+* Constellation Engine now owns open/close/reorder/activate tab-session transactions through `TabSessionCoordinator`;
+* remaining usability work is animated absorption transitions, richer Scout snapshot handling, remaining shell tab-registration/reset helper decoupling, and AI parent-context patches for orphan linked pages.
