@@ -16,6 +16,7 @@ sourcecode/
 |- AGENTS.md
 |- PRD.md
 |- PHILOSOPHY.md
+|- PHILOSOPHY.zh.md
 |- ARCHITECTURE_AND_UI_SPEC.md
 `- UI_STYLE_GUIDE.md
 ```
@@ -35,7 +36,8 @@ Development mode opens detached DevTools by default. Restart Electron fully afte
 
 ## Key Documents
 
-- `PHILOSOPHY.md`: product philosophy.
+- `PHILOSOPHY.md`: product philosophy (English normative edition).
+- `PHILOSOPHY.zh.md`: 项目哲学（中文版，与英文版同步）。
 - `PRD.md`: product requirements.
 - `AGENTS.md`: agent operating rules.
 - `ARCHITECTURE_AND_UI_SPEC.md`: architecture and UI specification.

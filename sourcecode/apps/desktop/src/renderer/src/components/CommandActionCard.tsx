@@ -2,11 +2,19 @@ import type { ReactElement } from "react";
 
 interface CommandActionCardProps {
   value: string;
+  canScoutDirectUrl: boolean;
+  onScoutDirectUrl: () => void;
   onUseAsSeed: () => void;
   onSearchCurrentTab: () => void;
 }
 
-export function CommandActionCard({ value, onUseAsSeed, onSearchCurrentTab }: CommandActionCardProps): ReactElement {
+export function CommandActionCard({
+  canScoutDirectUrl,
+  value,
+  onScoutDirectUrl,
+  onUseAsSeed,
+  onSearchCurrentTab,
+}: CommandActionCardProps): ReactElement {
   return (
     <section className="command-card" aria-label="Command actions">
       <div className="command-card-label">{value}</div>
@@ -22,6 +30,16 @@ export function CommandActionCard({ value, onUseAsSeed, onSearchCurrentTab }: Co
       >
         <span>Search within current tab</span>
         <small>Highlight matching nodes in this scene</small>
+      </button>
+      <button
+        className="command-action scout"
+        disabled={!canScoutDirectUrl}
+        type="button"
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={onScoutDirectUrl}
+      >
+        <span>Scout direct URL</span>
+        <small>Observe one page as structured Scout intake</small>
       </button>
     </section>
   );

@@ -20,37 +20,36 @@ export interface LassoDraft {
 }
 
 const MIN_ZOOM = 0.55;
-const MAX_ZOOM = 2.4;
+const MAX_ZOOM = 2.45;
 const NODE_FIT_HALF_WIDTH = 120;
 const NODE_FIT_HALF_HEIGHT = 70;
 const DEFAULT_FIT_PADDING = 112;
+const ZOOM_LAYERS: Array<{ id: LayerId; zoom: number }> = [
+  { id: "L0", zoom: 1 },
+  { id: "L1", zoom: 1.14 },
+  { id: "L2", zoom: 1.28 },
+  { id: "L3", zoom: 1.42 },
+  { id: "L4", zoom: 1.56 },
+  { id: "L5", zoom: 1.7 },
+  { id: "L6", zoom: 1.84 },
+  { id: "L7", zoom: 1.98 },
+  { id: "L8", zoom: 2.12 },
+  { id: "L9", zoom: 2.28 },
+  { id: "L10", zoom: 2.45 },
+];
 
 export function clampZoom(zoom: number): number {
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
 }
 
 export function resolveLayerForZoom(zoom: number): LayerId {
-  if (zoom >= 1.8) {
-    return "L2";
-  }
-
-  if (zoom >= 1.2) {
-    return "L1";
-  }
-
-  return "L0";
+  return ZOOM_LAYERS.reduce((closest, layer) =>
+    Math.abs(layer.zoom - zoom) < Math.abs(closest.zoom - zoom) ? layer : closest,
+  ).id;
 }
 
 export function resolveZoomForLayer(layer: LayerId): number {
-  if (layer === "L2") {
-    return 1.85;
-  }
-
-  if (layer === "L1") {
-    return 1.3;
-  }
-
-  return 1;
+  return ZOOM_LAYERS.find((candidate) => candidate.id === layer)?.zoom ?? 1;
 }
 
 export function screenToWorld(point: CanvasPoint, viewport: ViewportState, bounds: DOMRect): CanvasPoint {

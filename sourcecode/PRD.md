@@ -34,6 +34,8 @@ SeekStar addresses this by replacing the empty input box as the dominant interfa
 
 ## 3. Product Philosophy
 
+Normative product philosophy, including Seek vs Search, existence-before-cognition, and the telescope constitution, lives in `PHILOSOPHY.md` (English) and `PHILOSOPHY.zh.md` (Chinese). This section summarizes product-facing implications.
+
 ### 3.1 From search to terrain
 
 Search is not treated as a linear retrieval act. It is treated as navigation through terrain.
@@ -62,9 +64,22 @@ Any information grain can become a new exploration seed:
 * Unicode code point;
 * dictionary entry.
 
-### 3.5 From accidental browsing to structured serendipity
+### 3.6 SeekStar, not SearchStar
 
-SeekStar should make accidental discovery possible, but not chaotic. Every discovery should remain source-backed, explainable, and exportable.
+SeekStar is named for exploration before precision. Search assumes the user already knows what to name. Seek assumes the user may only have a direction, fragment, or region worth inspecting. The product must help users discover what can be asked before the question is fully formed.
+
+### 3.7 Existence before map completion
+
+The map must combine two kinds of material:
+
+* model-organized unknowns, fog, and adjacent possibilities;
+* scout-observed webpages, papers, encyclopedia entries, and other source-backed objects that already exist in the world.
+
+Scout observations are candidate stars until provenance and user confirmation promote them into durable terrain.
+
+### 3.8 The telescope is the primary surface
+
+The star map and its camera are the product center. Macro Star Gallery, document tile fields, and text-grain depth are focal-length changes of the same instrument. Panels and input surfaces support the telescope; they do not replace it.
 
 ## 4. Target Users
 
@@ -198,6 +213,16 @@ The lens is both visual and semantic:
 * the Agent prioritizes the center;
 * the scout preloads near the edge.
 
+### 5.5.1 Macro Lens Gallery
+
+At macro layers, SeekStar should not look like a dashboard grid of rounded cards.
+
+Layers L-3, L-2, L-1, and L0 may use an Apple Watch App Gallery-like bubble lens: colorful but restrained solid bubbles clustered in a dense field. The center of the viewport is larger, clearer, and more readable; the edge becomes smaller, dimmer, and eventually fades. This is a cognitive orientation surface, not decoration.
+
+Macro bubbles are entry points for exploration when the user does not yet know what to ask. They may represent domains, topic regions, seed fields, fog regions, scout-pending regions, or constellation anchors. They must still preserve source state and confidence: source-backed, generated, weak, inferred, and fog content cannot look interchangeable.
+
+P4.6 pauses long-press fracture. Macro discovery should instead feel like moving a telescope horizontally across a star field: when the user drifts near the edge of the current layer, Scout may request same-layer frontier observations and place new candidate stars near that edge. It must not turn into a ranked result list or chatbot answer.
+
 ## 5.6 Constellation
 
 A constellation is a domain-level shape identity.
@@ -212,6 +237,13 @@ Rules:
 * near content level: shape identity disappears.
 
 The constellation is a road sign, not the truth of the data.
+
+Macro Lens Gallery and constellation layout work together:
+
+* L-3 / L-2: constellation shape and bubble lens both dominate;
+* L-1 / L0: clustered seed/topic bubbles dominate, while constellation structure remains as orientation;
+* L1 / L2: bubbles transition into topic and source cards;
+* L3 and deeper: document tiles and text grains replace macro bubbles as the primary visual form.
 
 ## 5.7 Tile Field
 
@@ -730,6 +762,169 @@ P2 starts with real local product capability while keeping the map-first model:
 * source-derived tabs can focus the original source-backed node across tabs without using browser history.
 
 P2.1-P2.7 close the first local source-backed exploration loop. They still do not implement Playwright retrieval, AI source distillation, real graph layout, browser navigation, durable source-cache indexing, or real Markdown export.
+
+## 9.5 P3 Current Implementation Boundary
+
+P3.1 starts the AI cartographer surface as a structured local job boundary:
+
+* cartographer jobs are visible in the right inspector and app status;
+* region explain, source distill, and fog scout planning create mock completed jobs;
+* outputs become generated / inferred / weak / fog terrain patches on the canvas;
+* scout plans are only candidate directions and do not run Playwright;
+* source-backed nodes remain the only factual terrain, while generated outputs stay marked.
+
+P3.1 does not implement real AI calls, Playwright retrieval, real web search, browser navigation, source-backed AI claims, full job cancellation, cost accounting, or real Markdown export.
+
+P3.2 adds a local mock job lifecycle:
+
+* cartographer jobs move through queued, running, completed, cancelled, and failed states;
+* only completed jobs add terrain patches and outputs to the map;
+* cancelled and failed jobs remain inspectable but do not create facts or source-backed terrain;
+* progress is a local UI affordance, not real token, cost, or network progress.
+
+## 9.6 Deep Zoom Spine Prototype Boundary
+
+The Deep Zoom Spine prototype makes the Z axis verifiable beyond L0-L2:
+
+* mock layers run from L0 seed through L10 new seed loop;
+* paragraph, sentence, phrase/word, character, and Unicode/dictionary grains render as distinct terrain forms;
+* `zoom_target`, semantic breadcrumb, source range, token range, and seedability are explicit node metadata;
+* seedable grains create independent mock tabs with origin backlinks;
+* all deep zoom fixture content is generated/mock and must not look source-backed.
+
+This stage does not implement AI, Playwright, real webpage content, browser navigation, real dictionary lookup, real search, or a new persistence system.
+
+P3.3 improves the prototype without widening scope:
+
+* mock cartographer jobs can be retried or rerun from failed, cancelled, or completed states;
+* deep zoom shows muted parent/child ghost context for orientation;
+* a compact mini-map summarizes the semantic spine and current layer.
+
+These are local interaction affordances only, not real Agent execution, web retrieval, or search.
+
+P3.4 adds the first mock Layer Cartographer pathing action:
+
+* selected nodes can generate adjacent paths as structured terrain patches;
+* outputs appear as generated questions, weak adjacent-route nodes, and fog regions;
+* the action strengthens unknown-unknown discovery without turning the interface into chat or a ranked result list;
+* no source-backed facts are created by this mock action.
+
+This remains local-only and mock-only. It does not connect AI, Playwright, real search, browser navigation, or source-backed extraction.
+
+P3.5 turns generated questions and learning paths into map terrain:
+
+* lasso selections, side-tray items, and selected nodes can run mock question generation;
+* selected terrain can produce a short mock learning path made of orientation, evidence-readiness, and fog-following nodes;
+* generated questions are prompts for exploration, not answers;
+* learning paths preserve source-state distinctions and do not invent evidence.
+
+This remains local-only and mock-only. It does not implement real AI generation, Playwright retrieval, real citations, real Markdown export, or a search-results surface.
+
+P3.7 closes the mock cartographer seed loop:
+
+* generated questions, adjacent routes, scout-plan questions, learning-path steps, and fog edges can become new seed tabs;
+* new tabs created from generated cartographer terrain preserve `created_from` / backlink context;
+* lassoed or multi-node regions also preserve an origin backlink when used as a seed;
+* new seed tabs remain independent exploration universes and do not inherit camera, search, or job history.
+
+This does not make generated terrain source-backed, does not run AI, and does not perform retrieval.
+
+## 9.7 P4 Preflight Visual Interaction Boundary
+
+Before P4 connects real Playwright scouting, the macro visual interaction contract must be fixed:
+
+* macro layers use a bubble lens gallery rather than normal dashboard cards;
+* edge movement is the intended scout/fog-expansion gesture for macro terrain;
+* the renderer owns every movement frame locally;
+* Playwright may start during frontier discovery, but only returns structured scout observations;
+* scout counts may influence candidate frontier stars, but they must not imply factual result counts;
+* frontier stars must remain typed as pending, observed, failed, duplicate, source candidate, weak, or fog until provenance is available.
+
+This preflight is a design contract only. It does not implement animation, Playwright retrieval, AI summarization, search ranking, or browser navigation.
+
+## 9.8 P4.1 Scout Observation Contract
+
+P4.1 starts the real business-function boundary by introducing Scout observations.
+
+* `ScoutObservation` records what a future Playwright Scout saw or failed to see.
+* Observations may be pending, observed, source candidate, failed, duplicate, or expired.
+* Scout observations are not source-backed terrain by themselves.
+* Running a scout plan may create observation records, but it must not create factual nodes or ranked results directly.
+* Source-backed terrain still requires provenance conversion into `SourceRef`, source nodes, and typed relations.
+
+The current P4.1 implementation may use local mock observations to validate the contract. It does not yet run Playwright, fetch pages, rank results, summarize content, or call AI.
+
+## 9.9 P4.2 Observation To Source Terrain Conversion
+
+P4.2 lets a user-confirmed Scout observation become source-backed terrain.
+
+* Only `source_candidate` or `observed` observations can be converted.
+* Conversion is explicit: the user chooses `Confirm as source terrain`.
+* Conversion creates `SourceRef`, source-backed source/excerpt nodes, and `source_contains` relations.
+* The original observation is marked `converted` to prevent repeated provenance intake.
+* Converted terrain keeps reliability hints showing that this is currently a mock Scout observation, not real Playwright retrieval.
+
+Scout still does not decide meaning. Conversion does not rank results, summarize pages with AI, or open a browser view.
+
+## 9.10 P4.3 Scout Provenance Trace
+
+P4.3 closes the local mock provenance loop between Scout intake and source-backed terrain.
+
+* Converted `SourceRef` records may retain `created_from_observation_id`.
+* Source-backed nodes created from an observation keep `created_from` context.
+* The source evidence card shows the Scout origin, status, query, and observed time when present.
+* This trace is informational provenance, not a claim that the current mock observation came from real retrieval.
+
+This keeps the future Playwright path honest: external observations enter as intake records first, then become source-backed terrain only through explicit conversion.
+
+## 9.11 P4.4 Electron Scout Adapter Boundary
+
+P4.4 moves Scout execution behind an Electron-owned adapter boundary.
+
+* The renderer sends a structured `ScoutRunRequest` containing the current tab and `ScoutPlan`.
+* The Electron main process returns a `ScoutRunResult` containing `ScoutObservation` records.
+* The current adapter is still mock-only and does not install or run Playwright.
+* Adapter failures become failed observations instead of silent UI errors.
+* The renderer remains map-first: observations enter the side inspector and can later be confirmed into source terrain.
+
+Future real Playwright work must replace the adapter implementation behind this boundary. It must still return observations first and must not rank results, drive animation frames, decide meaning, or create source-backed terrain directly.
+
+## 9.12 P4.5 Direct URL Playwright Scout Spike
+
+P4.5 starts the real Scout path with the smallest safe retrieval case: direct HTTP(S) URL observation.
+
+* The desktop app depends on Playwright Library in the Electron main process.
+* The command card exposes `Scout direct URL` only when the input is a URL.
+* The Playwright adapter opens the URL headlessly, reads page title and visible body text, and returns a `source_candidate` observation.
+* Non-URL candidate queries are not converted into search-engine requests in this phase.
+* Browser launch or page failures become failed observations.
+* The observation must still be explicitly confirmed before it becomes source-backed terrain.
+
+This is not a browser surface, not a ranked web search, and not AI summarization. It is the first narrow Scout probe behind the existing observation contract.
+
+## 9.13 P4.6 Real Telescope + GPU Star Map
+
+P4.6 starts the real telescope experience.
+
+* The primary terrain canvas uses PixiJS instead of DOM node cards.
+* Macro layers render as solid colored star bubbles.
+* Moving the macro viewport near a layer edge triggers same-layer frontier discovery.
+* Playwright Scout can perform direct URL, frontier web search, and page outlink observations.
+* Frontier observations carry layer, position, frontier id, discovery mode, and confidence so they can render as candidate stars.
+* Candidate stars are not facts and are not source-backed until explicit conversion.
+
+This phase is aggressive about moving beyond mock visuals, but it still preserves SeekStar's core boundary: map over list, observations before facts, Playwright as Scout, and explicit source conversion.
+
+## 9.14 P4.7 Source-Anchored Linked Frontier
+
+P4.7 lets a source-backed node act as a telescope anchor.
+
+* Source evidence cards may expose `Scout linked frontier` when the node has a confirmed `SourceRef` URL.
+* The Electron Scout adapter uses Playwright `page_outlinks` mode to observe candidate links from that confirmed page.
+* Returned links become same-layer Scout candidate stars positioned around the source node.
+* Candidate stars are not facts, are not ranked results, and are not source-backed terrain until the user confirms conversion.
+
+This improves the real discovery loop without adding browser navigation, chat, AI summarization, or automatic meaning decisions.
 
 ## 10. UI Layout
 

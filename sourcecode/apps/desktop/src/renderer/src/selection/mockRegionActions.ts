@@ -1,7 +1,7 @@
 import type { SourceState } from "@seekstar/core-schema";
 import type { SelectionBasketItem } from "./selectionBasket";
 
-export type MockRegionActionKind = "explain" | "compare" | "export";
+export type MockRegionActionKind = "explain" | "questions" | "learning_path" | "compare" | "export";
 
 export interface MockRegionActionResult {
   id: string;
@@ -40,6 +40,14 @@ function buildActionTitle(item: SelectionBasketItem, kind: MockRegionActionKind)
     return `Mock comparison brief: ${item.title}`;
   }
 
+  if (kind === "questions") {
+    return `Mock question set: ${item.title}`;
+  }
+
+  if (kind === "learning_path") {
+    return `Mock learning path: ${item.title}`;
+  }
+
   if (kind === "export") {
     return `Mock Markdown preview: ${item.title}`;
   }
@@ -53,6 +61,14 @@ function buildActionBody(item: SelectionBasketItem, kind: MockRegionActionKind):
 
   if (kind === "compare") {
     return `${nodeSummary} are held as a local comparison set. This preview only notes visible terrain roles and source states (${stateSummary}); it does not claim factual contrast or cite external evidence yet.`;
+  }
+
+  if (kind === "questions") {
+    return `${nodeSummary} are being treated as a spatial prompt for generated next questions. This fallback note should only appear if the structured cartographer job path is unavailable. Source states: ${stateSummary}.`;
+  }
+
+  if (kind === "learning_path") {
+    return `${nodeSummary} are being treated as a spatial prompt for a mock learning path. This fallback note should only appear if the structured terrain job path is unavailable. Source states: ${stateSummary}.`;
   }
 
   if (kind === "export") {

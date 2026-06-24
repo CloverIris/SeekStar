@@ -1,5 +1,6 @@
 import { app, BrowserWindow, shell } from "electron";
 import { join } from "node:path";
+import { registerScoutAdapter } from "./scoutAdapter";
 import { registerWindowBridge } from "./windowBridge";
 import { registerWorkspaceStore } from "./workspaceStore";
 
@@ -7,6 +8,7 @@ app.disableHardwareAcceleration();
 
 registerWindowBridge();
 registerWorkspaceStore();
+registerScoutAdapter();
 
 function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({

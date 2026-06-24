@@ -1,7 +1,17 @@
-import type { LayerId, TerrainLayer, TerrainNode, TerrainRelation, TerrainScene, ViewportState } from "@seekstar/core-schema";
+import type {
+  LayerId,
+  ScoutObservation,
+  TerrainLayer,
+  TerrainNode,
+  TerrainRelation,
+  TerrainScene,
+  ViewportState,
+} from "@seekstar/core-schema";
 import type { PointerEvent, ReactElement } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { LocateFixed, Maximize2, RotateCcw } from "lucide-react";
+import "pixi.js/unsafe-eval";
+import { Application, Container, Graphics, Rectangle, Text } from "pixi.js";
 import {
   type CanvasPoint,
   type CanvasTool,
@@ -19,12 +29,15 @@ interface TerrainCanvasProps {
   activeTool: CanvasTool;
   focusedNodeId?: string;
   highlightedNodeIds: string[];
+  onFrontierDiscovery: (viewport: ViewportState) => void;
   onNodeSelect: (nodeId: string) => void;
+  onObservationSelect: (observationId: string) => void;
   onRelationSelect: (relationId: string) => void;
   onSelectionChange: (nodeIds: string[], focusNodeId?: string, showSelectionActions?: boolean) => void;
   onViewportChange: (viewport: ViewportState) => void;
   scene: TerrainScene;
   selectedNodeIds: string[];
+  selectedObservationId?: string;
   selectedRelationId?: string;
   viewport: ViewportState;
 }
@@ -43,44 +56,189 @@ type CanvasDragState =
     };
 
 interface HoverPreviewState {
-  node: TerrainNode;
-  relationCount: number;
+  title: string;
+  type: string;
+  state: string;
+  summary?: string;
   position: CanvasPoint;
 }
+
+const macroLayerIds = new Set<LayerId>(["L-3", "L-2", "L-1", "L0"]);
+const candidateStatuses = new Set<ScoutObservation["status"]>(["pending", "observed", "source_candidate", "failed"]);
 
 export function TerrainCanvas({
   activeTool,
   focusedNodeId,
   highlightedNodeIds,
+  onFrontierDiscovery,
   onNodeSelect,
+  onObservationSelect,
   onRelationSelect,
   onSelectionChange,
   onViewportChange,
   scene,
   selectedNodeIds,
+  selectedObservationId,
   selectedRelationId,
   viewport,
 }: TerrainCanvasProps): ReactElement {
-  const canvasRef = useRef<HTMLElement | null>(null);
+  const hostRef = useRef<HTMLElement | null>(null);
+  const appRef = useRef<Application | null>(null);
   const viewportRef = useRef(viewport);
   const onViewportChangeRef = useRef(onViewportChange);
+  const onFrontierDiscoveryRef = useRef(onFrontierDiscovery);
+  const onNodeSelectRef = useRef(onNodeSelect);
+  const onObservationSelectRef = useRef(onObservationSelect);
+  const onRelationSelectRef = useRef(onRelationSelect);
+  const [pixiReady, setPixiReady] = useState(false);
   const [dragState, setDragState] = useState<CanvasDragState | undefined>();
   const [hoverPreview, setHoverPreview] = useState<HoverPreviewState | undefined>();
   const lassoRect = dragState?.mode === "lasso" ? normalizeRect(dragState.draft.start, dragState.draft.current) : undefined;
+  const currentLayer = scene.layers.find((layer) => layer.id === viewport.layer);
+  const parentLayerId = currentLayer?.parent_layer_id;
+  const childLayerIds = currentLayer?.child_layer_ids ?? [];
+  const visibleNodes = useMemo(() => {
+    const nodesForLayer = scene.nodes.filter((node) => node.layer === viewport.layer);
+
+    return nodesForLayer.length > 0 ? nodesForLayer : scene.nodes;
+  }, [scene.nodes, viewport.layer]);
+  const ghostNodes = useMemo(
+    () =>
+      scene.nodes.filter(
+        (node) =>
+          node.layer !== viewport.layer &&
+          (node.layer === parentLayerId || childLayerIds.includes(node.layer)) &&
+          !visibleNodes.some((visibleNode) => visibleNode.id === node.id),
+      ),
+    [childLayerIds, parentLayerId, scene.nodes, viewport.layer, visibleNodes],
+  );
+  const renderedNodes = useMemo(() => [...ghostNodes, ...visibleNodes], [ghostNodes, visibleNodes]);
+  const visibleNodeIds = useMemo(() => new Set(visibleNodes.map((node) => node.id)), [visibleNodes]);
+  const renderedNodeIds = useMemo(() => new Set(renderedNodes.map((node) => node.id)), [renderedNodes]);
+  const visibleRelations = useMemo(
+    () => scene.relations.filter((relation) => renderedNodeIds.has(relation.from) && renderedNodeIds.has(relation.to)),
+    [renderedNodeIds, scene.relations],
+  );
+  const candidateObservations = useMemo(
+    () =>
+      (scene.scout_observations ?? []).filter(
+        (observation) =>
+          observation.layer === viewport.layer &&
+          observation.position_hint &&
+          candidateStatuses.has(observation.status) &&
+          observation.status !== "converted",
+      ),
+    [scene.scout_observations, viewport.layer],
+  );
 
   useEffect(() => {
     viewportRef.current = viewport;
     onViewportChangeRef.current = onViewportChange;
-  }, [onViewportChange, viewport]);
+    onFrontierDiscoveryRef.current = onFrontierDiscovery;
+    onNodeSelectRef.current = onNodeSelect;
+    onObservationSelectRef.current = onObservationSelect;
+    onRelationSelectRef.current = onRelationSelect;
+  }, [onFrontierDiscovery, onNodeSelect, onObservationSelect, onRelationSelect, onViewportChange, viewport]);
 
   useEffect(() => {
-    const element = canvasRef.current;
+    const host = hostRef.current;
 
-    if (!element) {
+    if (!host) {
       return undefined;
     }
 
-    const target = element;
+    let cancelled = false;
+    let resizeObserver: ResizeObserver | undefined;
+    const app = new Application();
+    const initialWidth = Math.max(1, host.clientWidth);
+    const initialHeight = Math.max(1, host.clientHeight);
+
+    void app
+      .init({
+        width: initialWidth,
+        height: initialHeight,
+        backgroundAlpha: 0,
+        antialias: true,
+        preference: "webgl",
+        powerPreference: "high-performance",
+      })
+      .then(() => {
+        if (cancelled) {
+          destroyPixiApplication(app);
+          return;
+        }
+
+        app.canvas.className = "pixi-terrain-canvas";
+        host.appendChild(app.canvas);
+        appRef.current = app;
+        resizeObserver = new ResizeObserver(([entry]) => {
+          const { width, height } = entry.contentRect;
+
+          app.renderer.resize(Math.max(1, Math.round(width)), Math.max(1, Math.round(height)));
+        });
+        resizeObserver.observe(host);
+        setPixiReady(true);
+      });
+
+    return () => {
+      cancelled = true;
+      resizeObserver?.disconnect();
+      setPixiReady(false);
+      appRef.current = null;
+      destroyPixiApplication(app);
+    };
+  }, []);
+
+  useEffect(() => {
+    const app = appRef.current;
+    const host = hostRef.current;
+
+    if (!pixiReady || !app || !host) {
+      return;
+    }
+
+    renderPixiScene({
+      app,
+      candidateObservations,
+      focusedNodeId,
+      highlightedNodeIds,
+      host,
+      onHover: setHoverPreview,
+      onHoverClear: () => setHoverPreview(undefined),
+      onNodeSelect: (nodeId) => onNodeSelectRef.current(nodeId),
+      onObservationSelect: (observationId) => onObservationSelectRef.current(observationId),
+      onRelationSelect: (relationId) => onRelationSelectRef.current(relationId),
+      renderedNodes,
+      selectedNodeIds,
+      selectedObservationId,
+      selectedRelationId,
+      visibleNodeIds,
+      visibleRelations,
+      viewport,
+    });
+  }, [
+    candidateObservations,
+    focusedNodeId,
+    highlightedNodeIds,
+    pixiReady,
+    renderedNodes,
+    scene,
+    selectedNodeIds,
+    selectedObservationId,
+    selectedRelationId,
+    viewport,
+    visibleNodeIds,
+    visibleRelations,
+  ]);
+
+  useEffect(() => {
+    const host = hostRef.current;
+
+    if (!host) {
+      return undefined;
+    }
+
+    const target = host;
 
     function handleNativeWheel(event: WheelEvent): void {
       event.preventDefault();
@@ -112,38 +270,12 @@ export function TerrainCanvas({
     };
   }
 
-  function previewPositionFromEvent(event: PointerEvent<HTMLElement>): CanvasPoint | undefined {
-    const bounds = canvasRef.current?.getBoundingClientRect();
-
-    if (!bounds) {
-      return undefined;
-    }
-
-    const width = 260;
-    const height = 138;
-
-    return {
-      x: Math.max(12, Math.min(event.clientX - bounds.left + 14, bounds.width - width - 12)),
-      y: Math.max(12, Math.min(event.clientY - bounds.top + 14, bounds.height - height - 12)),
-    };
-  }
-
-  function isCanvasPanTarget(event: PointerEvent<HTMLElement>): boolean {
-    const target = event.target;
-
-    if (!(target instanceof Element)) {
-      return true;
-    }
-
-    return !target.closest(".terrain-node, .terrain-relation-hit");
-  }
-
   function handlePointerDown(event: PointerEvent<HTMLElement>): void {
     if (event.button !== 0) {
       return;
     }
 
-    if (activeTool === "pan" || (activeTool === "pointer" && isCanvasPanTarget(event))) {
+    if (activeTool === "pan" || activeTool === "pointer") {
       event.currentTarget.setPointerCapture(event.pointerId);
       setDragState({
         mode: "pan",
@@ -180,12 +312,14 @@ export function TerrainCanvas({
     if (dragState.mode === "pan") {
       const deltaX = current.x - dragState.start.x;
       const deltaY = current.y - dragState.start.y;
-
-      onViewportChange({
+      const nextViewport = {
         ...dragState.viewport,
         x: dragState.viewport.x - deltaX / dragState.viewport.zoom,
         y: dragState.viewport.y - deltaY / dragState.viewport.zoom,
-      });
+      };
+
+      onViewportChange(nextViewport);
+      onFrontierDiscoveryRef.current(nextViewport);
       return;
     }
 
@@ -219,7 +353,7 @@ export function TerrainCanvas({
           viewport,
           bounds,
         );
-        const selectedIds = selectNodesInRect(scene.nodes, normalizeRect(worldStart, worldEnd));
+        const selectedIds = selectNodesInRect(visibleNodes, normalizeRect(worldStart, worldEnd));
 
         onSelectionChange(selectedIds, undefined, selectedIds.length > 0);
       }
@@ -233,30 +367,8 @@ export function TerrainCanvas({
     setHoverPreview(undefined);
   }
 
-  function handleNodePreview(node: TerrainNode, event: PointerEvent<HTMLElement>): void {
-    if (activeTool !== "pointer" || dragState) {
-      return;
-    }
-
-    const position = previewPositionFromEvent(event);
-
-    if (!position) {
-      return;
-    }
-
-    setHoverPreview({
-      node,
-      position,
-      relationCount: scene.relations.filter((relation) => relation.from === node.id || relation.to === node.id).length,
-    });
-  }
-
-  function handleNodePreviewClear(): void {
-    setHoverPreview(undefined);
-  }
-
   function getCanvasBounds(): DOMRect | undefined {
-    return canvasRef.current?.getBoundingClientRect();
+    return hostRef.current?.getBoundingClientRect();
   }
 
   function handleFitScene(): void {
@@ -266,7 +378,7 @@ export function TerrainCanvas({
       return;
     }
 
-    onViewportChange(fitViewportToNodes(scene.nodes, bounds, viewport));
+    onViewportChange(fitViewportToNodes(visibleNodes, bounds, viewport));
     setHoverPreview(undefined);
   }
 
@@ -278,7 +390,7 @@ export function TerrainCanvas({
     }
 
     onViewportChange(
-      fitViewportToNodes(scene.nodes, bounds, viewport, {
+      fitViewportToNodes(visibleNodes, bounds, viewport, {
         maxZoom: selectedNodeIds.length === 1 ? 1.35 : 1.2,
         nodeIds: selectedNodeIds,
         padding: 140,
@@ -305,45 +417,14 @@ export function TerrainCanvas({
 
   return (
     <section
-      className={`canvas-plane canvas-tool-${activeTool}`}
+      className={`canvas-plane pixi-canvas-plane canvas-tool-${activeTool}`}
       aria-label="Cognitive canvas"
       onPointerCancel={handlePointerCancel}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
-      ref={canvasRef}
+      ref={hostRef}
     >
-      <div
-        className="canvas-world"
-        style={{
-          transform: `matrix(${viewport.zoom}, 0, 0, ${viewport.zoom}, ${-viewport.x * viewport.zoom}, ${-viewport.y * viewport.zoom})`,
-        }}
-      >
-        <TerrainRelations
-          highlightedNodeIds={highlightedNodeIds}
-          nodes={scene.nodes}
-          onRelationSelect={onRelationSelect}
-          relations={scene.relations}
-          selectedRelationId={selectedRelationId}
-          selectedNodeIds={selectedNodeIds}
-          tool={activeTool}
-          viewportLayer={viewport.layer}
-        />
-        {scene.nodes.map((node) => (
-          <TerrainNodeCard
-            isFocused={focusedNodeId === node.id}
-            isHighlighted={highlightedNodeIds.includes(node.id)}
-            isLayerMuted={node.layer !== viewport.layer}
-            isSelected={selectedNodeIds.includes(node.id)}
-            key={node.id}
-            node={node}
-            onPreview={handleNodePreview}
-            onPreviewClear={handleNodePreviewClear}
-            onSelect={onNodeSelect}
-            tool={activeTool}
-          />
-        ))}
-      </div>
       {lassoRect ? (
         <div
           className="lasso-rect"
@@ -367,9 +448,511 @@ export function TerrainCanvas({
         onLayerSelect={handleLayerSelect}
         zoom={viewport.zoom}
       />
+      <DeepZoomMiniMap currentLayer={viewport.layer} layers={scene.layers} nodes={scene.nodes} onLayerSelect={handleLayerSelect} />
       {hoverPreview ? <NodeHoverPreview preview={hoverPreview} /> : null}
     </section>
   );
+}
+
+function renderPixiScene({
+  app,
+  candidateObservations,
+  focusedNodeId,
+  highlightedNodeIds,
+  host,
+  onHover,
+  onHoverClear,
+  onNodeSelect,
+  onObservationSelect,
+  onRelationSelect,
+  renderedNodes,
+  selectedNodeIds,
+  selectedObservationId,
+  selectedRelationId,
+  visibleNodeIds,
+  visibleRelations,
+  viewport,
+}: {
+  app: Application;
+  candidateObservations: ScoutObservation[];
+  focusedNodeId?: string;
+  highlightedNodeIds: string[];
+  host: HTMLElement;
+  onHover: (preview: HoverPreviewState) => void;
+  onHoverClear: () => void;
+  onNodeSelect: (nodeId: string) => void;
+  onObservationSelect: (observationId: string) => void;
+  onRelationSelect: (relationId: string) => void;
+  renderedNodes: TerrainNode[];
+  selectedNodeIds: string[];
+  selectedObservationId?: string;
+  selectedRelationId?: string;
+  visibleNodeIds: Set<string>;
+  visibleRelations: TerrainRelation[];
+  viewport: ViewportState;
+}): void {
+  const bounds = host.getBoundingClientRect();
+  const stage = app.stage;
+  const world = new Container();
+  const nodesById = new Map(renderedNodes.map((node) => [node.id, node]));
+
+  stage.removeChildren();
+  drawPixiBackground(stage, bounds);
+  world.position.set(bounds.width / 2 - viewport.x * viewport.zoom, bounds.height / 2 - viewport.y * viewport.zoom);
+  world.scale.set(viewport.zoom);
+
+  const relationLayer = new Container();
+  const nodeLayer = new Container();
+  const observationLayer = new Container();
+
+  for (const relation of visibleRelations) {
+    const fromNode = nodesById.get(relation.from);
+    const toNode = nodesById.get(relation.to);
+    const from = fromNode?.position_hint;
+    const to = toNode?.position_hint;
+
+    if (!from || !to || !fromNode || !toNode) {
+      continue;
+    }
+
+    relationLayer.addChild(
+      createRelationLine({
+        from,
+        isHighlighted: highlightedNodeIds.includes(fromNode.id) || highlightedNodeIds.includes(toNode.id),
+        isSelected: relation.id === selectedRelationId || selectedNodeIds.includes(fromNode.id) || selectedNodeIds.includes(toNode.id),
+        onRelationSelect,
+        relation,
+        to,
+      }),
+    );
+  }
+
+  for (const node of renderedNodes) {
+    const position = node.position_hint ?? { x: 0, y: 0 };
+    const isMacro = isMacroBubbleNode(node);
+    const radius = isMacro ? getMacroBubbleRadius(node, viewport) : 0;
+    const displayObject = isMacro
+      ? createMacroBubble({
+          isFocused: focusedNodeId === node.id,
+          isGhost: !visibleNodeIds.has(node.id),
+          isHighlighted: highlightedNodeIds.includes(node.id),
+          isSelected: selectedNodeIds.includes(node.id),
+          node,
+          onHover,
+          onHoverClear,
+          onNodeSelect,
+          radius,
+          viewport,
+        })
+      : createDetailCard({
+          isFocused: focusedNodeId === node.id,
+          isGhost: !visibleNodeIds.has(node.id),
+          isHighlighted: highlightedNodeIds.includes(node.id),
+          isSelected: selectedNodeIds.includes(node.id),
+          node,
+          onHover,
+          onHoverClear,
+          onNodeSelect,
+        });
+
+    displayObject.position.set(position.x, position.y);
+    nodeLayer.addChild(displayObject);
+  }
+
+  for (const observation of candidateObservations) {
+    const position = observation.position_hint;
+
+    if (!position) {
+      continue;
+    }
+
+    const displayObject = createObservationStar({
+      isSelected: selectedObservationId === observation.id,
+      observation,
+      onHover,
+      onHoverClear,
+      onObservationSelect,
+      viewport,
+    });
+
+    displayObject.position.set(position.x, position.y);
+    observationLayer.addChild(displayObject);
+  }
+
+  world.addChild(relationLayer, observationLayer, nodeLayer);
+  stage.addChild(world);
+}
+
+function destroyPixiApplication(app: Application): void {
+  const canvas = app.canvas;
+  const destroyableApp = app as Application & {
+    stop?: () => void;
+    ticker?: { destroy: () => void };
+  };
+
+  destroyableApp.stop?.();
+  destroyableApp.ticker?.destroy();
+  app.stage.destroy({ children: true });
+  app.renderer.destroy({ removeView: true });
+  canvas.remove();
+}
+
+function drawPixiBackground(stage: Container, bounds: DOMRect): void {
+  const background = new Graphics();
+  const grid = new Graphics();
+  const width = Math.max(1, bounds.width);
+  const height = Math.max(1, bounds.height);
+
+  background.rect(0, 0, width, height).fill({ color: 0x070b12, alpha: 0.42 });
+
+  for (let x = 0; x <= width; x += 48) {
+    grid.moveTo(x, 0).lineTo(x, height);
+  }
+
+  for (let y = 0; y <= height; y += 48) {
+    grid.moveTo(0, y).lineTo(width, y);
+  }
+
+  grid.stroke({ color: 0x6e9fff, alpha: 0.035, width: 1 });
+  stage.addChild(background, grid);
+}
+
+function createRelationLine({
+  from,
+  isHighlighted,
+  isSelected,
+  onRelationSelect,
+  relation,
+  to,
+}: {
+  from: { x: number; y: number };
+  isHighlighted: boolean;
+  isSelected: boolean;
+  onRelationSelect: (relationId: string) => void;
+  relation: TerrainRelation;
+  to: { x: number; y: number };
+}): Container {
+  const container = new Container();
+  const line = new Graphics();
+  const hitLine = new Graphics();
+  const alpha = isSelected || isHighlighted ? 0.42 : 0.18;
+
+  line.moveTo(from.x, from.y).lineTo(to.x, to.y).stroke({
+    color: relation.source_state === "fog" ? 0x8b7aaa : 0x6e9fff,
+    alpha,
+    width: isSelected ? 2 : 1.2,
+  });
+  hitLine.moveTo(from.x, from.y).lineTo(to.x, to.y).stroke({ color: 0xffffff, alpha: 0.001, width: 12 });
+  hitLine.eventMode = "static";
+  hitLine.cursor = "pointer";
+  hitLine.on("pointertap", () => onRelationSelect(relation.id));
+  container.addChild(hitLine, line);
+
+  return container;
+}
+
+function createMacroBubble({
+  isFocused,
+  isGhost,
+  isHighlighted,
+  isSelected,
+  node,
+  onHover,
+  onHoverClear,
+  onNodeSelect,
+  radius,
+  viewport,
+}: {
+  isFocused: boolean;
+  isGhost: boolean;
+  isHighlighted: boolean;
+  isSelected: boolean;
+  node: TerrainNode;
+  onHover: (preview: HoverPreviewState) => void;
+  onHoverClear: () => void;
+  onNodeSelect: (nodeId: string) => void;
+  radius: number;
+  viewport: ViewportState;
+}): Container {
+  const container = new Container();
+  const distance = getMacroLensDistance(node, viewport);
+  const color = getMacroColor(node);
+  const circle = new Graphics();
+  const highlight = isSelected || isFocused || isHighlighted;
+
+  container.alpha = isGhost ? 0.2 : Math.max(0.32, 1 - distance * 0.52);
+  circle.circle(0, 0, radius).fill({ color, alpha: 1 });
+  circle.circle(-radius * 0.24, -radius * 0.28, radius * 0.36).fill({ color: 0xffffff, alpha: 0.14 });
+  circle.circle(0, 0, radius).stroke({
+    color: highlight ? 0x9bc0ff : 0x0b1220,
+    alpha: highlight ? 0.75 : 0.38,
+    width: highlight ? 2.4 : 1.3,
+  });
+
+  const title = createPixiText(node.title, {
+    color: 0xf4f7fb,
+    fontSize: Math.max(10, Math.min(14, radius / 5)),
+    wordWrapWidth: radius * 1.45,
+  });
+  const type = createPixiText(node.type.replace("_", " "), {
+    color: 0xc4d2e5,
+    fontSize: 8,
+    wordWrapWidth: radius * 1.3,
+  });
+
+  type.y = -radius * 0.22;
+  title.y = radius * 0.1;
+  container.addChild(circle, type, title);
+  container.eventMode = isGhost ? "none" : "static";
+  container.cursor = isGhost ? "default" : "pointer";
+  container.hitArea = new Rectangle(-radius, -radius, radius * 2, radius * 2);
+  container.on("pointertap", () => onNodeSelect(node.id));
+  container.on("pointerover", (event) => onHover(createHoverPreview(node.title, node.type, node.source_state, node.summary, event.global)));
+  container.on("pointerout", onHoverClear);
+
+  return container;
+}
+
+function createDetailCard({
+  isFocused,
+  isGhost,
+  isHighlighted,
+  isSelected,
+  node,
+  onHover,
+  onHoverClear,
+  onNodeSelect,
+}: {
+  isFocused: boolean;
+  isGhost: boolean;
+  isHighlighted: boolean;
+  isSelected: boolean;
+  node: TerrainNode;
+  onHover: (preview: HoverPreviewState) => void;
+  onHoverClear: () => void;
+  onNodeSelect: (nodeId: string) => void;
+}): Container {
+  const container = new Container();
+  const width = getDetailCardWidth(node);
+  const height = getDetailCardHeight(node);
+  const highlight = isSelected || isFocused || isHighlighted;
+  const card = new Graphics();
+
+  container.alpha = isGhost ? 0.24 : 1;
+  card
+    .roundRect(-width / 2, -height / 2, width, height, node.type === "word" || node.type === "phrase" ? height / 2 : 9)
+    .fill({ color: getDetailColor(node), alpha: 0.92 })
+    .stroke({ color: highlight ? 0x8db4ff : 0x263247, alpha: highlight ? 0.78 : 0.8, width: highlight ? 2 : 1 });
+
+  const type = createPixiText(node.type.replace("_", " "), {
+    color: 0x9aa7ba,
+    fontSize: 9,
+    wordWrapWidth: width - 26,
+  });
+  const title = createPixiText(node.title, {
+    color: 0xf5f7fb,
+    fontSize: node.type === "character" ? 34 : 13,
+    wordWrapWidth: width - 26,
+  });
+
+  type.anchor.set(0, 0);
+  title.anchor.set(0, 0);
+  type.position.set(-width / 2 + 13, -height / 2 + 11);
+  title.position.set(-width / 2 + 13, node.type === "character" ? -22 : -height / 2 + 30);
+  container.addChild(card, type, title);
+  container.eventMode = isGhost ? "none" : "static";
+  container.cursor = isGhost ? "default" : "pointer";
+  container.hitArea = new Rectangle(-width / 2, -height / 2, width, height);
+  container.on("pointertap", () => onNodeSelect(node.id));
+  container.on("pointerover", (event) => onHover(createHoverPreview(node.title, node.type, node.source_state, node.summary, event.global)));
+  container.on("pointerout", onHoverClear);
+
+  return container;
+}
+
+function createObservationStar({
+  isSelected,
+  observation,
+  onHover,
+  onHoverClear,
+  onObservationSelect,
+  viewport,
+}: {
+  isSelected: boolean;
+  observation: ScoutObservation;
+  onHover: (preview: HoverPreviewState) => void;
+  onHoverClear: () => void;
+  onObservationSelect: (observationId: string) => void;
+  viewport: ViewportState;
+}): Container {
+  const container = new Container();
+  const position = observation.position_hint ?? { x: 0, y: 0 };
+  const distance = Math.min(1, Math.hypot(position.x - viewport.x, position.y - viewport.y) / 720);
+  const radius = 30 - distance * 8;
+  const color = getObservationColor(observation);
+  const star = new Graphics();
+
+  container.alpha = observation.status === "failed" ? 0.46 : Math.max(0.42, 0.92 - distance * 0.34);
+  star.circle(0, 0, radius).fill({ color, alpha: 1 });
+  star.circle(-radius * 0.22, -radius * 0.24, radius * 0.34).fill({ color: 0xffffff, alpha: 0.16 });
+  star.circle(0, 0, radius).stroke({ color: isSelected ? 0xffffff : 0x0b1220, alpha: isSelected ? 0.92 : 0.55, width: isSelected ? 2.4 : 1.2 });
+
+  const label = createPixiText(observation.title, {
+    color: 0xf5f7fb,
+    fontSize: 9,
+    wordWrapWidth: radius * 1.55,
+  });
+
+  container.addChild(star, label);
+  container.eventMode = "static";
+  container.cursor = "pointer";
+  container.hitArea = new Rectangle(-radius, -radius, radius * 2, radius * 2);
+  container.on("pointertap", () => onObservationSelect(observation.id));
+  container.on(
+    "pointerover",
+    (event) =>
+      onHover(
+        createHoverPreview(
+          observation.title,
+          `Scout ${observation.status.replace("_", " ")}`,
+          observation.adapter ?? "playwright",
+          observation.snippet,
+          event.global,
+        ),
+      ),
+  );
+  container.on("pointerout", onHoverClear);
+
+  return container;
+}
+
+function createPixiText(text: string, options: { color: number; fontSize: number; wordWrapWidth: number }): Text {
+  const label = new Text({
+    text,
+    style: {
+      align: "center",
+      fill: options.color,
+      fontFamily: "Inter, Segoe UI, sans-serif",
+      fontSize: options.fontSize,
+      fontWeight: "600",
+      leading: 1,
+      wordWrap: true,
+      wordWrapWidth: options.wordWrapWidth,
+    },
+  });
+
+  label.anchor.set(0.5);
+
+  return label;
+}
+
+function createHoverPreview(
+  title: string,
+  type: string,
+  state: string,
+  summary: string | undefined,
+  position: { x: number; y: number },
+): HoverPreviewState {
+  return {
+    title,
+    type,
+    state,
+    summary,
+    position: {
+      x: Math.max(12, Math.min(position.x + 14, window.innerWidth - 300)),
+      y: Math.max(12, Math.min(position.y + 14, window.innerHeight - 190)),
+    },
+  };
+}
+
+function getMacroBubbleRadius(node: TerrainNode, viewport: ViewportState): number {
+  const distance = getMacroLensDistance(node, viewport);
+
+  return Math.max(42, 76 - distance * 26);
+}
+
+function getMacroColor(node: TerrainNode): number {
+  if (node.source_state === "fog") {
+    return 0x7058b8;
+  }
+
+  if (node.source_state === "weak_hypothesis") {
+    return 0x6d6ac7;
+  }
+
+  if (node.source_state === "source_backed") {
+    return 0x2493b8;
+  }
+
+  if (node.source_state === "agent_inferred") {
+    return 0x2f76b8;
+  }
+
+  return 0x5667d8;
+}
+
+function getObservationColor(observation: ScoutObservation): number {
+  if (observation.status === "failed") {
+    return 0x515866;
+  }
+
+  if (observation.status === "pending") {
+    return 0x7674d8;
+  }
+
+  if (observation.status === "observed") {
+    return 0x2b8fb8;
+  }
+
+  return 0x20a6c7;
+}
+
+function getDetailColor(node: TerrainNode): number {
+  if (node.source_state === "source_backed") {
+    return 0x122b34;
+  }
+
+  if (node.source_state === "fog") {
+    return 0x201b2c;
+  }
+
+  return 0x131a26;
+}
+
+function getDetailCardWidth(node: TerrainNode): number {
+  if (node.type === "paragraph" || node.type === "sentence") {
+    return 440;
+  }
+
+  if (node.type === "dictionary_entry" || node.type === "unicode") {
+    return 330;
+  }
+
+  if (node.type === "word" || node.type === "phrase") {
+    return 220;
+  }
+
+  if (node.type === "character") {
+    return 118;
+  }
+
+  return 190;
+}
+
+function getDetailCardHeight(node: TerrainNode): number {
+  if (node.type === "paragraph") {
+    return 140;
+  }
+
+  if (node.type === "sentence" || node.type === "dictionary_entry" || node.type === "unicode") {
+    return 104;
+  }
+
+  if (node.type === "character") {
+    return 118;
+  }
+
+  return 86;
 }
 
 function ViewportControls({
@@ -451,125 +1034,49 @@ function SemanticLayerRail({
   );
 }
 
-function TerrainRelations({
-  highlightedNodeIds,
+function DeepZoomMiniMap({
+  currentLayer,
+  layers,
   nodes,
-  onRelationSelect,
-  relations,
-  selectedRelationId,
-  selectedNodeIds,
-  tool,
-  viewportLayer,
+  onLayerSelect,
 }: {
-  highlightedNodeIds: string[];
+  currentLayer: LayerId;
+  layers: TerrainLayer[];
   nodes: TerrainNode[];
-  onRelationSelect: (relationId: string) => void;
-  relations: TerrainRelation[];
-  selectedRelationId?: string;
-  selectedNodeIds: string[];
-  tool: CanvasTool;
-  viewportLayer: string;
-}): ReactElement {
-  const nodesById = new Map(nodes.map((node) => [node.id, node]));
-
-  return (
-    <svg aria-hidden="true" className="terrain-relations" focusable="false">
-      {relations.map((relation) => {
-        const fromNode = nodesById.get(relation.from);
-        const toNode = nodesById.get(relation.to);
-        const from = fromNode?.position_hint;
-        const to = toNode?.position_hint;
-
-        if (!fromNode || !toNode || !from || !to) {
-          return null;
-        }
-
-        const isSelected = relation.id === selectedRelationId || selectedNodeIds.includes(fromNode.id) || selectedNodeIds.includes(toNode.id);
-        const isHighlighted = highlightedNodeIds.includes(fromNode.id) || highlightedNodeIds.includes(toNode.id);
-        const isLayerMuted = fromNode.layer !== viewportLayer && toNode.layer !== viewportLayer;
-
-        return (
-          <g className="terrain-relation-group" key={relation.id}>
-            <line
-              className="terrain-relation-hit"
-              onClick={(event) => {
-                if (tool !== "pointer") {
-                  return;
-                }
-
-                event.stopPropagation();
-                onRelationSelect(relation.id);
-              }}
-              x1={from.x}
-              x2={to.x}
-              y1={from.y}
-              y2={to.y}
-            />
-            <line
-              className={`terrain-relation${isSelected ? " is-selected" : ""}${isHighlighted ? " is-highlighted" : ""}${isLayerMuted ? " is-layer-muted" : ""}`}
-              data-relation-type={relation.type}
-              data-source-state={relation.source_state}
-              x1={from.x}
-              x2={to.x}
-              y1={from.y}
-              y2={to.y}
-            >
-              <title>{`${relation.type.replace("_", " ")}: ${fromNode.title} -> ${toNode.title}`}</title>
-            </line>
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
-
-function TerrainNodeCard({
-  isFocused,
-  isHighlighted,
-  isLayerMuted,
-  isSelected,
-  node,
-  onPreview,
-  onPreviewClear,
-  onSelect,
-  tool,
-}: {
-  isFocused: boolean;
-  isHighlighted: boolean;
-  isLayerMuted: boolean;
-  isSelected: boolean;
-  node: TerrainNode;
-  onPreview: (node: TerrainNode, event: PointerEvent<HTMLElement>) => void;
-  onPreviewClear: () => void;
-  onSelect: (nodeId: string) => void;
-  tool: CanvasTool;
+  onLayerSelect: (layer: LayerId) => void;
 }): ReactElement {
   return (
-    <button
-      className={`terrain-node ${nodeClassName(node)}${isSelected ? " is-selected" : ""}${isHighlighted ? " is-highlighted" : ""}${isFocused ? " is-focused" : ""}${isLayerMuted ? " is-layer-muted" : ""}`}
-      data-layer={node.layer}
-      data-source-state={node.source_state}
-      onClick={(event) => {
-        if (tool !== "pointer") {
-          return;
-        }
-
+    <aside
+      className="deep-zoom-minimap"
+      aria-label="Deep zoom mini map"
+      onPointerDown={(event) => {
         event.stopPropagation();
-        onSelect(node.id);
       }}
-      onPointerEnter={(event) => onPreview(node, event)}
-      onPointerLeave={onPreviewClear}
-      onPointerMove={(event) => onPreview(node, event)}
-      style={{
-        left: node.position_hint?.x ?? 0,
-        top: node.position_hint?.y ?? 0,
-      }}
-      type="button"
     >
-      <span className="node-type">{node.type.replace("_", " ")}</span>
-      <h2>{node.title}</h2>
-      {node.summary ? <p>{node.summary}</p> : null}
-    </button>
+      <div className="deep-zoom-minimap-header">
+        <span>Spine</span>
+        <strong>{currentLayer}</strong>
+      </div>
+      <div className="deep-zoom-minimap-track">
+        {layers.map((layer) => {
+          const nodeCount = nodes.filter((node) => node.layer === layer.id).length;
+
+          return (
+            <button
+              aria-label={`${layer.id} ${layer.label}, ${nodeCount} nodes`}
+              aria-pressed={layer.id === currentLayer}
+              className={layer.id === currentLayer ? "deep-zoom-minimap-dot active" : "deep-zoom-minimap-dot"}
+              key={layer.id}
+              onClick={() => onLayerSelect(layer.id)}
+              title={`${layer.id} · ${layer.label} · ${nodeCount} nodes`}
+              type="button"
+            >
+              <span />
+            </button>
+          );
+        })}
+      </div>
+    </aside>
   );
 }
 
@@ -583,35 +1090,26 @@ function NodeHoverPreview({ preview }: { preview: HoverPreviewState }): ReactEle
       }}
       aria-hidden="true"
     >
-      <span>{preview.node.type.replace("_", " ")}</span>
-      <strong>{preview.node.title}</strong>
-      {preview.node.summary ? <p>{preview.node.summary}</p> : null}
+      <span>{preview.type.replace("_", " ")}</span>
+      <strong>{preview.title}</strong>
+      {preview.summary ? <p>{preview.summary}</p> : null}
       <dl>
         <div>
           <dt>State</dt>
-          <dd>{preview.node.source_state.replace("_", " ")}</dd>
-        </div>
-        <div>
-          <dt>Confidence</dt>
-          <dd>{Math.round(preview.node.confidence * 100)}%</dd>
-        </div>
-        <div>
-          <dt>Relations</dt>
-          <dd>{preview.relationCount}</dd>
+          <dd>{preview.state.replace("_", " ")}</dd>
         </div>
       </dl>
     </aside>
   );
 }
 
-function nodeClassName(node: TerrainNode): string {
-  if (node.type === "fog_region") {
-    return "terrain-node-fog";
-  }
+function isMacroBubbleNode(node: TerrainNode): boolean {
+  return macroLayerIds.has(node.layer);
+}
 
-  if (node.tags.includes("seed")) {
-    return "terrain-node-seed";
-  }
+function getMacroLensDistance(node: TerrainNode, viewport: ViewportState): number {
+  const position = node.position_hint ?? { x: 0, y: 0 };
+  const distance = Math.hypot(position.x - viewport.x, position.y - viewport.y);
 
-  return "terrain-node-default";
+  return Math.min(1, distance / 620);
 }

@@ -1,3 +1,5 @@
+import type { ScoutPlan, ScoutRunResult } from "@seekstar/core-schema";
+
 export type WindowAction =
   | "reload"
   | "force-reload"
@@ -26,9 +28,14 @@ export interface SeekStarWorkspaceApi {
   saveSnapshot: (snapshot: unknown) => Promise<void>;
 }
 
+export interface SeekStarScoutApi {
+  runPlan: (tabId: string, plan: ScoutPlan) => Promise<ScoutRunResult>;
+}
+
 export interface SeekStarBridge {
   appName: string;
   scaffoldVersion: string;
+  scout: SeekStarScoutApi;
   workspace: SeekStarWorkspaceApi;
   window: SeekStarWindowApi;
 }

@@ -591,6 +591,112 @@ Fog stars:
 
 * possible but unexplored directions.
 
+## 8.5 Macro Lens Gallery Interaction
+
+Macro semantic layers use a bubble gallery lens instead of ordinary rounded cards.
+
+Layer responsibilities:
+
+* L-3 / L-2: constellation shape plus bubble lens.
+* L-1 / L0: seed field and topic region clustered bubbles.
+* L1 / L2: gradual handoff from bubbles into topic/source cards.
+* L3 and deeper: document tiles and text grains; macro bubbles are no longer primary.
+
+The constellation algorithm owns coarse semantic shape, region identity, and rough adjacency. The bubble gallery lens owns macro visual density, local magnification, edge shrink/fade, and the tactile feeling of drifting through a field. The handoff between them must preserve semantic truth: visual packing may help orientation, but it must not invent relations.
+
+P4.6 pauses the long-press fracture sequence. Macro exploration now favors telescope movement: dragging the viewport near the edge of the current macro layer may trigger same-layer frontier discovery.
+
+The renderer controls every movement frame. AI agents and Playwright must not drive real-time animation.
+
+Playwright may be triggered when frontier discovery begins, but it is still only the Scout. It returns structured observations such as pending, observed, failed, duplicate, retrieved title, URL, snippet, retrieved time, and source type. It does not decide meaning, rank results, or create source-backed facts directly.
+
+Resolved scout bubbles must pass through structured terrain conversion before becoming durable nodes. Observed candidates must preserve provenance, retrieved time, source state, and failure or duplicate status where applicable.
+
+### 8.5.1 Scout Observation Contract
+
+P4.1 introduces `ScoutObservation` as the boundary between a scout plan and durable terrain.
+
+The Scout observation layer records pending, observed, source-candidate, failed, duplicate, and expired states. It may include query, title, URL, snippet, source type, retrieved time, failure reason, and duplicate linkage.
+
+Observations are not map facts. They are evidence intake records. A future conversion step must decide which observed candidates become `SourceRef` entries and source-backed terrain. Playwright may later populate this contract, but it must not rank results, summarize meaning, or mutate the canvas directly.
+
+### 8.5.2 Observation To Source Conversion
+
+P4.2 adds the explicit conversion step from observation intake to durable terrain.
+
+Only `source_candidate` and `observed` observations may be converted. The user must confirm the conversion. The conversion creates a `SourceRef`, source-backed terrain nodes, and `source_contains` relations using the existing source terrain adapter. The original observation is marked `converted`.
+
+This keeps provenance honest: Scout observation is intake, source-backed terrain is a user-confirmed map artifact. Later real Playwright retrieval should populate the same observation contract before conversion.
+
+### 8.5.3 Scout Provenance Trace
+
+P4.3 preserves the conversion trace after an observation becomes terrain.
+
+Converted sources may store `created_from_observation_id`, while generated source-backed nodes may keep node-level `created_from` context. The inspector should surface the Scout origin inside the source evidence card so the user can distinguish:
+
+* the original Scout observation;
+* the explicit user conversion;
+* the resulting source-backed terrain.
+
+The trace does not promote observations automatically and does not let Playwright mutate map facts directly. It is a provenance rail that future real Scout retrieval must use.
+
+### 8.5.4 Electron Scout Adapter Boundary
+
+P4.4 places Scout execution behind the Electron observatory boundary.
+
+The renderer invokes `window.seekstar.scout.runPlan(tabId, plan)` through the preload bridge. The main process validates the request and returns a `ScoutRunResult` with `ScoutObservation` records. The current adapter is mock-only, but its location and contract match the future Playwright Scout role:
+
+* renderer owns canvas state and UI response;
+* Electron main owns Scout task orchestration;
+* Scout returns observations, not terrain facts;
+* source-backed terrain still requires explicit conversion;
+* failures are represented as failed observations.
+
+This keeps Playwright out of the renderer and prevents retrieval work from becoming browser navigation, search ranking, or direct map mutation.
+
+### 8.5.5 Direct URL Playwright Scout Spike
+
+P4.5 enables a narrow real Scout path for direct HTTP(S) URLs.
+
+The renderer can route a direct URL through the command card into a `ScoutPlan`. The preload bridge sends that plan to the Electron main process. The main-process adapter uses Playwright Library to run a headless Chromium observation and returns structured `ScoutObservation` records.
+
+P4.5 deliberately does not perform keyword search. If a candidate query is not a URL, it must not be sent to a search engine or rendered as results. It should remain mock, pending, or failed depending on the plan path.
+
+The Playwright adapter may collect:
+
+* final URL;
+* page title;
+* a bounded visible-text snippet;
+* content-derived source type;
+* retrieval timestamp;
+* failure reason.
+
+It must not decide semantic meaning, create terrain nodes, control animation frames, or open a browser UI.
+
+### 8.5.6 Real Telescope + GPU Star Map
+
+P4.6 makes PixiJS the primary terrain renderer.
+
+React owns the desktop shell, inspector, command routing, and source conversion controls. PixiJS owns the high-volume canvas: star bubbles, relation lines, Scout candidate stars, camera pan/zoom, and lasso coordination.
+
+Scout observation records may now include `layer`, `position_hint`, `frontier_id`, `discovery_mode`, and `confidence`. These fields let the renderer place observations as candidate stars without promoting them to facts.
+
+Frontier discovery modes:
+
+* `direct_url`: observe one URL.
+* `frontier_web_search`: observe candidate web sources for the current edge direction.
+* `page_outlinks`: observe candidate links from a source-backed page.
+
+No mode may render a ranked search-results surface. Observed candidates remain Scout intake until explicit conversion.
+
+### 8.5.7 Source-Anchored Linked Frontier
+
+P4.7 connects `page_outlinks` to the source evidence inspector.
+
+When a selected source-backed node has a URL, the inspector may offer `Scout linked frontier`. The renderer sends a `page_outlinks` `ScoutPlan` through the preload bridge. Electron main runs Playwright, observes outgoing links from the confirmed page, and returns `ScoutObservation` records. The renderer positions those observations as candidate stars around the source node on the current semantic layer.
+
+This keeps source expansion spatial: a confirmed source becomes a telescope anchor, not a browser tab or link list. The observations remain pending evidence intake until explicit conversion creates `SourceRef` and source-backed terrain.
+
 ## 9. UI Panels and Layout Details
 
 Visual direction for the P0 shell is defined in `UI_STYLE_GUIDE.md`.
@@ -1043,6 +1149,62 @@ Later:
 * estimated cost;
 * token usage;
 * cache hit.
+
+P3.1 implements only the local structured job surface:
+
+* completed mock cartographer jobs;
+* generated `CartographerOutput` records;
+* terrain patches added to `TerrainScene`;
+* scout plans as candidate directions only.
+
+P3.2 adds renderer-local lifecycle simulation:
+
+* queued and running states;
+* progress bands;
+* cancellation before patch application;
+* mock failure before patch application;
+* completed jobs as the only patch-producing state.
+
+It does not connect OpenAI, Playwright, real retrieval, cost accounting, tracing, external cancellation, worker orchestration, or source-backed AI claims.
+
+P3.4 adds a mock Layer Cartographer action over the same boundary:
+
+* selected terrain can request adjacent paths;
+* output is a `TerrainPatch` containing generated questions, weak route nodes, and fog regions;
+* the right inspector remains provenance and control surface only;
+* the canvas remains the primary product surface.
+
+This does not add model calls, Playwright retrieval, browser behavior, real search, or source-backed claims.
+
+P3.5 adds generated questions and learning paths as terrain-producing jobs:
+
+* `question_generator` creates generated next-question nodes from selected terrain;
+* `learning_path_mapper` creates a mock path through orientation, evidence readiness, and fog;
+* lasso selections, side-tray items, and selected nodes share the same job boundary;
+* outputs are inspectable map patches, not chat answers.
+
+This does not add model calls, retrieval, real citations, Markdown file writing, or source-backed synthesis.
+
+P3.7 adds the cartographer output seed loop:
+
+* generated cartographer terrain may expose seed creation only when marked `can_create_seed`;
+* `created_from` records the origin node, layer, and label for backlink context;
+* new tabs remain independent exploration universes;
+* returning to origin uses backlink focus rather than browser history.
+
+This does not add AI, Playwright, real search, real persistence changes, or factual promotion of generated terrain.
+
+### 15.6.1 Deep Zoom Spine Prototype
+
+The Deep Zoom Spine keeps `TerrainScene` as the renderer contract while proving recursive semantic depth.
+
+* Layers L0-L10 are navigable in the semantic rail.
+* Nodes may carry optional source ranges, token ranges, semantic breadcrumbs, zoom targets, seedability, and created-from refs.
+* The renderer changes visible terrain by semantic layer instead of treating zoom as a visual-only scale.
+* Text grain nodes use paragraph, sentence, word, character, and dictionary visual treatments.
+* Seedable grains create independent tabs with backlinks, not browser history.
+
+The prototype is mock-only. Real webpages, Playwright observations, AI cartography, dictionary lookup, and source-backed claims must attach to this spine later rather than bypassing it.
 
 ### 15.7 Empty states
 

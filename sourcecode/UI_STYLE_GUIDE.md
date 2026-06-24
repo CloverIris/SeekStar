@@ -74,6 +74,36 @@ These are visual rules only; behavior can arrive later.
 - Mock/generated: metadata pill visible; never style as a verified source.
 - Disabled/inactive: muted text, no glow.
 
+## Macro Bubble Gallery
+
+Macro layers L-3, L-2, L-1, and L0 may use a dense bubble gallery lens rather than square or rounded cards.
+
+- Bubbles should feel like colorful solid cognitive terrain: softly shaded, non-transparent, restrained, and readable.
+- The viewport center is larger, sharper, and more legible; bubbles near the edge shrink, dim, and fade.
+- Bubble color is semantic orientation, not proof. Source-backed, generated, weak, inferred, and fog states still need explicit visual/state cues.
+- Fog bubbles use uncertainty styling such as dashed rim, lower opacity, or soft violet/amber tint without looking broken or alarming.
+- Scout-pending bubbles should look temporary and unresolved; they must not look like source-backed nodes.
+- Avoid neon sci-fi, game loot effects, fireworks, decorative particle storms, and ordinary app-dashboard icon grids.
+- The visual reference is an Apple Watch App Gallery-like bubble lens, but SeekStar must not copy proprietary assets, icons, or brand styling.
+
+## Macro Frontier Discovery
+
+P4.6 pauses long-press fracture. Macro exploration is driven by moving the telescope across the field.
+
+- Moving near a macro-layer edge may request same-layer Scout observations.
+- New candidates appear as small star bubbles at the frontier.
+- Renderer owns movement and placement locally. AI and Playwright must not drive frame-by-frame motion.
+- Playwright Scout may run during frontier discovery, but only structured observations affect resolve state.
+- Star count may reflect scout observation count only when state labels make clear that this is observation volume, not factual answer count.
+- Failed or duplicate stars remain visibly unresolved and must not look source-backed.
+
+## Pixi Terrain Canvas
+
+- The primary terrain canvas uses PixiJS for GPU rendering.
+- React must not render every terrain node as DOM in macro layers.
+- Pixi renders star bubbles, relation lines, Scout candidate stars, and camera movement.
+- React owns shell controls, inspector panels, command routing, and source conversion.
+
 ## Icon System
 
 - Shell, sidebar, and canvas-tool icons use `lucide-react`.
@@ -200,6 +230,55 @@ Rules:
 - Do not maintain a separate Electron splash window unless startup requirements change.
 - The overlay should be brief, quiet, and non-blocking; it must not add marketing copy, login gates, network work, or fake progress.
 
+## P3 Cartographer Job Visuals
+
+- Cartographer jobs should read as structured map provenance, not chat bubbles.
+- Job rows use compact metadata pills for mode, status, and progress.
+- Queued/running jobs may expose small Cancel and Mock fail controls for local lifecycle testing.
+- Cancelled and failed jobs remain visible as provenance rows but must not receive alarm-heavy styling.
+- Output cards may summarize generated terrain, but must show source state and mode.
+- Scout plans use restrained dashed/fog styling because they are future observation directions, not evidence.
+- Focus actions should move the camera to output terrain nodes instead of expanding a text thread.
+- Generated cartographer terrain uses existing generated / agent-inferred / weak / fog node states and must never look source-backed.
+- Retry and rerun buttons belong inside compact job rows. They should feel like lifecycle controls, not primary product calls to action.
+- Layer-cartographer outputs should look like adjacent orientation terrain: weak route cards, generated question nodes, and dashed fog regions. They should never look like confirmed source results.
+- Question-generator outputs should look like explorable prompts on the map, not answer cards.
+- Learning-path outputs should read as connected terrain steps, not a checklist that replaces exploration.
+- Seedable cartographer outputs may expose "Create new seed from this" in the inspector. The action should feel like opening a new exploration universe, not accepting an answer.
+
+## Deep Zoom Text Grains
+
+- Deep zoom keeps the dark observatory tone while making language grains visually distinct.
+- Paragraphs render as wider text blocks with readable summaries.
+- Sentences render as compact rows.
+- Phrase and word nodes render as restrained chips.
+- Character nodes render as square glyph tiles.
+- Unicode / dictionary nodes render as compact reference cards.
+- Seedable grains may expose "Create new seed from this" in the inspector, but the command must create an independent exploration tab with backlink context.
+- Mock text grains must remain marked generated, inferred, weak, or mock-only; do not style them as source-backed evidence.
+- Ghost context nodes are muted, dashed, and non-primary. They should help orientation without competing with current-layer terrain.
+- The deep zoom mini-map is a compact layer indicator. It should not resemble a search result list, outline tree, or browser navigation.
+
 ## Current Scope
 
-This guide covers the closed P0/P1 shell plus the closed P2 local source-backed exploration loop: persistence snapshot, manual source ingestion, source evidence inspection, source-aware local search, recursive source seeding, and backlink origin focus. It does not introduce a UI framework, animation system, real graph layout, AI, Playwright retrieval, browser behavior, generated source summaries, durable source-cache indexing, or real Markdown export.
+This guide covers the closed P0/P1 shell, the closed P2 local source-backed exploration loop, the P3.1-P3.7 structured mock cartographer job boundary and lifecycle, the mock Deep Zoom Spine, and the P4 preflight Macro Bubble Gallery design contract. It does not introduce a UI framework, animation system implementation, real graph layout, real AI calls, Playwright retrieval, browser behavior, real webpage rendering, source-backed AI summaries, durable source-cache indexing, real external job cancellation, cost accounting, or real Markdown export.
+
+## P4.5 Direct URL Scout Styling
+
+Direct URL Scout actions are command routes, not browser chrome.
+
+- `Scout direct URL` may appear in the command card only for HTTP(S) URL input.
+- Disabled Scout actions should look unavailable, not like search suggestions.
+- Playwright observations in the inspector should use the same compact Scout observation styling as mock observations, with adapter labels.
+
+## P4.7 Source-Anchored Frontier Styling
+
+`Scout linked frontier` is a source-evidence action, not a browser link list.
+
+- Show it only for source-backed nodes with a URL.
+- The action should feel like moving the telescope outward from a confirmed source.
+- Candidate outlinks should appear as Scout stars around the source node, not as a ranked panel.
+- Failed or low-confidence outlink observations must remain visually unresolved.
+- Confirmed conversion is the only path from candidate star to source-backed terrain.
+- Source-backed styling is reserved for observations after explicit conversion.
+- Do not show keyword web search results or browser navigation controls as part of this action.

@@ -1,9 +1,15 @@
-import type { SourceRef, TerrainNode, TerrainRelation, TerrainScene } from "@seekstar/core-schema";
+import type { CreatedFromRef, SourceRef, SourceType, TerrainNode, TerrainRelation, TerrainScene } from "@seekstar/core-schema";
 
 export interface SourceIngestionInput {
   title: string;
   url?: string;
   body: string;
+  sourceType?: SourceType;
+  retrievedAt?: string;
+  reliabilityHints?: string[];
+  tags?: string[];
+  createdFrom?: CreatedFromRef;
+  observationId?: string;
 }
 
 export interface SourceTerrainPatch {
@@ -17,7 +23,7 @@ let sourceCounter = 0;
 export function createSourceTerrainPatch(input: SourceIngestionInput, scene: TerrainScene): SourceTerrainPatch {
   sourceCounter += 1;
 
-  const createdAt = new Date().toISOString();
+  const createdAt = input.retrievedAt ?? new Date().toISOString();
   const title = normalizeTitle(input.title);
   const excerptBlocks = createExcerptBlocks(input.body);
   const slug = toSlug(title);
@@ -30,10 +36,11 @@ export function createSourceTerrainPatch(input: SourceIngestionInput, scene: Ter
     id: sourceId,
     title,
     url: input.url?.trim() || undefined,
-    source_type: input.url?.trim() ? "webpage" : "document",
+    source_type: input.sourceType ?? (input.url?.trim() ? "webpage" : "document"),
     retrieved_at: createdAt,
     snippet: excerptBlocks[0] ?? input.body.slice(0, 220),
-    reliability_hints: ["manual user-provided source", "not retrieved by Playwright"],
+    reliability_hints: input.reliabilityHints ?? ["manual user-provided source", "not retrieved by Playwright"],
+    created_from_observation_id: input.observationId,
   };
 
   const sourceNode: TerrainNode = {
@@ -44,13 +51,14 @@ export function createSourceTerrainPatch(input: SourceIngestionInput, scene: Ter
     source_state: "source_backed",
     confidence: 0.86,
     importance: 0.88,
-    tags: ["source", "manual-ingest", "source-backed"],
+    tags: ["source", "source-backed", ...(input.tags ?? ["manual-ingest"])],
     summary: source.snippet,
     source_id: source.id,
     source_url: source.url,
     source_title: source.title,
     source_type: source.source_type,
     retrieved_at: createdAt,
+    created_from: input.createdFrom,
     position_hint: anchor,
     created_at: createdAt,
     updated_at: createdAt,
@@ -67,13 +75,14 @@ export function createSourceTerrainPatch(input: SourceIngestionInput, scene: Ter
       source_state: "source_backed",
       confidence: 0.82,
       importance: 0.62 - index * 0.08,
-      tags: ["source-excerpt", "manual-ingest", "source-backed"],
+      tags: ["source-excerpt", "source-backed", ...(input.tags ?? ["manual-ingest"])],
       summary: excerpt,
       source_id: source.id,
       source_url: source.url,
       source_title: source.title,
       source_type: source.source_type,
       retrieved_at: createdAt,
+      created_from: input.createdFrom,
       parent_id: sourceNodeId,
       quote: excerpt,
       position_hint: {
@@ -91,7 +100,7 @@ export function createSourceTerrainPatch(input: SourceIngestionInput, scene: Ter
     to: node.id,
     type: "source_contains",
     confidence: 0.88,
-    explanation: "Manual source ingestion created this source-backed excerpt relation.",
+    explanation: input.tags?.includes("scout-observation") ? "User-confirmed Scout observation created this source-backed excerpt relation." : "Manual source ingestion created this source-backed excerpt relation.",
     source_state: "source_backed",
   }));
 

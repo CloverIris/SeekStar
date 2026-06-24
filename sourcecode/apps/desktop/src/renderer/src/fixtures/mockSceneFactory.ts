@@ -235,6 +235,7 @@ export function createMockSeedScene(seedText: string, options: MockSeedSceneOpti
       created_at: createdAt,
     },
     agent_jobs: [],
+    cartographer_outputs: [],
     metadata: {
       title: seed,
       description: `Source-free mock terrain generated locally for "${seed}".`,

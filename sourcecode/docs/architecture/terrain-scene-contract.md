@@ -234,3 +234,162 @@ Expected future producers:
 ## Design Rule
 
 Mock nodes must remain visibly generated, inferred, weak, or fog. They must not look like source-backed facts.
+
+## P3.1: Structured Cartographer Job Boundary
+
+P3.1 starts the Agent cartographer layer without calling AI or Playwright.
+
+- `TerrainScene` now carries `agent_jobs` and `cartographer_outputs`.
+- `CartographerOutput` is the structured output boundary for mock and future real cartographer work.
+- `TerrainPatch` is the only way cartographer output adds terrain to the renderer: nodes, relations, and optional sources.
+- `ScoutPlan` records future Playwright scout directions as candidate queries and stop conditions, but it does not retrieve anything.
+- Region explain, source distill, and fog scout-plan actions create completed local mock jobs and generated terrain nodes.
+- Generated summaries, inferred questions, weak scout plans, and fog regions remain visually and semantically distinct from source-backed terrain.
+- The right inspector shows Cartographer jobs and outputs as map provenance, not as chat messages.
+- Output cards can focus generated terrain nodes so the canvas remains the primary surface.
+
+P3.1 still intentionally avoids real AI calls, Playwright retrieval, browser navigation, source-backed AI summaries, durable database indexing, full job cancellation, cost tracking, and real Markdown export.
+
+## P3.2: Local Cartographer Job Lifecycle
+
+P3.2 turns P3.1 mock jobs from immediate completion into a visible local lifecycle.
+
+- Cartographer actions enqueue a job with `queued` status and `progress: 0`.
+- The renderer-local mock scheduler advances jobs through `running` progress bands before completion.
+- Completion is the only phase that applies the `TerrainPatch` and creates `CartographerOutput`.
+- Running jobs can be cancelled; cancelled jobs do not apply terrain patches.
+- Running jobs can be marked failed for lifecycle testing; failed jobs preserve an `error_message` and do not apply terrain patches.
+- Job timers are tab-scoped and clear on cancel, failure, completion, or app unmount.
+- The right inspector shows queued, running, completed, cancelled, and failed states as compact provenance rows.
+
+This remains local-only and mock-only. P3.2 does not add model calls, worker threads, Playwright tasks, retries, real cancellation of external work, tracing, cost accounting, or background execution outside the renderer.
+
+## P3.3: Job Retry and Deep Zoom Orientation Polish
+
+P3.3 keeps all cartographer work local and mock-only.
+
+- Failed, cancelled, and completed mock cartographer jobs can be retried or rerun from their original target nodes.
+- Retry/rerun creates a new local job rather than mutating completed output history.
+- Job rows show status counts and progress bars for scanability.
+- Deep Zoom renders current-layer terrain plus muted parent/child ghost context from existing scene nodes.
+- A compact mini-map shows the semantic spine and supports direct layer jumps.
+
+This does not add real AI retries, Playwright retries, external task cancellation, network work, or a new jobs architecture.
+
+## P3.4: Mock Layer Cartographer Adjacent Paths
+
+P3.4 adds the first mock `layer_cartographer` action over the existing structured job boundary.
+
+- A selected node can run `Map adjacent paths`.
+- The action creates a local mock job and applies a `TerrainPatch` only after completion.
+- The patch adds generated next-question terrain, weak adjacent-route terrain, and fog for unmapped edges.
+- The output is spatial terrain on the canvas, not a chat reply or ranked result list.
+- All added nodes remain marked `generated`, `agent_inferred`, `weak_hypothesis`, or `fog`.
+
+This is still local-only and mock-only. It does not run AI, Playwright, web retrieval, real search, dictionary lookup, browser navigation, or source-backed claiming.
+
+## P3.5: Mock Questions and Learning Paths as Terrain
+
+P3.5 adds two structured mock cartographer modes:
+
+- `question_generator` turns selected terrain into generated next-question nodes.
+- `learning_path_mapper` turns selected terrain into a short orientation path with evidence-readiness and fog-following steps.
+- Single nodes, lasso selections, and side-tray items can trigger these jobs.
+- Completion applies terrain patches to the canvas; outputs do not become chat transcripts.
+- Generated questions, weak source-readiness steps, and fog gaps remain visually and semantically distinct from source-backed content.
+
+This remains local-only and mock-only. It does not call AI, retrieve web pages, generate real citations, perform real dictionary lookup, write Markdown files, or promote generated questions into facts.
+
+## P3.7: Cartographer Output Seed Loop
+
+P3.7 closes the mock recursive exploration loop for cartographer terrain.
+
+- Generated question, scout-plan, adjacent-route, learning-path, and fog-edge nodes may carry `can_create_seed`.
+- Seedable cartographer nodes carry `created_from` so the new tab preserves origin context.
+- Creating a seed from generated terrain opens an independent mock exploration tab and does not inherit camera, search, or job history.
+- Lasso or multi-node region seed creation now preserves a backlink to the origin region anchor.
+- Backlink navigation remains the way to return to the source terrain and focus the origin node.
+
+This remains local-only and mock-only. Seedability does not make generated terrain factual, source-backed, retrieved, or model-authored.
+
+## P4.1: Scout Observation Contract
+
+P4.1 adds `ScoutObservation` as the first business-function boundary toward real source discovery.
+
+- Scout plans can produce structured observations.
+- Observations preserve status: pending, observed, source candidate, failed, duplicate, or expired.
+- Observations may carry query, URL, snippet, source type, retrieved time, failure reason, and duplicate linkage.
+- Observations are not `SourceRef` records and do not create source-backed terrain by themselves.
+- A later source-ingestion/conversion step must transform observed candidates into durable provenance and terrain.
+
+The current implementation uses local mock observations only. It does not run Playwright, fetch pages, rank results, summarize content, call AI, or create factual nodes.
+
+## P4.2: Observation To Source-Backed Terrain
+
+P4.2 adds explicit user-confirmed conversion from Scout observation to source terrain.
+
+- `source_candidate` and `observed` observations can be confirmed.
+- Confirmation creates a `SourceRef`, source-backed source/excerpt nodes, and `source_contains` relations.
+- The observation is marked `converted`.
+- Converted terrain keeps reliability hints describing the mock Scout origin until real Playwright retrieval exists.
+- Failed, duplicate, pending, expired, and already converted observations cannot be converted.
+
+This preserves the distinction between observation intake and source-backed terrain. It does not add Playwright retrieval, AI summarization, ranking, browser navigation, or automatic fact creation.
+
+## P4.3: Scout Provenance Trace
+
+P4.3 preserves the observation origin after conversion.
+
+- `SourceRef.created_from_observation_id` can link a source record back to the Scout observation that produced the candidate.
+- Source-backed terrain nodes created through observation conversion keep `created_from` context.
+- The source evidence card displays the Scout origin when available, including status, query, and observed time.
+
+This keeps the renderer contract map-first and provenance-first. The trace is local/mock in this phase and does not add Playwright, AI, web fetch, ranking, browser navigation, or automatic fact creation.
+
+## P4.4: Electron Scout Adapter Boundary
+
+P4.4 moves Scout execution out of renderer-local helpers and behind the Electron preload/main-process bridge.
+
+- `ScoutRunRequest` carries the tab id, scout plan, and request time.
+- `ScoutRunResult` returns the adapter kind and structured observations.
+- The current main-process adapter is mock-only.
+- Renderer-side failures become failed `ScoutObservation` records.
+- The observation-to-source conversion path from P4.2/P4.3 remains unchanged.
+
+This is the intended insertion point for future Playwright retrieval. Playwright must populate observations through this contract and must not directly create source-backed terrain, rank results, drive animation frames, or act as a browser clone.
+
+## P4.5: Direct URL Playwright Scout Spike
+
+P4.5 adds the first real retrieval spike behind the P4.4 boundary.
+
+- Direct HTTP(S) URL inputs can be routed into a `ScoutPlan`.
+- The Electron main-process adapter uses Playwright Library to observe the page headlessly.
+- Successful page observations become `source_candidate` Scout observations with title, URL, snippet, source type, and retrieved time.
+- Failed browser/page work becomes failed observations.
+- Non-URL candidate queries are not upgraded into search-engine requests.
+- The P4.2 conversion step is still required before any observation becomes source-backed terrain.
+
+This keeps real retrieval inside the Scout role. It does not add AI, browser navigation, ranked search, automatic facts, semantic extraction, or renderer-controlled browser work.
+
+## P4.6: Real Telescope + GPU Star Map
+
+P4.6 replaces the DOM node-card canvas with a PixiJS terrain renderer for the primary star map.
+
+- Macro layers render as solid colored star bubbles rather than DOM cards.
+- Long-press fracture is paused; edge movement drives same-layer frontier discovery.
+- Frontier discovery creates Playwright-backed `ScoutObservation` records with layer, position, frontier id, discovery mode, and confidence.
+- Candidate observations render as frontier stars but remain non-factual until explicit conversion.
+- The Electron main Scout adapter supports direct URL, frontier web search, and page outlink modes.
+
+This keeps the renderer map-first and the Scout provenance-first. It does not add AI, browser chrome, ranked result panels, or automatic terrain facts.
+
+## P4.7: Source-Anchored Linked Frontier
+
+P4.7 lets confirmed source-backed terrain become the anchor for more Scout intake.
+
+- Source evidence cards can run a `page_outlinks` Scout plan when the selected source-backed node has a URL.
+- Electron main uses Playwright to observe candidate links from that page.
+- Returned observations are placed as same-layer candidate stars around the source node.
+- The observations remain `ScoutObservation` records until explicit conversion creates source-backed terrain.
+
+This adds real telescope movement from evidence while preserving the contract: Scout observes, the renderer orients, and source-backed terrain requires user confirmation.

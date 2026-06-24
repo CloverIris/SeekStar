@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { ScoutPlan, ScoutRunResult } from "@seekstar/core-schema";
 
 export type WindowAction =
   | "reload"
@@ -23,6 +24,14 @@ contextBridge.exposeInMainWorld("seekstar", {
   workspace: {
     loadSnapshot: (): Promise<unknown | undefined> => ipcRenderer.invoke("workspace:load"),
     saveSnapshot: (snapshot: unknown): Promise<void> => ipcRenderer.invoke("workspace:save", snapshot),
+  },
+  scout: {
+    runPlan: (tabId: string, plan: ScoutPlan): Promise<ScoutRunResult> =>
+      ipcRenderer.invoke("scout:run-plan", {
+        tab_id: tabId,
+        plan,
+        requested_at: new Date().toISOString(),
+      }),
   },
   window: {
     goBack: (): Promise<void> => ipcRenderer.invoke("window:go-back"),

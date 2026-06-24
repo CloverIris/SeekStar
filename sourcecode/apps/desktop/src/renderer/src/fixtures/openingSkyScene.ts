@@ -268,6 +268,7 @@ export const openingSkyScene: TerrainScene = {
     created_at: createdAt,
   },
   agent_jobs: [],
+  cartographer_outputs: [],
   metadata: {
     title: "Opening Sky",
     description: "Source-free mock terrain fixture for the P0 renderer contract.",

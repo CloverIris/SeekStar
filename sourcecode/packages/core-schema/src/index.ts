@@ -87,10 +87,51 @@ export type AgentJobStatus =
   | "failed"
   | "cancelled";
 
+export type ScoutObservationStatus =
+  | "pending"
+  | "observed"
+  | "source_candidate"
+  | "converted"
+  | "failed"
+  | "duplicate"
+  | "expired";
+
 export interface PositionHint {
   x: number;
   y: number;
   z?: number;
+}
+
+export interface SourcePositionRange {
+  source_id?: string;
+  locator?: string;
+  start: number;
+  end: number;
+  excerpt?: string;
+}
+
+export interface TokenRangeRef {
+  source_id?: string;
+  node_id?: string;
+  start_token: number;
+  end_token: number;
+  text?: string;
+}
+
+export interface ZoomTarget {
+  layer: LayerId;
+  node_id?: string;
+  scene_id?: string;
+  zoom?: number;
+}
+
+export interface CreatedFromRef {
+  tab_id?: string;
+  node_id?: string;
+  source_id?: string;
+  layer?: LayerId;
+  label: string;
+  excerpt?: string;
 }
 
 export interface ViewportState {
@@ -159,6 +200,14 @@ export interface TerrainNode {
   semantic_axes?: string[];
   position_hint?: PositionHint;
   quote?: string;
+  source_range?: SourcePositionRange;
+  token_range?: TokenRangeRef;
+  semantic_breadcrumb?: string[];
+  zoom_target?: ZoomTarget;
+  can_create_seed?: boolean;
+  created_from?: CreatedFromRef;
+  child_scene_id?: string;
+  child_layer_id?: LayerId;
 }
 
 export type Node = TerrainNode;
@@ -194,6 +243,7 @@ export interface SourceRef {
   retrieved_at?: string;
   snippet?: string;
   reliability_hints: string[];
+  created_from_observation_id?: string;
 }
 
 export type Source = SourceRef;
@@ -225,12 +275,93 @@ export interface AgentJob {
     | "web_scout_planner"
     | "source_distiller"
     | "layer_cartographer"
+    | "question_generator"
+    | "learning_path_mapper"
     | "region_explainer"
     | "markdown_export";
   status: AgentJobStatus;
   input_summary: string;
+  title?: string;
+  progress?: number;
+  target_node_ids?: string[];
+  target_source_ids?: string[];
+  error_message?: string;
+  output_ids?: string[];
   created_at: string;
   updated_at: string;
+}
+
+export interface TerrainPatch {
+  nodes: TerrainNode[];
+  relations: TerrainRelation[];
+  sources: SourceRef[];
+}
+
+export interface ScoutPlan {
+  id: string;
+  title: string;
+  target_node_ids: string[];
+  candidate_queries: string[];
+  source_type_targets: SourceType[];
+  discovery_mode?: ScoutDiscoveryMode;
+  priority: "low" | "medium" | "high";
+  stop_conditions: string[];
+  deduplication_notes: string[];
+  created_at: string;
+}
+
+export type ScoutDiscoveryMode = "direct_url" | "frontier_web_search" | "page_outlinks";
+
+export interface ScoutObservation {
+  id: string;
+  tab_id: string;
+  status: ScoutObservationStatus;
+  adapter?: "mock" | "playwright";
+  layer?: LayerId;
+  position_hint?: PositionHint;
+  frontier_id?: string;
+  discovery_mode?: ScoutDiscoveryMode;
+  confidence?: number;
+  query: string;
+  title: string;
+  plan_id?: string;
+  target_node_ids: string[];
+  url?: string;
+  snippet?: string;
+  source_type?: SourceType;
+  retrieved_at?: string;
+  failure_reason?: string;
+  duplicate_of?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ScoutRunRequest {
+  tab_id: string;
+  plan: ScoutPlan;
+  requested_at: string;
+}
+
+export interface ScoutRunResult {
+  adapter: "mock" | "playwright";
+  observations: ScoutObservation[];
+  completed_at: string;
+}
+
+export interface CartographerOutput {
+  id: string;
+  job_id: string;
+  tab_id: string;
+  mode: AgentJob["mode"];
+  title: string;
+  summary: string;
+  source_state: SourceState;
+  target_node_ids: string[];
+  target_source_ids: string[];
+  notes: string[];
+  patch?: TerrainPatch;
+  scout_plan?: ScoutPlan;
+  created_at: string;
 }
 
 export interface TerrainSceneMetadata {
@@ -253,5 +384,7 @@ export interface TerrainScene {
   viewport: ViewportState;
   selection: SelectionState;
   agent_jobs: AgentJob[];
+  cartographer_outputs: CartographerOutput[];
+  scout_observations?: ScoutObservation[];
   metadata: TerrainSceneMetadata;
 }
