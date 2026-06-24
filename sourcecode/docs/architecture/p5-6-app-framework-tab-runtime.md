@@ -54,7 +54,7 @@ The durable split is: `TabRecord` is app runtime state; `TerrainScene` is explor
 - Playwright Scout now runs through a service with per-tab BrowserContext reuse and per-tab queues.
 - P5.6.2 moves Scout execution into an Electron `utilityProcess`; the main process owns queueing, timeout handling, global Scout concurrency, and failed-observation fallback.
 - Single-tab renderer crashes are recorded on `TabRecord` and replaced with a local error HTML surface containing copyable log data plus Reload and Close actions.
-- New seed scenes use the canonical L0-L10 semantic spine instead of falling back to L0-L2.
+- New seed scenes use the canonical L0-L11 12Level semantic spine instead of falling back to a shallow seed/source scaffold.
 
 ## Preload Surface
 

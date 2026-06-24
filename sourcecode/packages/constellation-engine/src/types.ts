@@ -2,7 +2,7 @@ import type { LayerId, TerrainScene, ViewportState } from "@seekstar/core-schema
 
 export type PersistenceStatus = "loading" | "saved" | "saving" | "unsaved" | "unavailable" | "error";
 
-export const WORKSPACE_SCHEMA_REVISION = 60;
+export const WORKSPACE_SCHEMA_REVISION = 61;
 
 export type FrontierDirection = "east" | "west" | "south" | "north";
 

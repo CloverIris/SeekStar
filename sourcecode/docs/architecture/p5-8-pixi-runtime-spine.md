@@ -17,7 +17,7 @@ SeekStar's prototype no longer keeps local preview jobs as a fallback product be
 - UI controls that implied local explanation, question generation, learning paths, comparison, export, or source distillation without a real service.
 - Runtime Scout adapter compatibility with local preview observations.
 
-The workspace snapshot schema was revision 58 in this slice. P5.9 supersedes it with schema revision 59 when the Constellation Engine package becomes the owner of workspace snapshot validation.
+The workspace snapshot schema was revision 58 in this slice. P5.9 moved validation into the Constellation Engine, and the canonical 12Level cleanup supersedes it with schema revision 61.
 
 ## Rendering Boundary
 

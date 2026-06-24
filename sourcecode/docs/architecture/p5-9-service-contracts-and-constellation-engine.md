@@ -118,9 +118,9 @@ These are not product fallback paths. They are module harnesses: JSON in, JSON o
 
 ## Schema
 
-Workspace snapshots move to revision 59.
+Workspace snapshots move to revision 61 after the canonical 12Level cleanup.
 
-Older snapshots are intentionally rejected in this prototype phase. This prevents P5.8 or older local workspace state from reintroducing deprecated UI, stale default scenes, or removed behavior.
+Older snapshots are intentionally rejected in this core-development phase. This prevents P5.8/P5.9 or older local workspace state from reintroducing deprecated UI, stale default scenes, removed behavior, or non-canonical layer ladders.
 
 ## Implementation Notes
 

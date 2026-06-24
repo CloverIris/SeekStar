@@ -12,7 +12,7 @@ The macro view needs a visual form that supports orientation, density, semantic 
 
 ## Decision
 
-Use a Macro Lens Gallery for layers L-3, L-2, L-1, and L0.
+Use a Macro Lens Gallery for the macro side of the canonical 12Level spine: L0 domain seed pool and L1 topic neighborhoods.
 
 The gallery is an Apple Watch App Gallery-like bubble lens: colorful but restrained solid bubbles, center magnification, edge shrink/fade, and dense spatial packing.
 
@@ -20,7 +20,9 @@ The constellation algorithm and the bubble gallery are separate but connected:
 
 - constellation layout owns coarse semantic shape and domain identity;
 - bubble lens owns visual density, local magnification, edge shrink/fade, and macro navigation feel;
-- L1 / L2 hand off from bubbles to topic and source cards;
+- L0 owns the domain Star Gallery and configurable seed pool;
+- L1 owns topic bubbles and adjacent unknown frontiers;
+- L2 hands off from bubbles to source cards;
 - L3 and deeper use document tiles and text grains.
 
 P4.6 supersedes the long-press fracture idea. Macro discovery is triggered by telescope movement: when the viewport moves near a macro-layer edge, the renderer may request same-layer Scout observations and place them as candidate frontier stars.

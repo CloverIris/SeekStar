@@ -7,6 +7,7 @@ import type {
   TerrainScene,
   ViewportState,
 } from "@seekstar/core-schema";
+import { isMacroLayer } from "@seekstar/core-schema";
 import type { PointerEvent, ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { LocateFixed, Maximize2, RotateCcw } from "lucide-react";
@@ -63,8 +64,6 @@ interface HoverPreviewState {
   summary?: string;
   position: CanvasPoint;
 }
-
-const macroLayerIds = new Set<LayerId>(["L-3", "L-2", "L-1", "L0"]);
 
 export function TerrainCanvas({
   activeTool,
@@ -1074,7 +1073,7 @@ function NodeHoverPreview({ preview }: { preview: HoverPreviewState }): ReactEle
 }
 
 function isMacroBubbleNode(node: TerrainNode): boolean {
-  return macroLayerIds.has(node.layer);
+  return isMacroLayer(node.layer);
 }
 
 function getMacroLensDistance(node: TerrainNode, viewport: ViewportState): number {

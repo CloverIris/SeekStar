@@ -9,7 +9,11 @@ sourcecode/
 |- apps/
 |  `- desktop/              # Electron + React desktop observatory
 |- packages/
-|  `- core-schema/          # Shared TerrainScene and core SeekStar types
+|  |- core-schema/          # Shared TerrainScene and protocol types
+|  |- constellation-engine/ # Telescope events, object pools, source terrain, Pixi projection
+|  |- scout-service/        # Playwright Scout/DataService boundary
+|  |- ai-service/           # AI provider/context/structured-output boundary
+|  `- storage-service/      # Storage/cache ports with JSON adapter today
 |- docs/
 |  |- architecture/
 |  `- decisions/
@@ -42,5 +46,5 @@ Development mode opens detached DevTools by default. Restart Electron fully afte
 - `AGENTS.md`: agent operating rules.
 - `ARCHITECTURE_AND_UI_SPEC.md`: architecture and UI specification.
 - `UI_STYLE_GUIDE.md`: visual system and shell standards.
-- `docs/architecture/`: scaffold, terrain contract, exploration runtime.
+- `docs/architecture/`: architecture slices, service contracts, 12Level telescope runtime.
 - `docs/decisions/`: architecture decision records.

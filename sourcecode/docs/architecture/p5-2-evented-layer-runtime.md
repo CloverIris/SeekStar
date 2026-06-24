@@ -13,7 +13,7 @@ The three familiar product bands are only focal ranges:
 - Tile Field for source-backed content;
 - Text Grain for close reading.
 
-The actual runtime spine is deeper. Current implementation centers on the L0-L10 deep-zoom path, with L-3 to L-1 as wider macro context and L11-L12 reserved for dictionary expansion and recursive seed loops.
+The actual runtime spine is the canonical L0-L11 12Level path. It does not use negative macro layers or reserved extra layers.
 
 ## Runtime Shape
 
@@ -34,21 +34,22 @@ This is a product contract, not just an implementation convenience. Zoom, pan, l
 
 `@seekstar/core-schema/src/semanticLayers.ts` owns the shared layer definitions.
 
-The current deep-zoom stops are:
+The canonical deep-zoom stops are:
 
 | Layer | Runtime meaning |
 | --- | --- |
-| L0 | 领域 |
-| L1 | Concept neighborhood |
-| L2 | Source cluster |
-| L3 | Document tile |
-| L4 | Section |
-| L5 | Paragraph |
-| L6 | Sentence |
-| L7 | Phrase or term |
-| L8 | Word |
-| L9 | Character |
-| L10 | Unicode or dictionary detail |
+| L0 | 领域 / Star Gallery / seed pool |
+| L1 | 主题 |
+| L2 | 来源 |
+| L3 | 网页 / 文档 / PDF / 图片 tile |
+| L4 | 章节 |
+| L5 | 段落 |
+| L6 | 句子 |
+| L7 | 短语 |
+| L8 | 词语 / keyword |
+| L9 | 字符 |
+| L10 | Unicode / 字典 |
+| L11 | 新的探索 seed |
 
 This is the product spine. The Star Gallery / Tile Field / Text Grain terms describe how groups of these layers feel through the telescope; they are not a replacement for the spine.
 
@@ -83,8 +84,8 @@ The pool is also the bridge between philosophy and UI: Star Gallery, Tile Field,
 ## Fastest Forward Path
 
 1. **P5.2 close**: keep event vocabulary small, canonicalize layers, expose the object pool.
-2. **P5.3 HTML tile intake**: add `html.ingested` and `text.grains.created` events that turn a confirmed source snapshot into L3-L8 terrain.
-3. **P5.4 Keyword seed loop**: make phrase, word, character, and dictionary nodes produce independent seed tabs through `grain.seed.created`.
+2. **P5.3 HTML tile intake**: add source snapshot events that turn a confirmed source snapshot into L3-L11 terrain.
+3. **P5.4 Keyword seed loop**: make phrase, word, character, dictionary, and recursive seed nodes produce independent seed tabs through `grain.seed.created`.
 4. **P5.5 Heuristic frontier suggestions**: generate local candidate phrases and Scout plans without model calls first.
 5. **P6 Real Cartographer**: attach AI calls behind the same event and validation path.
 

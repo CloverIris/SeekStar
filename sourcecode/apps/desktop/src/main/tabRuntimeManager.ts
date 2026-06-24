@@ -10,7 +10,7 @@ const TAB_RUNTIME_FILE_NAME = "seekstar-tab-runtime.json";
 const DEFAULT_TAB_ID = "tab-default-new-seek";
 const DEFAULT_TAB_TITLE = "New Seek";
 const DEFAULT_WORKSPACE_NAME = "SeekStar local workspace";
-const TAB_RUNTIME_SCHEMA_REVISION = 58;
+const TAB_RUNTIME_SCHEMA_REVISION = 59;
 
 export interface TabRuntimeSnapshot {
   version: 1;

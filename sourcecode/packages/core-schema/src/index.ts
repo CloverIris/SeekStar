@@ -53,9 +53,6 @@ export type RelationType =
   | "agent_inferred";
 
 export type LayerId =
-  | "L-3"
-  | "L-2"
-  | "L-1"
   | "L0"
   | "L1"
   | "L2"
@@ -68,7 +65,6 @@ export type LayerId =
   | "L9"
   | "L10"
   | "L11"
-  | "L12"
   | (string & {});
 
 export type SourceType =

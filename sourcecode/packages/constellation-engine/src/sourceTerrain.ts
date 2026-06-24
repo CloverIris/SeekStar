@@ -548,6 +548,7 @@ function appendCharacterTerrain(input: {
   const characterOrdinal = input.characterIndex + 1;
   const characterNodeId = `node-${input.slug}-character-${paragraphOrdinal}-${sentenceOrdinal}-${phraseOrdinal}-${wordOrdinal}-${characterOrdinal}-${input.stamp}`;
   const unicodeNodeId = `node-${input.slug}-unicode-${paragraphOrdinal}-${sentenceOrdinal}-${phraseOrdinal}-${wordOrdinal}-${characterOrdinal}-${input.stamp}`;
+  const seedLoopNodeId = `node-${input.slug}-seed-loop-${paragraphOrdinal}-${sentenceOrdinal}-${phraseOrdinal}-${wordOrdinal}-${characterOrdinal}-${input.stamp}`;
   const characterNode = createSourceNode({
     canCreateSeed: true,
     createdAt: input.createdAt,
@@ -591,11 +592,28 @@ function appendCharacterTerrain(input: {
     source: input.source,
     tags: input.tags,
   });
+  const seedLoopNode = createRecursiveSeedNode({
+    character: input.character,
+    createdAt: input.createdAt,
+    createdFrom: input.createdFrom,
+    id: seedLoopNodeId,
+    parentId: unicodeNodeId,
+    position: {
+      x: input.anchor.x + 3040 + input.characterIndex * 126,
+      y: input.anchor.y - 196 + input.paragraphIndex * 150 + input.sentenceIndex * 74 + input.phraseIndex * 42 + input.wordIndex * 30,
+    },
+    source: input.source,
+    tags: input.tags,
+    word: input.word,
+  });
 
   characterNode.child_ids = [unicodeNodeId];
   characterNode.child_layer_id = "L10";
   characterNode.zoom_target = { layer: "L10", node_id: unicodeNodeId };
-  input.nodes.push(characterNode, unicodeNode);
+  unicodeNode.child_ids = [seedLoopNodeId];
+  unicodeNode.child_layer_id = "L11";
+  unicodeNode.zoom_target = { layer: "L11", node_id: seedLoopNodeId };
+  input.nodes.push(characterNode, unicodeNode, seedLoopNode);
   input.relations.push(
     createContainsRelation({
       from: input.wordNodeId,
@@ -607,6 +625,11 @@ function appendCharacterTerrain(input: {
       from: characterNodeId,
       id: `rel-${input.slug}-character-unicode-${paragraphOrdinal}-${sentenceOrdinal}-${phraseOrdinal}-${wordOrdinal}-${characterOrdinal}-${input.stamp}`,
       to: unicodeNodeId,
+    }),
+    createRecursiveSeedRelation({
+      from: unicodeNodeId,
+      id: `rel-${input.slug}-unicode-seed-loop-${paragraphOrdinal}-${sentenceOrdinal}-${phraseOrdinal}-${wordOrdinal}-${characterOrdinal}-${input.stamp}`,
+      to: seedLoopNodeId,
     }),
   );
 
@@ -642,7 +665,7 @@ function createUnicodeNode(input: {
     source_type: "dictionary",
     retrieved_at: input.createdAt,
     parent_id: input.characterNodeId,
-    semantic_breadcrumb: [input.source.title, "L10", codePointLabel],
+    semantic_breadcrumb: [input.source.title, "Unicode / 字典", codePointLabel],
     quote: input.character.text,
     source_range: {
       source_id: input.source.id,
@@ -656,6 +679,58 @@ function createUnicodeNode(input: {
       start_token: input.character.tokenIndex,
       end_token: input.character.tokenIndex,
       text: input.character.text,
+    },
+    can_create_seed: true,
+    created_from: input.createdFrom,
+    position_hint: input.position,
+    created_at: input.createdAt,
+    updated_at: input.createdAt,
+  };
+}
+
+function createRecursiveSeedNode(input: {
+  character: CharacterGrain;
+  createdAt: string;
+  createdFrom?: CreatedFromRef;
+  id: string;
+  parentId: string;
+  position: { x: number; y: number };
+  source: SourceRef;
+  tags: string[];
+  word: WordGrain;
+}): TerrainNode {
+  const seedText = input.character.text || input.word.text;
+
+  return {
+    id: input.id,
+    type: "question",
+    title: `Explore ${seedText} as seed`,
+    layer: "L11",
+    source_state: "local_only",
+    confidence: 0.68,
+    importance: 0.56,
+    tags: ["recursive-seed", "seedable", "source-grain", "p5-12level-spine", ...input.tags],
+    summary: `Recursive seed entry for "${seedText}" from ${input.source.title}. It can open a new independent 12Level SeekStar tab.`,
+    source_id: input.source.id,
+    source_url: input.source.url,
+    source_title: input.source.title,
+    source_type: input.source.source_type,
+    retrieved_at: input.createdAt,
+    parent_id: input.parentId,
+    semantic_breadcrumb: [input.source.title, "新的探索 seed", seedText],
+    quote: seedText,
+    source_range: {
+      source_id: input.source.id,
+      locator: `${input.source.id}#recursive-seed-${seedText}`,
+      start: input.character.start,
+      end: input.character.end,
+      excerpt: seedText,
+    },
+    token_range: {
+      source_id: input.source.id,
+      start_token: input.character.tokenIndex,
+      end_token: input.character.tokenIndex,
+      text: seedText,
     },
     can_create_seed: true,
     created_from: input.createdFrom,
@@ -731,6 +806,18 @@ function createTokenRelation(input: { from: string; id: string; to: string }): T
     type: "token_contains",
     confidence: 0.76,
     explanation: "Local deterministic Unicode expansion from a source-backed character grain.",
+    source_state: "local_only",
+  };
+}
+
+function createRecursiveSeedRelation(input: { from: string; id: string; to: string }): TerrainRelation {
+  return {
+    id: input.id,
+    from: input.from,
+    to: input.to,
+    type: "parent_child",
+    confidence: 0.68,
+    explanation: "Local deterministic recursive-seed affordance from a source-backed text grain.",
     source_state: "local_only",
   };
 }

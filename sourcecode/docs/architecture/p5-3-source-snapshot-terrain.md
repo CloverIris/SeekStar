@@ -32,6 +32,9 @@ It does not yet parse full HTML DOM structure, render browser pages, fetch asset
 | L6 | `sentence` | Sentence grains |
 | L7 | `phrase` | Seedable phrase grains |
 | L8 | `word` | Seedable word grains |
+| L9 | `character` | Source-backed character grains |
+| L10 | `dictionary_entry` | Local Unicode / dictionary card |
+| L11 | `question` | Recursive seed entry |
 
 Every generated node is `source_backed`, carries source metadata, and preserves `source_range` where available. Phrase and word nodes are seedable, but seedability does not create new facts or change provenance.
 
@@ -42,7 +45,7 @@ This path gives SeekStar a real telescope loop before expensive AI integration:
 ```text
 Source confirmed
   -> source terrain patch
-  -> L3-L8 text grains
+  -> L3-L11 text grains
   -> user zooms / selects / seeds words
   -> Scout or Cartographer can expand from a grounded grain
 ```
@@ -53,5 +56,5 @@ The product now has a concrete place for AI to attach later. AI does not need to
 
 1. Add `html.ingested` and `text.grains.created` events around this adapter.
 2. Preserve fuller Playwright page text instead of only snippets.
-3. Extend L8 words through P5.4 character and Unicode / dictionary grains.
-4. Add heuristic keyword candidates from L5-L10 terrain before real AI calls.
+3. Keep L8 words, L9 characters, L10 Unicode / dictionary cards, and L11 recursive seed entries bounded so long sources stay readable.
+4. Add heuristic keyword candidates from L5-L11 terrain before real AI calls.

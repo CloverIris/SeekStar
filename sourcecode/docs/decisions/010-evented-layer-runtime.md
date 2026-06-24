@@ -8,19 +8,20 @@ Subsystem: Exploration events, semantic layer spine, object-pool indexes
 
 P5.1 moved exploration work out of `App.tsx`, but the runtime was still mostly a set of direct handler calls over `TerrainScene`.
 
-The product model is deeper than the three explanatory bands of Star Gallery, Tile Field, and Text Grain. Those bands are telescope focal ranges. The actual exploration spine must preserve many semantic layers, currently centered on the L0-L10 deep-zoom path:
+The product model is deeper than the three explanatory bands of Star Gallery, Tile Field, and Text Grain. Those bands are telescope focal ranges. The actual exploration spine is the canonical L0-L11 12Level deep-zoom path:
 
-- L0 seed field;
-- L1 concept neighborhood;
-- L2 source cluster;
-- L3 document tile;
+- L0 domain Star Gallery / seed pool;
+- L1 topic;
+- L2 source;
+- L3 webpage / document / PDF / image tile;
 - L4 section;
 - L5 paragraph;
 - L6 sentence;
-- L7 phrase or term;
-- L8 word;
+- L7 phrase;
+- L8 word / keyword;
 - L9 character;
-- L10 Unicode or dictionary detail.
+- L10 Unicode / dictionary;
+- L11 recursive new seed.
 
 SeekStar also needs an event vocabulary for telescope operations. Pan, zoom, selection, layer changes, Scout intake, and future keyword seeding should be represented as typed exploration events, not as scattered component mutations.
 
@@ -39,7 +40,7 @@ P5.2 introduces three thin foundations:
 
 1. Canonical semantic layer definitions in `@seekstar/core-schema`.
    - The definitions include focal band, order, description, primary node types, and zoom stop.
-   - The canvas zoom spine reads L0-L10 stops from this shared contract.
+   - The canvas zoom spine reads L0-L11 stops from this shared contract.
 
 2. A typed exploration event reducer in the renderer runtime.
    - Initial events cover selection changes, viewport changes, layer changes, and Scout observation append.

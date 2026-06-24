@@ -78,8 +78,8 @@ The renderer receives structured scene data. It does not ask AI how to draw ever
 P5.1-P5.9 implementation note:
 The renderer shell subscribes to exploration state through `useExplorationSession`, while core scene mutation, object-pool derivation, Scout planning, and Pixi projection now live in `@seekstar/constellation-engine`. See `docs/architecture/p5-9-service-contracts-and-constellation-engine.md`.
 
-P5.2-P5.9 implementation note:
-The runtime has a typed event entry and derived object pool. `selection.changed`, `viewport.changed`, `layer.changed`, and `scout.observations.appended` wrap the scene mutation helpers in the Constellation Engine. `ExplorationObjectPool` indexes the active scene for canvas, inspector, search, and source-conversion subscribers. The canonical layer model lives in `@seekstar/core-schema/src/semanticLayers.ts`; Star Gallery, Tile Field, and Text Grain are focal bands over the deeper L0-L10 semantic spine, not a replacement for it.
+P5.2-P5.11 implementation note:
+The runtime has a typed event entry and derived object pool. `selection.changed`, `viewport.changed`, `layer.changed`, and `scout.observations.appended` wrap the scene mutation helpers in the Constellation Engine. `ExplorationObjectPool` indexes the active scene for canvas, inspector, search, and source-conversion subscribers. The canonical layer model lives in `@seekstar/core-schema/src/semanticLayers.ts`; Star Gallery, Tile Field, and Text Grain are focal bands over the L0-L11 12Level semantic spine, not a replacement for it.
 
 These events are the telescope operation protocol. Viewport movement may reveal same-layer frontiers. Layer changes move between macro orientation, source-backed tile surfaces, and text-grain detail. Selection and lasso create addressable regions that can be inspected, promoted, exported, or passed to AI only when the user asks for interpretation.
 
@@ -93,7 +93,7 @@ P5.8 implementation note:
 Renderer-local Cartographer and region action preview behavior has been removed from the product path. Selection, seed creation, source intake, Playwright Scout observations, and source conversion remain; explanation, distillation, learning paths, comparison, and export must return only through future real service boundaries. The canvas renderable-object decision is moving behind a PixiJS projection boundary so React shell code no longer owns core presentation filtering.
 
 P5.9 implementation note:
-The corrected high-level module boundary is now App Electron Framework, Constellation Engine, Scout/DataService, AI Service, and Storage/Cache Service. The Constellation Engine is split into Constellation Core and Pixi Runtime Adapter. `@seekstar/constellation-engine` owns telescope events, object pools, workspace schema revision 59, semantic lens mapping, Scout planning, and Pixi projection data. `@seekstar/scout-service`, `@seekstar/ai-service`, and `@seekstar/storage-service` define independently testable service contracts with CLI harnesses. Electron remains the app framework and service host rather than the owner of terrain semantics.
+The corrected high-level module boundary is now App Electron Framework, Constellation Engine, Scout/DataService, AI Service, and Storage/Cache Service. The Constellation Engine is split into Constellation Core and Pixi Runtime Adapter. `@seekstar/constellation-engine` owns telescope events, object pools, workspace schema revision 61, semantic lens mapping, Scout planning, and Pixi projection data. `@seekstar/scout-service`, `@seekstar/ai-service`, and `@seekstar/storage-service` define independently testable service contracts with CLI harnesses. Electron remains the app framework and service host rather than the owner of terrain semantics.
 
 P5.10 implementation note:
 Seed scene scaffolding, source snapshot ingestion, source-backed text-grain terrain construction, heuristic candidate extraction, and Pixi interaction math now live in `@seekstar/constellation-engine`. The desktop renderer consumes these through engine exports and dispatches `source.snapshot.ingested` instead of constructing terrain locally. The engine also exposes pure TypeScript service ports for Scout, AI, Storage, and source snapshot services.
@@ -503,7 +503,7 @@ Character knows:
 * code point;
 * glyph display form.
 
-Dictionary entry knows:
+Unicode / dictionary grain knows:
 
 * originating word or character;
 * language;
@@ -641,9 +641,9 @@ Macro semantic layers use a bubble gallery lens instead of ordinary rounded card
 
 Layer responsibilities:
 
-* L-3 / L-2: constellation shape plus bubble lens.
-* L-1 / L0: seed field and topic region clustered bubbles.
-* L1 / L2: gradual handoff from bubbles into topic/source cards.
+* L0: domain Star Gallery, configurable seed pool, constellation identity, and bubble lens.
+* L1: topic bubbles and adjacent unknown frontiers.
+* L2: source clusters hand off from macro orientation into content intake.
 * L3 and deeper: document tiles and text grains; macro bubbles are no longer primary.
 
 The constellation algorithm owns coarse semantic shape, region identity, and rough adjacency. The bubble gallery lens owns macro visual density, local magnification, edge shrink/fade, and the tactile feeling of drifting through a field. The handoff between them must preserve semantic truth: visual packing may help orientation, but it must not invent relations.

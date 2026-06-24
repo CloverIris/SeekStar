@@ -442,24 +442,20 @@ Required fields:
 
 Layers are semantic depth levels, not merely zoom values.
 
-Default layer ladder:
+Canonical 12Level ladder:
 
-* L-3: global field;
-* L-2: domain constellation;
-* L-1: topic region;
-* L0: seed concept;
-* L1: subtopic grid;
-* L2: source cluster;
-* L3: webpage or document tile;
-* L4: HTML section;
-* L5: paragraph block;
-* L6: sentence block;
-* L7: phrase or term;
-* L8: word;
+* L0: 领域 / Star Gallery / seed pool;
+* L1: 主题;
+* L2: 来源;
+* L3: webpage / document / PDF / image tile;
+* L4: section;
+* L5: paragraph;
+* L6: sentence;
+* L7: phrase;
+* L8: word / keyword;
 * L9: character;
-* L10: Unicode code point;
-* L11: dictionary entry;
-* L12: term-as-new-seed loop.
+* L10: Unicode / dictionary;
+* L11: term-as-new-seed loop.
 
 The ladder is extensible. The UI must not assume a hard maximum.
 
@@ -591,9 +587,9 @@ At document level:
 
 1. Render content as a non-overlapping tiled plane.
 2. Maintain internal scale inside each tile.
-3. Allow zoom from page tile to section, paragraph, sentence, phrase, word, character, Unicode, and dictionary.
+3. Allow zoom from page tile to section, paragraph, sentence, phrase, word, character, Unicode/dictionary, and recursive seed.
 4. Every lower-level text object must know its source location.
-5. Any word, phrase, or character can become a new L0/L1 seed.
+5. Any phrase, word, character, Unicode/dictionary item, or recursive seed node can become a new L0 exploration seed.
 
 ### 5.8 Lasso and brush AI action
 

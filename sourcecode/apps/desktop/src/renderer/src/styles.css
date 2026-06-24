@@ -37,6 +37,33 @@
 
 * {
   box-sizing: border-box;
+  scrollbar-color: rgb(139 149 163 / 48%) rgb(255 255 255 / 4%);
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: rgb(255 255 255 / 4%);
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgb(139 149 163 / 42%);
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgb(170 181 198 / 58%);
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 html,
@@ -80,7 +107,8 @@ button {
 }
 
 .docked-tab-shell {
-  display: flex;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
   height: 100vh;
   background: var(--bg-transparent);
 }
@@ -355,10 +383,17 @@ button {
 
 .desktop-shell {
   display: flex;
+  width: 100%;
   min-height: 0;
   height: 100%;
   overflow: hidden;
   background: transparent;
+}
+
+.detached-tab-desktop {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
 }
 
 .sidebar-rail {
@@ -1923,15 +1958,18 @@ button {
 }
 
 .settings-content-scroll {
+  display: grid;
+  justify-items: center;
+  align-content: start;
   height: 100%;
   overflow: auto;
-  padding: 48px min(12vw, 120px) 32px;
+  padding: 48px clamp(24px, 6vw, 96px) 96px;
 }
 
 .settings-panel {
   display: grid;
   gap: 18px;
-  max-width: 980px;
+  width: min(100%, 980px);
 }
 
 .settings-hero {
@@ -2357,7 +2395,8 @@ button {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  padding: 12px min(12vw, 120px) 16px;
+  padding-block: 12px 16px;
+  padding-inline: max(24px, calc((100% - 980px) / 2));
   border-top: 1px solid var(--border-hairline);
   background: rgb(8 10 14 / 94%);
   backdrop-filter: blur(20px) saturate(1.04);

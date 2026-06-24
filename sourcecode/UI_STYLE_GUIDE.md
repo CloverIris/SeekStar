@@ -20,7 +20,7 @@ The interface should suggest precision and orientation, not spectacle.
 - Browser clone chrome.
 - Loud gradient UI.
 - Decorative orbs, bokeh, or heavy glow.
-- Color states that make mock or inferred content look source-backed.
+- Color states that make local-only or inferred content look source-backed.
 - Heavy UI frameworks before the core interaction model is stable.
 
 ## Design Tokens
@@ -71,12 +71,12 @@ These are visual rules only; behavior can arrive later.
 - Search highlight: subtle blue border on matching terrain nodes; never move the canvas into a list-first state.
 - Focus target: quiet cyan outline around the node selected through search.
 - Fog: dashed border, muted transparency, uncertainty label visible.
-- Mock/generated: metadata pill visible; never style as a verified source.
+- Generated/local-only: metadata pill visible; never style as a verified source.
 - Disabled/inactive: muted text, no glow.
 
 ## Macro Bubble Gallery
 
-Macro layers L-3, L-2, L-1, and L0 may use a dense bubble gallery lens rather than square or rounded cards.
+Macro layers L0 and L1 use a dense Star Gallery bubble lens rather than square or rounded cards.
 
 - Bubbles should feel like colorful solid cognitive terrain: softly shaded, non-transparent, restrained, and readable.
 - The viewport center is larger, sharper, and more legible; bubbles near the edge shrink, dim, and fade.
@@ -131,19 +131,16 @@ P4.6 pauses long-press fracture. Macro exploration is driven by moving the teles
 
 - The side tray is a compact selection basket, not a bookmark manager or search result list.
 - Saved selections should show title, node count, and source state summary.
-- P1.3 mock actions such as Explain, Compare, and Export are allowed only as local generated previews.
 - Tray items must preserve generated, inferred, weak, and fog state instead of implying that selected content is source-backed.
 - Empty tray copy should invite saving selected regions, not asking a chatbot.
-- Mock action output should appear as compact cartographer notes in the inspector, not a chat transcript.
-- Mock export output may look Markdown-shaped, but it must remain visibly generated and must not imply a file was written.
+- Actions that need explanation, comparison, export, or source distillation must enter through real AI or export service boundaries.
 
 ## Selection Action Card
 
 - The selection action card appears only after spatial selection, such as rectangular lasso.
-- Primary actions may include Save to tray, Mock explain, Mock compare, Mock export, and Use region as new seed.
+- Primary actions may include Save to tray and Use region as new seed. Explanation, comparison, and export return only after real service contracts exist.
 - The card should be small, acrylic, and blue-accented, with no large text box.
-- Actions that produce output must label it as mock/generated until the Region Explainer and source-backed export contracts exist.
-- The card is centered in the workbench for P1 so it does not clip against canvas edges, the command composer, or the side panels.
+- The card is centered in the workbench so it does not clip against canvas edges, the command composer, or the side panels.
 
 ## Relation Lines
 
@@ -165,8 +162,8 @@ P4.6 pauses long-press fracture. Macro exploration is driven by moving the teles
 ## Source Readiness
 
 - Overview panels should summarize source-backed, generated, inferred, weak, and fog terrain counts.
-- In P1, mock scenes with no real sources must say so plainly.
-- In P2, manually added sources should appear as source-backed terrain cards and source-readiness counts, not as a search-results page.
+- Scenes with no real sources must say they are local-only terrain.
+- Manually added or Scout-confirmed sources should appear as source-backed terrain cards and source-readiness counts, not as a search-results page.
 - Source evidence cards should show provenance metadata, quotes/snippets, reliability hints, and relation links compactly in the inspector.
 - Clicking mapped excerpt links may move the camera to terrain; the inspector must not become a document reader or browser clone.
 - Source-backed evidence cards may offer "Use as new exploration seed"; this creates a new exploration universe with backlink context, not a browser navigation.
@@ -174,12 +171,12 @@ P4.6 pauses long-press fracture. Macro exploration is driven by moving the teles
 - Source readiness is a trust cue, not a progress meter and not a search result list.
 - Never use color alone to make generated terrain feel verified.
 
-## Mock P0 Interactions
+## Telescope Interactions
 
 - The command action card routes typed text; it is not a chat composer.
-- Current-tab search results are secondary inspector support, not the main interface. In P2 they may include source match type, source state, and source title metadata.
+- Current-tab search results are secondary inspector support, not the main interface. They may include source match type, source state, and source title metadata.
 - The canvas remains primary during command, search, and selection flows.
-- New seed tabs are local mock scenes until real cartographer and scout layers exist.
+- New seed tabs are local deterministic 12Level scenes until Scout/source intake or AI service patches add sourced or generated material.
 
 ## Layout Rules
 
@@ -234,7 +231,7 @@ Rules:
 
 - Cartographer jobs should read as structured map provenance, not chat bubbles.
 - Job rows use compact metadata pills for mode, status, and progress.
-- Queued/running jobs may expose small Cancel and Mock fail controls for local lifecycle testing.
+- Queued/running jobs may expose small Cancel and failure-state controls for lifecycle testing.
 - Cancelled and failed jobs remain visible as provenance rows but must not receive alarm-heavy styling.
 - Output cards may summarize generated terrain, but must show source state and mode.
 - Scout plans use restrained dashed/fog styling because they are future observation directions, not evidence.
@@ -255,13 +252,13 @@ Rules:
 - Character nodes render as square glyph tiles.
 - Unicode / dictionary nodes render as compact reference cards.
 - Seedable grains may expose "Create new seed from this" in the inspector, but the command must create an independent exploration tab with backlink context.
-- Mock text grains must remain marked generated, inferred, weak, or mock-only; do not style them as source-backed evidence.
+- Local-only text grains must remain marked local-only, generated, inferred, or weak; do not style them as source-backed evidence.
 - Ghost context nodes are muted, dashed, and non-primary. They should help orientation without competing with current-layer terrain.
 - The deep zoom mini-map is a compact layer indicator. It should not resemble a search result list, outline tree, or browser navigation.
 
 ## Current Scope
 
-This guide covers the closed P0/P1 shell, the closed P2 local source-backed exploration loop, the P3.1-P3.7 structured mock cartographer job boundary and lifecycle, the mock Deep Zoom Spine, and the P4 preflight Macro Bubble Gallery design contract. It does not introduce a UI framework, animation system implementation, real graph layout, real AI calls, Playwright retrieval, browser behavior, real webpage rendering, source-backed AI summaries, durable source-cache indexing, real external job cancellation, cost accounting, or real Markdown export.
+This guide covers the current core development surface: Electron shell, Pixi telescope canvas, canonical L0-L11 12Level spine, local/source-backed terrain, Scout observations, seed creation, settings, and service-boundary UI. It does not make chat, ranked search results, or fabricated preview output the product center.
 
 ## P4.5 Direct URL Scout Styling
 
@@ -269,7 +266,7 @@ Direct URL Scout actions are command routes, not browser chrome.
 
 - `Scout direct URL` may appear in the command card only for HTTP(S) URL input.
 - Disabled Scout actions should look unavailable, not like search suggestions.
-- Playwright observations in the inspector should use the same compact Scout observation styling as mock observations, with adapter labels.
+- Playwright observations in the inspector should use compact Scout observation styling with adapter labels.
 
 ## P4.7 Source-Anchored Frontier Styling
 

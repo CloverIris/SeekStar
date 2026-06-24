@@ -14,72 +14,45 @@ export interface SemanticLayerDefinition {
 
 export const CANONICAL_LAYER_DEFINITIONS = [
   {
-    id: "L-3",
-    order: -3,
-    label: "Global field",
-    focal_band: "macro_gallery",
-    description: "The widest orientation field for broad domains and unknown regions.",
-    primary_node_types: ["domain", "fog_region", "constellation_anchor"],
-    zoom: 0.55,
-  },
-  {
-    id: "L-2",
-    order: -2,
-    label: "Domain constellation",
-    focal_band: "macro_gallery",
-    description: "Domain-level constellation shapes and macro gallery bubbles.",
-    primary_node_types: ["domain", "topic", "fog_region", "constellation_anchor"],
-    zoom: 0.68,
-  },
-  {
-    id: "L-1",
-    order: -1,
-    label: "Topic region",
-    focal_band: "macro_gallery",
-    description: "Topic neighborhoods, adjacent fields, and scout-pending regions.",
-    primary_node_types: ["topic", "subtopic", "concept", "fog_region"],
-    zoom: 0.84,
-  },
-  {
     id: "L0",
     order: 0,
     label: "领域",
     focal_band: "macro_gallery",
-    description: "The domain-level gallery where a new exploration starts before narrowing into concepts and sources.",
-    primary_node_types: ["domain", "topic", "concept", "question", "fog_region"],
+    description: "Star Gallery and seed pool: broad domains, configurable domain seeds, fog, and scout-pending regions.",
+    primary_node_types: ["domain", "topic", "concept", "question", "fog_region", "constellation_anchor"],
     zoom: 1,
   },
   {
     id: "L1",
     order: 1,
-    label: "Concept neighborhood",
+    label: "主题",
     focal_band: "macro_gallery",
-    description: "Parent, sibling, child, and adjacent concepts around the seed.",
-    primary_node_types: ["topic", "subtopic", "concept", "question"],
+    description: "Topic neighborhoods, adjacent concepts, and same-layer unknown frontiers around the selected domain or seed.",
+    primary_node_types: ["topic", "subtopic", "concept", "question", "fog_region"],
     zoom: 1.14,
   },
   {
     id: "L2",
     order: 2,
-    label: "Source cluster",
+    label: "来源",
     focal_band: "tile_field",
-    description: "Source cards, evidence clusters, and source-backed entry points.",
+    description: "Source clusters, Scout observations, and source-backed entry points before opening a full tile surface.",
     primary_node_types: ["source", "webpage", "document"],
     zoom: 1.28,
   },
   {
     id: "L3",
     order: 3,
-    label: "Document tile",
+    label: "网页 / 文档",
     focal_band: "tile_field",
-    description: "Webpage, article, PDF, or document tiles arranged on the content plane.",
+    description: "Webpage, article, PDF, image, or document tiles arranged on the content plane.",
     primary_node_types: ["webpage", "document"],
     zoom: 1.42,
   },
   {
     id: "L4",
     order: 4,
-    label: "Section",
+    label: "章节",
     focal_band: "tile_field",
     description: "HTML sections or document regions inside a tile.",
     primary_node_types: ["section"],
@@ -88,7 +61,7 @@ export const CANONICAL_LAYER_DEFINITIONS = [
   {
     id: "L5",
     order: 5,
-    label: "Paragraph",
+    label: "段落",
     focal_band: "text_grain",
     description: "Paragraph blocks with source position mapping.",
     primary_node_types: ["paragraph"],
@@ -97,7 +70,7 @@ export const CANONICAL_LAYER_DEFINITIONS = [
   {
     id: "L6",
     order: 6,
-    label: "Sentence",
+    label: "句子",
     focal_band: "text_grain",
     description: "Sentence-level grains that preserve paragraph and source range context.",
     primary_node_types: ["sentence"],
@@ -106,7 +79,7 @@ export const CANONICAL_LAYER_DEFINITIONS = [
   {
     id: "L7",
     order: 7,
-    label: "Phrase or term",
+    label: "短语",
     focal_band: "text_grain",
     description: "Phrases and terms that can be inspected or promoted into new seeds.",
     primary_node_types: ["phrase"],
@@ -115,7 +88,7 @@ export const CANONICAL_LAYER_DEFINITIONS = [
   {
     id: "L8",
     order: 8,
-    label: "Word",
+    label: "词语",
     focal_band: "text_grain",
     description: "Word-level grains with token mapping and seedability.",
     primary_node_types: ["word"],
@@ -124,7 +97,7 @@ export const CANONICAL_LAYER_DEFINITIONS = [
   {
     id: "L9",
     order: 9,
-    label: "Character",
+    label: "字符",
     focal_band: "text_grain",
     description: "Character-level grains for close reading and language exploration.",
     primary_node_types: ["character"],
@@ -133,29 +106,20 @@ export const CANONICAL_LAYER_DEFINITIONS = [
   {
     id: "L10",
     order: 10,
-    label: "Unicode or dictionary",
+    label: "Unicode / 字典",
     focal_band: "text_grain",
-    description: "Unicode, dictionary, and glyph detail that can loop into a new seed.",
+    description: "Unicode, dictionary, glyph, translation, and usage detail for the selected character or word.",
     primary_node_types: ["unicode", "dictionary_entry"],
     zoom: 2.45,
   },
   {
     id: "L11",
     order: 11,
-    label: "Dictionary entry",
+    label: "新的探索 seed",
     focal_band: "recursive_seed",
-    description: "Expanded dictionary, usage, translation, and etymology surface.",
-    primary_node_types: ["dictionary_entry"],
-    zoom: 2.45,
-  },
-  {
-    id: "L12",
-    order: 12,
-    label: "New seed loop",
-    focal_band: "recursive_seed",
-    description: "A selected grain becomes an independent exploration universe.",
+    description: "The selected grain becomes an independent exploration universe and starts a new 12-level telescope chain.",
     primary_node_types: ["question", "concept"],
-    zoom: 2.45,
+    zoom: 2.64,
   },
 ] as const satisfies readonly SemanticLayerDefinition[];
 
@@ -188,7 +152,7 @@ export function isTextGrainLayer(layer: LayerId): boolean {
 }
 
 export function getDeepZoomLayerStops(): Array<{ id: LayerId; zoom: number }> {
-  return CANONICAL_LAYER_DEFINITIONS.filter((definition) => definition.order >= 0 && definition.order <= 10).map((definition) => ({
+  return CANONICAL_LAYER_DEFINITIONS.map((definition) => ({
     id: definition.id,
     zoom: definition.zoom,
   }));

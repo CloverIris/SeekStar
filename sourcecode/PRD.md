@@ -199,24 +199,20 @@ X and Y define spatial relation inside the current layer. Z defines abstraction 
 
 A layer is a semantic depth, not a graphics-only zoom level.
 
-Default layer ladder:
+Canonical 12Level ladder:
 
-* L-3: global knowledge field;
-* L-2: domain constellation;
-* L-1: topic region;
-* L0: seed keyword or seed question;
-* L1: child / sibling / parent concept grid;
-* L2: source cluster;
-* L3: webpage / document tile;
-* L4: HTML section;
-* L5: paragraph block;
-* L6: sentence block;
-* L7: phrase or term;
-* L8: word;
-* L9: character;
-* L10: Unicode code point;
-* L11: dictionary entry;
-* L12: selected term as a new seed.
+* L0: 领域 / Star Gallery / seed pool;
+* L1: 主题;
+* L2: 来源;
+* L3: 网页 / 文档 / PDF / 图片 tile;
+* L4: 章节 / section;
+* L5: 段落;
+* L6: 句子;
+* L7: 短语;
+* L8: 词语 / keyword;
+* L9: 字符;
+* L10: Unicode / 字典;
+* L11: selected grain as a new exploration seed.
 
 The system must support deeper layers without redesigning the architecture.
 
@@ -239,7 +235,7 @@ The lens is both visual and semantic:
 
 At macro layers, SeekStar should not look like a dashboard grid of rounded cards.
 
-Layers L-3, L-2, L-1, and L0 may use an Apple Watch App Gallery-like bubble lens: colorful but restrained solid bubbles clustered in a dense field. The center of the viewport is larger, clearer, and more readable; the edge becomes smaller, dimmer, and eventually fades. This is a cognitive orientation surface, not decoration.
+Layers L0 and L1 use a dense Star Gallery bubble lens: colorful but restrained solid bubbles clustered in a semantic field. The center of the viewport is larger, clearer, and more readable; the edge becomes smaller, dimmer, and eventually fades. This is a cognitive orientation surface, not decoration.
 
 Macro bubbles are entry points for exploration when the user does not yet know what to ask. They may represent domains, topic regions, seed fields, fog regions, scout-pending regions, or constellation anchors. They must still preserve source state and confidence: source-backed, generated, weak, inferred, and fog content cannot look interchangeable.
 
@@ -262,9 +258,9 @@ The constellation is a road sign, not the truth of the data.
 
 Macro Lens Gallery and constellation layout work together:
 
-* L-3 / L-2: constellation shape and bubble lens both dominate;
-* L-1 / L0: clustered seed/topic bubbles dominate, while constellation structure remains as orientation;
-* L1 / L2: bubbles transition into topic and source cards;
+* L0: domain seed pool, constellation shape, and bubble lens dominate;
+* L1: topic bubbles and adjacent unknown frontiers dominate;
+* L2: source clusters hand off from Star Gallery into content intake;
 * L3 and deeper: document tiles and text grains replace macro bubbles as the primary visual form.
 
 ## 5.7 Tile Field
@@ -853,7 +849,7 @@ The three product bands are explanatory focal ranges, not the full layer model:
 * Tile Field describes source-backed content surfaces.
 * Text Grain describes close reading.
 
-The actual runtime spine preserves deeper semantic layers. The current implementation centers on L0-L10: seed field, concept neighborhood, source cluster, document tile, section, paragraph, sentence, phrase or term, word, character, and Unicode / dictionary detail.
+The actual runtime spine is the canonical L0-L11 12Level ladder: domain seed pool, topic, source, webpage/document tile, section, paragraph, sentence, phrase, word, character, Unicode/dictionary, and recursive new seed.
 
 P5.2 adds:
 
@@ -902,7 +898,7 @@ L9 character nodes are source-backed because the character exists in the source 
 
 P5.4 keeps the node count bounded by expanding only a small number of characters per word. This proves the telescope path without making long pasted sources unreadable.
 
-P5.4 does not add full dictionary lookup, translation, morphology, corpus examples, L11 expanded dictionary surfaces, or a dedicated `grain.seed.created` event.
+P5.4 does not add full external dictionary lookup, translation, morphology, corpus examples, or a dedicated `grain.seed.created` event.
 
 ## 9.19 P5.5 Heuristic Candidate Pool
 
@@ -953,7 +949,7 @@ The active tab owns:
 
 Electron main docks the active tab's `WebContentsView` into the shell-provided rectangle using `runtimeSurface=docked`. Detached windows use `runtimeSurface=detached`. A tab renderer crash should be recorded on the tab and replaced with local crash HTML without destroying the shell.
 
-P5.7 also stops using preview seed terrain for new tabs. New seed tabs now start as local deterministic `local_only` / `fog` objects on the L0-L10 telescope spine. They are seedable and structured, but they do not claim source-backed facts or AI synthesis before Scout/source intake happens.
+P5.7 also stops using preview seed terrain for new tabs. New seed tabs now start as local deterministic `local_only` / `fog` objects on the canonical L0-L11 12Level telescope spine. They are seedable and structured, but they do not claim source-backed facts or AI synthesis before Scout/source intake happens.
 
 ## 9.22 P5.8 Pixi Runtime Spine And Simulated Path Removal
 

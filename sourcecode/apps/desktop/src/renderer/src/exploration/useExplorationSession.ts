@@ -2,7 +2,7 @@ import { assertValidTerrainScene, normalizeTerrainScene } from "@seekstar/core-s
 import type { LayerId, ScoutObservation, ScoutPlan, SourceRef, TerrainNode, TerrainScene } from "@seekstar/core-schema";
 import {
   applyExplorationEvent,
-  buildWorkspaceSnapshot,
+  createPersistableWorkspaceSnapshot,
   createDefaultNewSeekScene,
   createDirectUrlScoutPlan,
   createExplorationObjectPool,
@@ -11,11 +11,11 @@ import {
   createPageOutlinksScoutPlan,
   createSeedScene,
   defaultSeekStarSeedScene,
-  hydrateWorkspaceSnapshot,
   isDirectHttpUrl,
-  isWorkspaceSnapshot,
+  DEPRECATED_DEFAULT_TAB_IDS,
   positionAnchoredScoutObservations,
   positionFrontierObservations,
+  prepareWorkspaceLaunch,
   resolveFrontierTrigger,
   resolveActiveDomainLexicon,
   type DomainLexicon,
@@ -38,6 +38,13 @@ interface SelectionSyncResult {
   focusNodeId?: string;
 }
 
+interface SyncWorkspaceFromStoreOptions {
+  preferredActiveTabId?: string;
+  registerRuntimeTabs?: boolean;
+  shouldCancel?: () => boolean;
+  protectLocalNavigation?: boolean;
+}
+
 export function useExplorationSession(options: UseExplorationSessionOptions = {}) {
   const initialScene = options.initialScene ?? defaultSeekStarSeedScene;
   const initialTabId = initialScene.active_tab_id;
@@ -54,6 +61,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
 
   const activeTabIdRef = useRef(activeTabId);
   const scenesByTabIdRef = useRef(scenesByTabId);
+  const basketByTabIdRef = useRef(basketByTabId);
   const frontierTimersRef = useRef<Record<string, number>>({});
   const discoveredFrontiersRef = useRef<Set<string>>(new Set());
   const localNavigationRevisionRef = useRef(0);
@@ -68,6 +76,10 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
   useEffect(() => {
     scenesByTabIdRef.current = scenesByTabId;
   }, [scenesByTabId]);
+
+  useEffect(() => {
+    basketByTabIdRef.current = basketByTabId;
+  }, [basketByTabId]);
 
   useEffect(
     () => () => {
@@ -84,60 +96,72 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     }));
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadWorkspaceSnapshot(): Promise<void> {
+  const syncWorkspaceFromStore = useCallback(
+    async (syncOptions: SyncWorkspaceFromStoreOptions = {}): Promise<SelectionSyncResult | undefined> => {
       const revisionAtStart = localNavigationRevisionRef.current;
 
       try {
         const configuredDefaultScene = await loadConfiguredDefaultScene(initialScene);
         const snapshot = await window.seekstar.workspace.loadSnapshot();
 
-        if (cancelled || revisionAtStart !== localNavigationRevisionRef.current) {
-          return;
+        if (syncOptions.shouldCancel?.()) {
+          return undefined;
         }
 
-        let nextScenesByTabId: Record<string, TerrainScene> = {
-          [configuredDefaultScene.active_tab_id]: configuredDefaultScene,
-        };
-        let nextBasketByTabId: Record<string, SelectionBasketItem[]> = {};
-        let nextActiveTabId = runtimeTabId && nextScenesByTabId[runtimeTabId] ? runtimeTabId : configuredDefaultScene.active_tab_id;
-
-        if (isWorkspaceSnapshot<SelectionBasketItem>(snapshot)) {
-          const hydrated = hydrateWorkspaceSnapshot(snapshot, configuredDefaultScene);
-          nextScenesByTabId = removeDeprecatedDefaultScenes(hydrated.scenesByTabId, configuredDefaultScene);
-          nextBasketByTabId = removeDeprecatedBasketEntries(snapshot.basket_by_tab_id);
-          nextActiveTabId = runtimeTabId && nextScenesByTabId[runtimeTabId] ? runtimeTabId : configuredDefaultScene.active_tab_id;
+        if (syncOptions.protectLocalNavigation && revisionAtStart !== localNavigationRevisionRef.current) {
+          return undefined;
         }
 
-        const nextScene = nextScenesByTabId[nextActiveTabId] ?? configuredDefaultScene;
+        const launch = prepareWorkspaceLaunch<SelectionBasketItem>({
+          fallbackScene: configuredDefaultScene,
+          runtimeTabId: syncOptions.preferredActiveTabId ?? runtimeTabId,
+          snapshot,
+        });
 
-        setActiveTabId(nextActiveTabId);
-        setScenesByTabId(nextScenesByTabId);
-        setBasketByTabId(nextBasketByTabId);
-        await registerRuntimeScenes(nextScenesByTabId, nextActiveTabId);
-        void closeDeprecatedRuntimeTabs();
-        setHydratedSelection({
+        const nextScene = launch.scenesByTabId[launch.activeTabId] ?? configuredDefaultScene;
+        const nextSelection = {
           selectedNodeIds: nextScene.selection.node_ids,
           focusNodeId: nextScene.selection.node_ids[0],
-        });
+        };
+
+        setActiveTabId(launch.activeTabId);
+        setScenesByTabId(launch.scenesByTabId);
+        setBasketByTabId(launch.basketByTabId);
+
+        if (syncOptions.registerRuntimeTabs ?? true) {
+          await registerRuntimeScenes(launch.scenesByTabId, launch.activeTabId);
+          void closeDeprecatedRuntimeTabs();
+        }
+
+        setHydratedSelection(nextSelection);
         setPersistenceStatus("saved");
+
+        return nextSelection;
       } catch {
         setPersistenceStatus("error");
+        return undefined;
       } finally {
-        if (!cancelled) {
+        if (!syncOptions.shouldCancel?.()) {
           setWorkspaceHydrated(true);
         }
       }
-    }
+    },
+    [initialScene, runtimeTabId],
+  );
 
-    void loadWorkspaceSnapshot();
+  useEffect(() => {
+    let cancelled = false;
+
+    void syncWorkspaceFromStore({
+      protectLocalNavigation: true,
+      registerRuntimeTabs: true,
+      shouldCancel: () => cancelled,
+    });
 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [syncWorkspaceFromStore]);
 
   useEffect(() => {
     if (!workspaceHydrated) {
@@ -225,19 +249,43 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     const normalized = assertValidTerrainScene(nextScene, "openSeedScene");
     const nextTabId = normalized.active_tab_id;
     const nextTab = normalized.tabs.find((tab) => tab.id === nextTabId) ?? normalized.tabs[0];
+    const nextScenesByTabId = {
+      ...scenesByTabIdRef.current,
+      [nextTabId]: normalized,
+    };
+    const shouldAdoptNewSceneLocally = !runtimeTabId || runtimeTabId === nextTabId;
 
     localNavigationRevisionRef.current += 1;
-    setScenesByTabId((current) => ({
-      ...current,
-      [nextTabId]: normalized,
-    }));
-    setActiveTabId(nextTabId);
-    void window.seekstar.tabs.create({
-      tabId: nextTabId,
-      title: nextTab?.title ?? normalized.metadata.title,
-      seed: nextTab?.seed ?? normalized.metadata.title,
-    });
-  }, [runtimeTabId]);
+    scenesByTabIdRef.current = nextScenesByTabId;
+
+    if (shouldAdoptNewSceneLocally) {
+      setScenesByTabId(nextScenesByTabId);
+      setActiveTabId(nextTabId);
+    }
+
+    setPersistenceStatus("saving");
+    void buildPersistableWorkspaceSnapshot({
+      activeTabId: nextTabId,
+      basketByTabId: basketByTabIdRef.current,
+      fallbackScene: initialScene,
+      scenesByTabId: nextScenesByTabId,
+    })
+      .then((snapshot) => window.seekstar.workspace.saveSnapshot(snapshot satisfies WorkspaceSnapshot<SelectionBasketItem>))
+      .then(() =>
+        window.seekstar.tabs.create({
+          activate: true,
+          tabId: nextTabId,
+          title: nextTab?.title ?? normalized.metadata.title,
+          seed: nextTab?.seed ?? normalized.metadata.title,
+        }),
+      )
+      .then(() => {
+        setPersistenceStatus("saved");
+      })
+      .catch(() => {
+        setPersistenceStatus("error");
+      });
+  }, [initialScene, runtimeTabId]);
 
   const handleUseAsSeed = useCallback(
     (seed: string) => {
@@ -752,6 +800,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     persistenceStatus,
     workspaceHydrated,
     hydratedSelection,
+    syncWorkspaceFromStore,
     syncSceneSelection,
     syncSceneViewport,
     handleLayerSelect,
@@ -774,8 +823,6 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
   };
 }
 
-const DEPRECATED_DEFAULT_TAB_IDS = new Set(["tab-default-seekstar-seed", "tab-unknown-unknowns-deep-zoom"]);
-
 async function loadConfiguredDefaultScene(fallbackScene: TerrainScene): Promise<TerrainScene> {
   try {
     const settings = await window.seekstar.settings.load();
@@ -788,22 +835,6 @@ async function loadConfiguredDefaultScene(fallbackScene: TerrainScene): Promise<
   } catch {
     return fallbackScene;
   }
-}
-
-function removeDeprecatedDefaultScenes(
-  scenesByTabId: Record<string, TerrainScene>,
-  fallbackScene: TerrainScene,
-): Record<string, TerrainScene> {
-  const entries = Object.entries(scenesByTabId).filter(([tabId]) => !DEPRECATED_DEFAULT_TAB_IDS.has(tabId));
-
-  return {
-    ...Object.fromEntries(entries),
-    [fallbackScene.active_tab_id]: fallbackScene,
-  };
-}
-
-function removeDeprecatedBasketEntries<TBasketItem>(basketByTabId: Record<string, TBasketItem[]>): Record<string, TBasketItem[]> {
-  return Object.fromEntries(Object.entries(basketByTabId).filter(([tabId]) => !DEPRECATED_DEFAULT_TAB_IDS.has(tabId)));
 }
 
 async function registerRuntimeScenes(scenesByTabId: Record<string, TerrainScene>, activeTabId: string): Promise<void> {
@@ -836,48 +867,15 @@ async function buildPersistableWorkspaceSnapshot(input: {
   fallbackScene: TerrainScene;
   lockedTabId?: string;
 }): Promise<WorkspaceSnapshot<SelectionBasketItem>> {
-  if (!input.lockedTabId) {
-    return buildWorkspaceSnapshot({
-      activeTabId: input.activeTabId,
-      scenesByTabId: input.scenesByTabId,
-      basketByTabId: input.basketByTabId,
-      fallbackScene: input.fallbackScene,
-    });
-  }
-
-  const lockedScene = input.scenesByTabId[input.lockedTabId];
-
-  if (!lockedScene) {
-    return buildWorkspaceSnapshot({
-      activeTabId: input.activeTabId,
-      scenesByTabId: input.scenesByTabId,
-      basketByTabId: input.basketByTabId,
-      fallbackScene: input.fallbackScene,
-    });
-  }
-
   const latestSnapshot = await window.seekstar.workspace.loadSnapshot().catch(() => undefined);
 
-  if (!isWorkspaceSnapshot<SelectionBasketItem>(latestSnapshot)) {
-    return buildWorkspaceSnapshot({
-      activeTabId: input.activeTabId,
-      scenesByTabId: input.scenesByTabId,
-      basketByTabId: input.basketByTabId,
-      fallbackScene: input.fallbackScene,
-    });
-  }
-
-  return buildWorkspaceSnapshot({
-    activeTabId: latestSnapshot.active_tab_id,
-    scenesByTabId: {
-      ...latestSnapshot.scenes_by_tab_id,
-      [input.lockedTabId]: lockedScene,
-    },
-    basketByTabId: {
-      ...latestSnapshot.basket_by_tab_id,
-      [input.lockedTabId]: input.basketByTabId[input.lockedTabId] ?? latestSnapshot.basket_by_tab_id[input.lockedTabId] ?? [],
-    },
+  return createPersistableWorkspaceSnapshot({
+    activeTabId: input.activeTabId,
+    basketByTabId: input.basketByTabId,
     fallbackScene: input.fallbackScene,
+    latestSnapshot,
+    lockedTabId: input.lockedTabId,
+    scenesByTabId: input.scenesByTabId,
   });
 }
 

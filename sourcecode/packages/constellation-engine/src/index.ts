@@ -75,3 +75,11 @@ export {
   type ScoutObservationPlacement,
   type WorkspaceSnapshot,
 } from "./types.js";
+export {
+  DEPRECATED_DEFAULT_TAB_IDS,
+  createPersistableWorkspaceSnapshot,
+  prepareWorkspaceLaunch,
+  removeDeprecatedBasketEntries,
+  removeDeprecatedDefaultScenes,
+  type PreparedWorkspaceLaunch,
+} from "./workspaceSession.js";
