@@ -57,9 +57,10 @@ try {
   const address = server.address();
   const localUrl = `http://127.0.0.1:${address.port}/`;
   const localResult = await runLocalPipelineSmoke(localUrl, service, desktopRuntime);
+  const aiLevelRuntimeResult = await runAiLevelRuntimeSmoke();
   const publicSearchResult = runPublicSearch ? await runPublicSearchSmoke(desktopRuntime) : undefined;
 
-  process.stdout.write(`${JSON.stringify({ ...localResult, publicSearch: publicSearchResult }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ ...localResult, aiLevelRuntime: aiLevelRuntimeResult, publicSearch: publicSearchResult }, null, 2)}\n`);
 } finally {
   await service.dispose();
   await desktopRuntime.dispose();
@@ -206,6 +207,90 @@ async function runLocalPipelineSmoke(localUrl, service, desktopRuntime) {
       mainContentMode: shellProjection.mainContent.mode,
       tileSurfaces: shellProjection.tileSurfaces.length,
     },
+  };
+}
+
+async function runAiLevelRuntimeSmoke() {
+  const aiModule = await import(pathToFileURL(resolve("packages/ai-service/dist/index.js")).href);
+  const levelRuntimeModule = await import(pathToFileURL(resolve("packages/level-runtime/dist/index.js")).href);
+  const savedSeekStarKey = process.env.SEEKSTAR_AI_API_KEY;
+  const savedOpenAiKey = process.env.OPENAI_API_KEY;
+  delete process.env.SEEKSTAR_AI_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+  const missingKeyService = new aiModule.AiCartographerService({
+    kind: "openai_compatible",
+    api_key_ref: { kind: "env", name: "SEEKSTAR_MODULE_SMOKE_EMPTY_KEY" },
+  });
+  const missingKeyOutput = await missingKeyService.generate({
+    mode: "bootstrap_seed",
+    level_id: "L0",
+    seed: "CPU",
+  });
+  if (savedSeekStarKey !== undefined) {
+    process.env.SEEKSTAR_AI_API_KEY = savedSeekStarKey;
+  }
+  if (savedOpenAiKey !== undefined) {
+    process.env.OPENAI_API_KEY = savedOpenAiKey;
+  }
+
+  assert(missingKeyOutput.status === "missing_key", `AI missing-key status mismatch: ${missingKeyOutput.status}`);
+
+  const mockService = new aiModule.AiCartographerService({ kind: "mock" });
+  const mockOutput = await mockService.generate({
+    mode: "bootstrap_seed",
+    level_id: "L0",
+    seed: "CPU",
+  });
+
+  assert(mockOutput.status === "ok", `AI mock generation status: ${mockOutput.status}`);
+  assert(mockOutput.nodes.length > 0, "AI mock generation returned no nodes");
+
+  const invalidValidation = aiModule.validateCartographerGenerationOutput({ nodes: "bad" }, {
+    mode: "bootstrap_seed",
+    level_id: "L0",
+    seed: "CPU",
+  });
+  assert(!invalidValidation.valid, "AI invalid JSON validation should fail");
+
+  const baseChunk = levelRuntimeModule.createLevelChunkKey(0, 0, 0);
+  const levels = ["L0", "L1", "L2", "L3"];
+  const levelOutputs = [];
+
+  for (const levelId of levels) {
+    const output = await levelRuntimeModule.runLevelRuntime({
+      mode: levelId === "L0" ? "bootstrap_seed" : "decompose_down",
+      level_id: levelId,
+      seed: "CPU",
+      chunk: baseChunk,
+    });
+    const validation = levelRuntimeModule.validateLevelRuntimeOutput(output);
+
+    assert(output.status === "ok", `Level Runtime ${levelId} status: ${output.status}`);
+    assert(validation.valid, `Level Runtime ${levelId} invalid: ${JSON.stringify(validation.diagnostics)}`);
+    assert(output.nodes.length > 0, `Level Runtime ${levelId} returned no nodes`);
+    assert(output.nodes.length <= levelRuntimeModule.DEFAULT_LEVEL_RUNTIME_SETTINGS.target_counts[levelId], `Level Runtime ${levelId} exceeded density`);
+    assert(output.nodes.every((node) => node.source_state !== "source_backed"), `Level Runtime ${levelId} produced source-backed nodes`);
+    assert(
+      output.source_candidates.every((candidate) => candidate.source_state === "cartographer_unverified_source"),
+      `Level Runtime ${levelId} produced invalid candidate state`,
+    );
+
+    levelOutputs.push({
+      levelId,
+      nodes: output.nodes.length,
+      sourceCandidates: output.source_candidates.length,
+      preloadChunks: output.chunk_hints.preload.length,
+    });
+  }
+
+  const l3 = levelOutputs.find((output) => output.levelId === "L3");
+  assert(l3?.sourceCandidates > 0, "Level Runtime L3 should expose unverified source candidates");
+
+  return {
+    missingKeyStatus: missingKeyOutput.status,
+    mockNodes: mockOutput.nodes.length,
+    invalidOutputValid: invalidValidation.valid,
+    levels: levelOutputs,
   };
 }
 

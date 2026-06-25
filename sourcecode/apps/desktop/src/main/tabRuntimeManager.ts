@@ -1145,9 +1145,10 @@ function normalizeSnapshot(value: unknown): TabRuntimeSnapshot {
     ...tab,
     folder_id: tab.folder_id && folderIds.has(tab.folder_id) ? tab.folder_id : undefined,
   }));
-  const activeTabId = typeof candidate.active_tab_id === "string" && tabs.some((tab) => tab.id === candidate.active_tab_id)
+  const visibleTabs = normalizedTabs.filter((tab) => tab.window_state !== "hidden");
+  const activeTabId = typeof candidate.active_tab_id === "string" && visibleTabs.some((tab) => tab.id === candidate.active_tab_id)
     ? candidate.active_tab_id
-    : normalizedTabs[0].id;
+    : visibleTabs[0]?.id ?? normalizedTabs[0].id;
 
   return {
     version: 1,

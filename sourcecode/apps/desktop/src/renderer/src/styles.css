@@ -1730,6 +1730,11 @@ button {
   pointer-events: none;
 }
 
+.main-content-status-source_candidate_field {
+  width: min(520px, calc(100% - 96px));
+  pointer-events: auto;
+}
+
 .main-content-status > span {
   color: var(--text-muted);
   font-size: 10px;
@@ -1760,6 +1765,46 @@ button {
 
 .main-content-status-source_intake_failed {
   border-color: rgb(231 120 132 / 32%);
+}
+
+.main-content-candidate-list {
+  display: grid;
+  gap: 7px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.main-content-candidate-list button {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  text-align: left;
+  background: rgb(255 255 255 / 4%);
+  cursor: pointer;
+}
+
+.main-content-candidate-list button:hover,
+.main-content-candidate-list button.active {
+  border-color: rgb(110 159 255 / 34%);
+  color: var(--text-primary);
+  background: rgb(110 159 255 / 10%);
+}
+
+.main-content-candidate-list button strong,
+.main-content-candidate-list button small {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.main-content-candidate-list button strong {
+  font-size: 12px;
 }
 
 .browser-absorption-exit {
@@ -2778,6 +2823,27 @@ button {
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.inspector-advanced-section {
+  display: grid;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-hairline);
+}
+
+.inspector-advanced-section summary {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.inspector-advanced-section[open] summary {
+  margin-bottom: 10px;
+  color: var(--text-secondary);
 }
 
 .metric-list {

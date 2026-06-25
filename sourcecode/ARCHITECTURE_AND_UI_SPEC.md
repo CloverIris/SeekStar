@@ -18,7 +18,7 @@ The architecture must separate:
 * export;
 * security.
 
-The app should never depend on AI for frame-by-frame interaction. AI generates terrain. The local application renders and navigates terrain.
+The app should never depend on AI for frame-by-frame interaction. AI generates and organizes terrain. The local application renders, caches, validates, and navigates terrain.
 
 The core runtime metaphor is a telescope:
 
@@ -30,9 +30,9 @@ Telescope operation
   -> optional Scout or Cartographer job when the event needs external observation or synthesis
 ```
 
-Zooming changes semantic depth. Panning explores same-layer adjacency. Selection, lasso, brush, keyword promotion, and edge movement are product events before they are UI callbacks. The renderer should be able to keep the user moving through Star Gallery, Tile Field, and Text Grain without waiting for AI.
+Zooming changes semantic depth. Panning explores same-layer adjacency. Selection, lasso, brush, keyword promotion, and edge movement are product events before they are UI callbacks. The renderer should be able to keep the user moving through active and cached terrain without asking AI for every frame.
 
-AI Agent involvement should be sparse and explicit: organize unknowns, propose adjacent possibilities, explain selected regions, synthesize source-backed material, or create structured Cartographer patches. Routine discovery should prefer local heuristics, source snapshots, object-pool indexes, and Playwright Scout observations before model calls.
+AI Cartographer is the primary terrain producer for macro exploration, topic/source orientation, recursive seed bootstrap, orphan context reconstruction, and same-layer frontier expansion. DataService is the validation and loading layer for AI-proposed URLs, source candidates, pages, PDFs, images, and future file snapshots. AI should not drive animation or pointer-level behavior, but it should actively fill and extend the map.
 
 ## 2. Recommended High-level Architecture
 
@@ -117,6 +117,12 @@ Web discovery and source observation are now separate protocols. `SearchCandidat
 P5.17 Content Provider note:
 The DataService registry is now settings-driven. `@seekstar/core-schema` owns the built-in provider catalog and `SeekStarSettings.content_providers` persists activation, priority, languages, URL-only domains, and key-reference metadata. Default active discovery uses arXiv, GitHub, Wikipedia, Wikidata, and a low-priority local Playwright browser-assisted fallback. Zhihu and Runoob are built in as disabled URL-only providers: they may discover candidate URLs when enabled, but they do not extract page bodies or fabricate source-backed terrain during search. Electron passes the current provider settings into each Scout utility-process run, so the UI edits provider availability without coupling React to provider implementation details.
 
+P5.18 Main Content Usability note:
+Keyword discovery now renders a formal L3 `source_candidate_field` in Pixi. `CandidateTileSurface` entries show provider provenance and URL candidates, but they are separate from `TerrainTileSurface` entries and are never synchronized to live browser surfaces. Selecting a candidate exposes source observation actions; direct URL Scout must return source evidence before the candidate becomes a source-backed L3 webpage/document tile. The inspector now promotes the candidate/source loop and moves old job/manual-ingest/tray panels under Advanced.
+
+P6 AI Cartographer and Level Runtime note:
+P6 changes the mainline from DataService-driven candidate discovery to AI Cartographer-driven terrain generation. L0-L3 terrain is primarily generated and organized by AI, then validated where needed by DataService. The fixed L0-L11 12Level spine remains the P5 compatibility layer, but the user-facing target moves toward a modular Level Runtime: Supra Macro, L0 Star Gallery, L1 Topic Field, L2 Source Orientation, L3 Tile Field, Deep Lens, and Recursive Seed. See `docs/architecture/p6-ai-cartographer-and-level-runtime-redesign.md`.
+
 These events are the telescope operation protocol. Viewport movement may reveal same-layer frontiers. Layer changes move between macro orientation, source-backed tile surfaces, and text-grain detail. Selection and lasso create addressable regions that can be inspected, promoted, exported, or passed to AI only when the user asks for interpretation.
 
 P5.6 implementation note:
@@ -138,33 +144,36 @@ Seed scene scaffolding, source snapshot ingestion, source-backed text-grain terr
 
 Responsibilities:
 
-* seed mapping;
-* query planning;
-* source distillation;
-* layer mapping;
-* region explanation;
+* AI Cartographer terrain generation;
+* seed bootstrap;
+* same-layer chunk expansion;
+* upward context inference;
+* downward semantic decomposition;
+* source-candidate proposal;
+* source-candidate replacement after DataService failures;
+* region explanation and navigation;
 * prompt preset execution;
-* Markdown generation;
-* dictionary / Unicode interpretation if needed.
+* right-sidebar map chat and operation planning.
 
 Design principle:
-Agent output must be structured, inspectable, cancellable, and cacheable.
+Agent output must be structured, inspectable, cancellable, cacheable, and independently testable per level/module. AI output may become primary map terrain after schema validation; source-backed status still requires DataService observation or a trusted local/file snapshot.
 
 ### 2.4 Playwright Scout Layer
 
 Responsibilities:
 
-* execute provider-backed candidate discovery;
+* validate AI-proposed source candidates;
+* execute provider-backed candidate discovery when requested;
 * retrieve pages;
 * extract visible content and metadata;
 * record source provenance;
 * report failures;
-* pass observations to Agent.
+* pass observations back to the level runtime and AI agent as tool results.
 
 Design principle:
 Playwright is a scout and browser observer, not the whole web-search architecture and not a browser UI replacement.
 
-Scout may be triggered by telescope events such as direct URL intake, source-anchored outlink exploration, or drifting near a same-layer frontier. It returns structured observations into the data pool. It must not drive animation, rank truth, decide meaning, or directly create source-backed terrain.
+Scout may be triggered by telescope events, direct URL intake, source-anchored outlink exploration, AI tool calls, or chunk preloading. It returns structured observations into the data pool. It must not drive animation, decide meaning, or directly create source-backed terrain.
 
 P5.16 implementation note:
 The Scout/DataService module has a provider registry. Search providers produce `SearchCandidate` records only. Source observer providers produce `SourceSnapshot` records or explicit failure. Constellation Engine converts snapshots into source-backed terrain through typed events; search candidates remain Scout observations until selected or observed.

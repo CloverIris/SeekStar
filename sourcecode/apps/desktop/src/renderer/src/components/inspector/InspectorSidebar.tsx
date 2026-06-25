@@ -28,6 +28,8 @@ export function InspectorSidebar({
   onClearSelection,
   onRemoveBasketItem,
   onRunScoutPlan,
+  onObserveCandidate,
+  onOpenCandidateAsSeek,
   onScoutSourceLinks,
   onLayerSelect,
   onResetWorkspace,
@@ -50,6 +52,8 @@ export function InspectorSidebar({
   onConvertScoutObservation: (observation: ScoutObservation) => void;
   onClearBasket: () => void;
   onClearSelection: () => void;
+  onObserveCandidate: (observation: ScoutObservation) => void;
+  onOpenCandidateAsSeek: (observation: ScoutObservation) => void;
   onRemoveBasketItem: (itemId: string) => void;
   onRunScoutPlan: (plan: ScoutPlan) => void;
   onScoutSourceLinks: (node: TerrainNode, source: SourceRef) => void;
@@ -105,24 +109,29 @@ export function InspectorSidebar({
           />
         )}
         <SearchResultsPanel query={searchQuery} results={searchResults} onResultSelect={onSearchResultSelect} />
-        <CartographerOutputPanel
-          observations={scene.scout_observations ?? []}
-          outputs={scene.cartographer_outputs ?? []}
-          scene={scene}
-          onNodeSelect={onSearchResultSelect}
-          onRunScoutPlan={onRunScoutPlan}
-        />
         <ScoutObservationPanel
           observations={scene.scout_observations ?? []}
           selectedObservationId={selectedObservationId}
           onConvertObservation={onConvertScoutObservation}
+          onObserveCandidate={onObserveCandidate}
+          onOpenCandidateAsSeek={onOpenCandidateAsSeek}
         />
-        <SourceIngestionPanel onAddSource={onAddSource} />
-        <SideTrayPanel
-          items={basketItems}
-          onClearBasket={onClearBasket}
-          onRemoveItem={onRemoveBasketItem}
-        />
+        <details className="inspector-advanced-section">
+          <summary>Advanced</summary>
+          <CartographerOutputPanel
+            observations={scene.scout_observations ?? []}
+            outputs={scene.cartographer_outputs ?? []}
+            scene={scene}
+            onNodeSelect={onSearchResultSelect}
+            onRunScoutPlan={onRunScoutPlan}
+          />
+          <SourceIngestionPanel onAddSource={onAddSource} />
+          <SideTrayPanel
+            items={basketItems}
+            onClearBasket={onClearBasket}
+            onRemoveItem={onRemoveBasketItem}
+          />
+        </details>
       </div>
     </div>
   );
@@ -288,16 +297,24 @@ function ScoutObservationPanel({
   observations,
   selectedObservationId,
   onConvertObservation,
+  onObserveCandidate,
+  onOpenCandidateAsSeek,
 }: {
   observations: ScoutObservation[];
   selectedObservationId?: string;
   onConvertObservation: (observation: ScoutObservation) => void;
+  onObserveCandidate: (observation: ScoutObservation) => void;
+  onOpenCandidateAsSeek: (observation: ScoutObservation) => void;
 }): ReactElement | null {
   if (observations.length === 0) {
     return null;
   }
 
-  const recentObservations = [...observations].slice(-6).reverse();
+  const selectedObservation = selectedObservationId ? observations.find((observation) => observation.id === selectedObservationId) : undefined;
+  const recentObservations = [
+    ...(selectedObservation ? [selectedObservation] : []),
+    ...[...observations].slice(-8).reverse().filter((observation) => observation.id !== selectedObservation?.id),
+  ].slice(0, 8);
   const statusCounts = observations.reduce<Partial<Record<ScoutObservation["status"], number>>>((counts, observation) => {
     counts[observation.status] = (counts[observation.status] ?? 0) + 1;
     return counts;
@@ -309,7 +326,7 @@ function ScoutObservationPanel({
         <h2>Scout observations</h2>
         <span>{observations.length} scout</span>
       </div>
-      <p>Structured Scout observations only. They are not source-backed terrain until provenance conversion happens.</p>
+      <p>Candidate URLs become source-backed terrain only after source observation returns evidence.</p>
       <div className="scout-observation-summary" aria-label="Scout observation summary">
         {(["pending", "source_candidate", "observed", "converted", "duplicate", "failed"] satisfies ScoutObservation["status"][]).map((status) => (
           <span key={status}>
@@ -333,9 +350,19 @@ function ScoutObservationPanel({
             <small>{observation.query}</small>
             {observation.snippet ? <p>{observation.snippet}</p> : null}
             {observation.failure_reason ? <small>{observation.failure_reason}</small> : null}
-            {observation.status === "source_candidate" || observation.status === "observed" ? (
+            {isObservableCandidate(observation) ? (
+              <button onClick={() => onObserveCandidate(observation)} type="button">
+                Observe source
+              </button>
+            ) : null}
+            {observation.source_snapshot ? (
               <button onClick={() => onConvertObservation(observation)} type="button">
-                Confirm as source terrain
+                Use captured snapshot
+              </button>
+            ) : null}
+            {observation.url ? (
+              <button onClick={() => onOpenCandidateAsSeek(observation)} type="button">
+                Open as new Seek
               </button>
             ) : null}
             {observation.status === "converted" ? <small>Converted into source-backed terrain.</small> : null}
@@ -432,22 +459,29 @@ function SourceReadinessPanel({ scene }: { scene: TerrainScene }): ReactElement 
   const sourceBackedCount = nodeCounts.source_backed ?? 0;
   const generatedCount = (nodeCounts.generated ?? 0) + (nodeCounts.agent_inferred ?? 0) + (nodeCounts.weak_hypothesis ?? 0);
   const directUrlObservation = getLatestDirectUrlObservation(scene);
+  const candidateCount = (scene.scout_observations ?? []).filter((observation) => observation.status === "source_candidate").length;
   const statusLabel =
     directUrlObservation?.status === "pending"
       ? "observing"
       : directUrlObservation?.status === "failed"
         ? "failed"
+        : sourceBackedCount > 0
+          ? "source-backed"
+          : candidateCount > 0
+            ? "candidate"
         : scene.sources.length === 0
           ? "local only"
           : `${scene.sources.length} sources`;
   const readinessCopy =
     directUrlObservation?.status === "pending"
-      ? `Scout is observing ${directUrlObservation.url ?? directUrlObservation.query}. Source-backed terrain will appear only after evidence returns.`
+      ? `Observing ${directUrlObservation.url ?? directUrlObservation.query}.`
       : directUrlObservation?.status === "failed"
         ? directUrlObservation.failure_reason ?? "Scout could not observe this source. No source-backed tile was created."
         : sourceBackedCount > 0
-          ? "Some terrain is source-backed. Generated and inferred nodes remain visually marked."
-          : "This map is local-only terrain. No factual node is presented as source-backed yet.";
+          ? "Source-backed terrain is available."
+          : candidateCount > 0
+            ? "Candidate URLs are ready to observe."
+            : "Local seed terrain only.";
 
   return (
     <div className="source-readiness-panel" aria-label="Source readiness">
@@ -480,6 +514,13 @@ function getLatestDirectUrlObservation(scene: TerrainScene): ScoutObservation | 
         (observation.status === "pending" || observation.status === "failed"),
     )
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
+}
+
+function isObservableCandidate(observation: ScoutObservation): boolean {
+  return Boolean(
+    observation.url &&
+      (observation.status === "source_candidate" || observation.status === "observed"),
+  );
 }
 
 function SelectedNodePanel({

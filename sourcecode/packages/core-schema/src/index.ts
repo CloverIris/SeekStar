@@ -1,5 +1,10 @@
 export type SourceState =
   | "source_backed"
+  | "cartographer_primary"
+  | "cartographer_unverified_source"
+  | "cartographer_failed"
+  | "user_seed"
+  | "local_scaffold"
   | "agent_inferred"
   | "weak_hypothesis"
   | "generated"
@@ -640,6 +645,8 @@ export interface ScoutObservation {
   position_hint?: PositionHint;
   frontier_id?: string;
   discovery_mode?: ScoutDiscoveryMode;
+  provider_id?: string;
+  provider_kind?: DataServiceProviderKind;
   confidence?: number;
   query: string;
   title: string;

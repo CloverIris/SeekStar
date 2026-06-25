@@ -6,10 +6,12 @@ import {
   createDefaultNewSeekScene,
   createExplorationObjectPool,
   createFailedScoutObservation,
+  createKeywordScoutPlan,
   createSeedScene,
   defaultSeekStarSeedScene,
   isDirectHttpUrl,
   DEPRECATED_DEFAULT_TAB_IDS,
+  NEW_SEEK_TITLE,
   resolveFrontierTrigger,
   resolveZoomForLayer,
   resolveActiveDomainLexicon,
@@ -71,6 +73,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
   const lastPersistedLocalNavigationRevisionRef = useRef(0);
   const lastWorkspaceChangeRevisionRef = useRef(0);
   const suppressNextAutosaveRef = useRef(false);
+  const keywordDiscoveryBootstrapRef = useRef<Set<string>>(new Set());
 
   const workspacePersistence = useMemo(
     () =>
@@ -386,17 +389,6 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     return savePromise;
   }, [initialScene, runtimeTabId, tabSessions]);
 
-  const handleUseAsSeed = useCallback(
-    (seed: string) => {
-      if (!seed.trim()) {
-        return;
-      }
-
-      openSeedScene(createSeedScene(seed.trim()));
-    },
-    [openSeedScene],
-  );
-
   const ingestHyperlinkSourceIntoScene = useCallback(
     async (
       openedScene: TerrainScene,
@@ -480,6 +472,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
   const ingestDirectUrlSourceIntoScene = useCallback(
     async (input: {
       createdFrom?: NonNullable<TerrainScene["tabs"][number]["parent_backlink"]>;
+      reliabilityHints?: string[];
       scene: TerrainScene;
       tabId: string;
       tags?: string[];
@@ -522,6 +515,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
           scoutJobs.ingestDirectUrlSource({
             createdFrom: input.createdFrom,
             pendingObservationId: pendingObservation.id,
+            reliabilityHints: input.reliabilityHints,
             scene: pendingScene,
             tabId: input.tabId,
             tags: input.tags,
@@ -643,8 +637,217 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     [ingestDirectUrlSourceIntoScene, openSeedScene, scene],
   );
 
+  const handleObserveCandidateIntoCurrentTab = useCallback(
+    async (observationId: string): Promise<SelectionSyncResult | undefined> => {
+      const tabId = activeTabIdRef.current;
+      const currentScene = scenesByTabIdRef.current[tabId] ?? scene;
+      const observation = currentScene.scout_observations?.find((candidate) => candidate.id === observationId);
+      const url = observation?.url?.trim();
+
+      if (!observation || !url || !isDirectHttpUrl(url)) {
+        return undefined;
+      }
+
+      return ingestDirectUrlSourceIntoScene({
+        createdFrom: {
+          tab_id: tabId,
+          node_id: observation.target_node_ids[0] ?? currentScene.selection.node_ids[0],
+          label: `Candidate source: ${observation.title}`,
+          excerpt: observation.snippet ?? observation.query,
+        },
+        reliabilityHints: [
+          "observed from user-selected source candidate",
+          observation.provider_id ? `candidate provider: ${observation.provider_id}` : "candidate provider unavailable",
+        ],
+        scene: currentScene,
+        tabId,
+        tags: ["scout-observation", "candidate-observed", "source-backed-command"],
+        targetNodeIds: observation.target_node_ids,
+        title: observation.title,
+        url,
+      });
+    },
+    [ingestDirectUrlSourceIntoScene, scene],
+  );
+
+  const handleOpenCandidateAsSeek = useCallback(
+    async (observationId: string): Promise<SelectionSyncResult | undefined> => {
+      const originTabId = activeTabIdRef.current;
+      const originScene = scenesByTabIdRef.current[originTabId] ?? scene;
+      const observation = originScene.scout_observations?.find((candidate) => candidate.id === observationId);
+      const url = observation?.url?.trim();
+
+      if (!observation || !url || !isDirectHttpUrl(url)) {
+        return undefined;
+      }
+
+      const parentBacklink = {
+        tab_id: originTabId,
+        node_id: observation.target_node_ids[0] ?? originScene.selection.node_ids[0],
+        label: `Candidate source from ${originScene.metadata.title}`,
+        excerpt: observation.snippet ?? observation.query,
+      };
+      const openedScene = await openSeedScene(
+        createSeedScene(observation.title || url, {
+          sourceMode: "new_seed",
+          parentBacklink,
+        }),
+      );
+      const tabId = openedScene.active_tab_id;
+      const latestScene = scenesByTabIdRef.current[tabId] ?? openedScene;
+
+      return ingestDirectUrlSourceIntoScene({
+        createdFrom: parentBacklink,
+        reliabilityHints: [
+          "opened from source candidate as new Seek",
+          observation.provider_id ? `candidate provider: ${observation.provider_id}` : "candidate provider unavailable",
+        ],
+        scene: latestScene,
+        tabId,
+        tags: ["scout-observation", "candidate-new-seek", "source-backed-tab"],
+        title: observation.title || url,
+        url,
+      });
+    },
+    [ingestDirectUrlSourceIntoScene, openSeedScene, scene],
+  );
+
+  const runKeywordSourceDiscovery = useCallback(
+    async (input: {
+      scene: TerrainScene;
+      tabId: string;
+      query: string;
+    }): Promise<SelectionSyncResult | undefined> => {
+      const query = input.query.trim();
+
+      if (!query) {
+        return undefined;
+      }
+
+      const timestamp = new Date().toISOString();
+      const plan = createKeywordScoutPlan(query, input.scene.selection.node_ids, timestamp);
+      setPersistenceStatus("saving");
+
+      try {
+        const anchor = {
+          x: input.scene.viewport.x,
+          y: input.scene.viewport.y,
+        };
+        const pendingResult = applyExplorationEvent(input.scene, {
+          type: "scout.observations.appended",
+          observations: [
+            {
+              id: `observation-${plan.id}-pending-${Date.now()}`,
+              tab_id: input.tabId,
+              plan_id: plan.id,
+              status: "pending",
+              adapter: "playwright",
+              discovery_mode: "frontier_web_search",
+              query,
+              title: `Discovering sources: ${query}`,
+              target_node_ids: plan.target_node_ids,
+              layer: "L3",
+              position_hint: anchor,
+              snippet: "DataService is discovering candidate URLs. Candidates are not source-backed until observed.",
+              confidence: 0.42,
+              created_at: timestamp,
+              updated_at: timestamp,
+            },
+          ],
+          viewport: {
+            ...input.scene.viewport,
+            x: anchor.x,
+            y: anchor.y,
+            layer: "L3",
+            zoom: Math.max(input.scene.viewport.zoom, resolveZoomForLayer("L3")),
+          },
+          description: `${input.scene.metadata.title} is discovering URL candidates for ${query}.`,
+        });
+        replaceScene(input.tabId, pendingResult.scene);
+
+        const result = await scoutJobs.runPlan({
+          description: `${input.scene.metadata.title} discovered URL candidates for ${query}.`,
+          placement: {
+            anchor,
+            discoveryMode: "frontier_web_search",
+            frontierId: `keyword-source-${Date.now()}`,
+            layer: "L3",
+            radius: 380,
+          },
+          plan,
+          scene: input.scene,
+          tabId: input.tabId,
+        });
+
+        if (!scenesByTabIdRef.current[input.tabId]) {
+          return undefined;
+        }
+
+        const nextScenesByTabId = replaceScene(input.tabId, result.scene);
+        await persistWorkspaceAfterSceneChange(input.tabId, nextScenesByTabId);
+        setPersistenceStatus("saved");
+
+        return {
+          selectedNodeIds: result.scene.selection.node_ids,
+          focusNodeId: result.scene.runtime.focused_node_id ?? result.scene.selection.node_ids[0],
+        };
+      } catch (error) {
+        const failedObservation = createFailedScoutObservation({
+          discoveryMode: "frontier_web_search",
+          failureReason: getErrorMessage(error, "Keyword source discovery failed before Scout returned."),
+          plan,
+          suffix: `keyword-${Date.now()}`,
+          tabId: input.tabId,
+          timestamp: new Date().toISOString(),
+          title: `Keyword Scout failed: ${query}`,
+        });
+        const failedResult = applyExplorationEvent(input.scene, {
+          type: "scout.observations.appended",
+          observations: [
+            {
+              ...failedObservation,
+              layer: "L3",
+              position_hint: { x: input.scene.viewport.x, y: input.scene.viewport.y },
+            },
+          ],
+          viewport: {
+            ...input.scene.viewport,
+            layer: "L3",
+            zoom: Math.max(input.scene.viewport.zoom, resolveZoomForLayer("L3")),
+          },
+        });
+        const failedScenesByTabId = replaceScene(input.tabId, failedResult.scene);
+        await persistWorkspaceAfterSceneChange(input.tabId, failedScenesByTabId).catch(() => undefined);
+        setPersistenceStatus("saved");
+        return undefined;
+      }
+    },
+    [persistWorkspaceAfterSceneChange, replaceScene, scoutJobs],
+  );
+
+  const handleUseAsSeed = useCallback(
+    async (seed: string): Promise<SelectionSyncResult | undefined> => {
+      const query = seed.trim();
+
+      if (!query) {
+        return undefined;
+      }
+
+      const openedScene = await openSeedScene(createSeedScene(query));
+      const tabId = openedScene.active_tab_id;
+      const latestScene = scenesByTabIdRef.current[tabId] ?? openedScene;
+
+      return runKeywordSourceDiscovery({
+        scene: latestScene,
+        tabId,
+        query,
+      });
+    },
+    [openSeedScene, runKeywordSourceDiscovery],
+  );
+
   const handleExploreInCurrentTab = useCallback(
-    (seed: string): SelectionSyncResult | undefined => {
+    async (seed: string): Promise<SelectionSyncResult | undefined> => {
       const title = seed.trim();
 
       if (!title) {
@@ -673,13 +876,46 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         seed: nextTab?.seed ?? title,
       });
 
-      return {
+      const searchResult = await runKeywordSourceDiscovery({
+        scene: nextScene,
+        tabId: activeTabId,
+        query: title,
+      });
+
+      return searchResult ?? {
         selectedNodeIds: nextScene.selection.node_ids,
         focusNodeId: nextScene.selection.node_ids[0],
       };
     },
-    [activeTabId, scene.id],
+    [activeTabId, runKeywordSourceDiscovery, scene.id],
   );
+
+  useEffect(() => {
+    if (!workspaceHydrated) {
+      return;
+    }
+
+    const currentScene = scenesByTabId[activeTabId];
+
+    if (!currentScene || !shouldBootstrapKeywordSourceDiscovery(currentScene)) {
+      return;
+    }
+
+    const activeTab = currentScene.tabs.find((tab) => tab.id === currentScene.active_tab_id) ?? currentScene.tabs[0];
+    const query = (activeTab?.seed || currentScene.metadata.title).trim();
+    const bootstrapKey = `${activeTabId}:${query.toLowerCase()}`;
+
+    if (keywordDiscoveryBootstrapRef.current.has(bootstrapKey)) {
+      return;
+    }
+
+    keywordDiscoveryBootstrapRef.current.add(bootstrapKey);
+    void runKeywordSourceDiscovery({
+      scene: currentScene,
+      tabId: activeTabId,
+      query,
+    });
+  }, [activeTabId, runKeywordSourceDiscovery, scenesByTabId, workspaceHydrated]);
 
   const handleApplyDomainLexiconToDefaultSeek = useCallback(
     (domainLexicons: readonly DomainLexicon[] | undefined, activeLexiconId?: string): SelectionSyncResult => {
@@ -1126,6 +1362,8 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     handleUseHyperlinkAsSeed,
     handleIngestDirectUrlIntoCurrentTab,
     handleOpenDirectUrlAsSeek,
+    handleObserveCandidateIntoCurrentTab,
+    handleOpenCandidateAsSeek,
     handleTabSelect,
     handleCloseTab,
     handleReorderTabs,
@@ -1201,6 +1439,25 @@ function createPendingDirectUrlObservation(input: {
     created_at: input.createdAt,
     updated_at: input.createdAt,
   };
+}
+
+function shouldBootstrapKeywordSourceDiscovery(scene: TerrainScene): boolean {
+  if (scene.viewport.layer !== "L2" && scene.viewport.layer !== "L3") {
+    return false;
+  }
+
+  if (scene.sources.length > 0 || (scene.scout_observations ?? []).length > 0) {
+    return false;
+  }
+
+  const activeTab = scene.tabs.find((tab) => tab.id === scene.active_tab_id) ?? scene.tabs[0];
+  const query = (activeTab?.seed || scene.metadata.title).trim();
+
+  if (!query || query === NEW_SEEK_TITLE || isDirectHttpUrl(query)) {
+    return false;
+  }
+
+  return true;
 }
 
 function settleStaleDirectUrlPendingScenes(scenesByTabId: Record<string, TerrainScene>): {

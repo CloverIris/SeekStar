@@ -70,6 +70,23 @@ export function createFrontierScoutPlan(scene: TerrainScene, trigger: FrontierTr
   };
 }
 
+export function createKeywordScoutPlan(query: string, targetNodeIds: string[], createdAt: string): ScoutPlan {
+  const normalizedQuery = query.trim();
+
+  return {
+    id: `scout-plan-keyword-${toPlanSlug(normalizedQuery)}-${Date.now()}`,
+    title: `Source discovery: ${normalizedQuery}`,
+    target_node_ids: targetNodeIds,
+    candidate_queries: [normalizedQuery],
+    discovery_mode: "frontier_web_search",
+    source_type_targets: ["webpage", "article", "document"],
+    priority: "medium",
+    stop_conditions: ["Return URL candidates only; do not create source-backed terrain automatically."],
+    deduplication_notes: [`Keyword source discovery for ${normalizedQuery}.`],
+    created_at: createdAt,
+  };
+}
+
 export function createDirectUrlScoutPlan(url: string, targetNodeIds: string[], createdAt: string): ScoutPlan {
   return {
     id: `scout-plan-direct-url-${Date.now()}`,
@@ -83,6 +100,15 @@ export function createDirectUrlScoutPlan(url: string, targetNodeIds: string[], c
     deduplication_notes: ["Do not create source-backed terrain until the user confirms conversion."],
     created_at: createdAt,
   };
+}
+
+function toPlanSlug(value: string): string {
+  return value
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40) || "query";
 }
 
 export function createPageOutlinksScoutPlan(nodeId: string, sourceUrl: string, sourceTitle: string, createdAt: string): ScoutPlan {

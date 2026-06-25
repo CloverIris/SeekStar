@@ -2,7 +2,7 @@ import type {
   Browser,
   BrowserContext,
   Page,
-  Response,
+  Response as PlaywrightResponse,
 } from "playwright";
 import type {
   ContentProviderDefinition,
@@ -64,6 +64,9 @@ interface LinkCandidate {
   metadata?: Record<string, string | number | boolean>;
 }
 
+const SEARCH_PROVIDER_TIMEOUT_MS = 10_000;
+const FETCH_TIMEOUT_MS = 9_000;
+
 export class DataServiceProviderRegistry {
   private readonly searchProviders = new Map<string, SearchCandidateProvider>();
   private readonly sourceObservers = new Map<string, SourceObservationProvider>();
@@ -98,26 +101,11 @@ export class DataServiceProviderRegistry {
       };
     }
 
-    for (const provider of providers) {
-      try {
-        const providerCandidates = await provider.search(request);
-        const limitedCandidates = providerCandidates.slice(0, Math.max(1, request.limit ?? 8));
-        candidates.push(...limitedCandidates);
-        providerRuns.push({
-          provider_id: provider.id,
-          provider_kind: provider.kind,
-          status: "completed",
-          candidate_count: limitedCandidates.length,
-        });
-      } catch (error) {
-        providerRuns.push({
-          provider_id: provider.id,
-          provider_kind: provider.kind,
-          status: "failed",
-          candidate_count: 0,
-          failure_reason: getErrorMessage(error),
-        });
-      }
+    const providerResults = await Promise.all(providers.map((provider) => runSearchProviderWithTimeout(provider, request)));
+
+    for (const result of providerResults) {
+      providerRuns.push(result.providerRun);
+      candidates.push(...result.candidates);
     }
 
     return {
@@ -171,6 +159,41 @@ export class DataServiceProviderRegistry {
     }
 
     return Array.from(this.sourceObservers.values()).find((provider) => provider.supports(request));
+  }
+}
+
+async function runSearchProviderWithTimeout(
+  provider: SearchCandidateProvider,
+  request: SearchCandidateRequest,
+): Promise<{ candidates: SearchCandidate[]; providerRun: SearchCandidateProviderRun }> {
+  try {
+    const providerCandidates = await withTimeout(
+      provider.search(request),
+      SEARCH_PROVIDER_TIMEOUT_MS,
+      `${provider.id} timed out after ${SEARCH_PROVIDER_TIMEOUT_MS}ms.`,
+    );
+    const limitedCandidates = providerCandidates.slice(0, Math.max(1, request.limit ?? 8));
+
+    return {
+      candidates: limitedCandidates,
+      providerRun: {
+        provider_id: provider.id,
+        provider_kind: provider.kind,
+        status: "completed",
+        candidate_count: limitedCandidates.length,
+      },
+    };
+  } catch (error) {
+    return {
+      candidates: [],
+      providerRun: {
+        provider_id: provider.id,
+        provider_kind: provider.kind,
+        status: "failed",
+        candidate_count: 0,
+        failure_reason: getErrorMessage(error),
+      },
+    };
   }
 }
 
@@ -1075,6 +1098,8 @@ function createObservationFromSearchCandidate(
     status: "source_candidate",
     adapter: "playwright",
     discovery_mode: candidate.discovery_mode,
+    provider_id: candidate.provider_id,
+    provider_kind: candidate.provider_kind,
     confidence: candidate.confidence,
     query,
     title: candidate.title,
@@ -1231,7 +1256,7 @@ function parseHttpUrl(value: string | undefined): URL | undefined {
   }
 }
 
-function inferSourceType(url: URL, response: Response | null): SourceType {
+function inferSourceType(url: URL, response: PlaywrightResponse | null): SourceType {
   const contentType = response?.headers()["content-type"] ?? "";
 
   if (contentType.includes("pdf") || url.pathname.toLowerCase().endsWith(".pdf")) {
@@ -1281,7 +1306,7 @@ interface WikidataSearchResponse {
 }
 
 async function fetchText(url: string, init?: RequestInit): Promise<string> {
-  const response = await fetch(url, init);
+  const response = await fetchWithTimeout(url, init);
   const text = await response.text();
 
   if (!response.ok) {
@@ -1292,7 +1317,7 @@ async function fetchText(url: string, init?: RequestInit): Promise<string> {
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+  const response = await fetchWithTimeout(url, init);
   const text = await response.text();
 
   if (!response.ok) {
@@ -1304,6 +1329,39 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   } catch (error) {
     throw new Error(`Provider returned invalid JSON: ${getErrorMessage(error)}`);
   }
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = FETCH_TIMEOUT_MS): Promise<globalThis.Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: init.signal ?? controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`Fetch timed out after ${timeoutMs}ms: ${url}`);
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  });
 }
 
 function createApiHeaders(accept: string): Record<string, string> {

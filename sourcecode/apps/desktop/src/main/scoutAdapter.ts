@@ -20,6 +20,7 @@ class ScoutService {
   private readonly pendingByRequestId = new Map<
     string,
     {
+      contentProviders: ScoutWorkerInboundMessage["content_providers"];
       request: ScoutRunRequest;
       resolve: (result: ScoutRunResult) => void;
       timeoutId: NodeJS.Timeout;
@@ -86,12 +87,18 @@ class ScoutService {
 
     return new Promise<ScoutRunResult>((resolve) => {
       const timeoutId = setTimeout(() => {
+        const pending = this.pendingByRequestId.get(requestId);
         this.pendingByRequestId.delete(requestId);
-        resolve(createFailedScoutRunResult(request, `Scout utility process timed out after ${SCOUT_WORKER_TIMEOUT_MS}ms.`));
+        if (pending) {
+          this.resolveWithFallback(pending, `Scout utility process timed out after ${SCOUT_WORKER_TIMEOUT_MS}ms.`);
+        } else {
+          resolve(createFailedScoutRunResult(request, `Scout utility process timed out after ${SCOUT_WORKER_TIMEOUT_MS}ms.`));
+        }
         this.restartWorker();
       }, SCOUT_WORKER_TIMEOUT_MS);
 
       this.pendingByRequestId.set(requestId, {
+        contentProviders,
         request,
         resolve,
         timeoutId,
@@ -168,9 +175,27 @@ class ScoutService {
   private failPendingRequests(reason: string): void {
     for (const [requestId, pending] of this.pendingByRequestId.entries()) {
       clearTimeout(pending.timeoutId);
-      pending.resolve(createFailedScoutRunResult(pending.request, reason));
+      this.resolveWithFallback(pending, reason);
       this.pendingByRequestId.delete(requestId);
     }
+  }
+
+  private resolveWithFallback(
+    pending: {
+      contentProviders: ScoutWorkerInboundMessage["content_providers"];
+      request: ScoutRunRequest;
+      resolve: (result: ScoutRunResult) => void;
+      timeoutId: NodeJS.Timeout;
+    },
+    reason: string,
+  ): void {
+    console.warn(`[SeekStar] ${reason} Falling back to main-process Scout runtime.`);
+    void this.fallbackRuntime
+      .run(pending.request, pending.contentProviders)
+      .then(pending.resolve)
+      .catch((error) => {
+        pending.resolve(createFailedScoutRunResult(pending.request, `${reason} Fallback failed: ${getErrorMessage(error)}`));
+      });
   }
 }
 

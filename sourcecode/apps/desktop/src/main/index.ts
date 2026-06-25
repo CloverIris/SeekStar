@@ -73,6 +73,7 @@ function createMainWindow(): BaseWindow {
     shellView.setBounds(getWindowContentBounds(window));
   });
   window.on("closed", () => {
+    tileSurfaceManager.clearAll();
     closeWebContentsIfAlive(shellView);
   });
 
@@ -116,6 +117,10 @@ function closeWebContentsIfAlive(view: WebContentsView): void {
 if (hasSingleInstanceLock) {
   app.on("second-instance", () => {
     tabRuntimeManager.focusMainWindow();
+  });
+
+  app.on("before-quit", () => {
+    tileSurfaceManager.clearAll();
   });
 
   app.whenReady().then(async () => {

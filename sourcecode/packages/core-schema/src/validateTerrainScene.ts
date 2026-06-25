@@ -16,6 +16,11 @@ export interface TerrainValidationResult {
 
 const SOURCE_STATES = new Set([
   "source_backed",
+  "cartographer_primary",
+  "cartographer_unverified_source",
+  "cartographer_failed",
+  "user_seed",
+  "local_scaffold",
   "agent_inferred",
   "weak_hypothesis",
   "generated",

@@ -3,6 +3,7 @@ import type { ScoutWorkerInboundMessage, ScoutWorkerOutboundMessage } from "./sc
 
 const runtime = new ScoutWorkerRuntime();
 const parentPort = process.parentPort;
+const keepAliveInterval = setInterval(() => undefined, 30_000);
 
 if (!parentPort) {
   throw new Error("Scout worker must run inside Electron utilityProcess.");
@@ -10,6 +11,10 @@ if (!parentPort) {
 
 parentPort.on("message", (message: unknown) => {
   void handleMessage(message);
+});
+
+process.on("exit", () => {
+  clearInterval(keepAliveInterval);
 });
 
 async function handleMessage(message: unknown): Promise<void> {

@@ -155,13 +155,15 @@ Pain:
 
 The product surface must stay map-first:
 
-* the macro domain layer is experienced as Star Gallery;
-* the content layer is experienced as a tile field of source-backed webpages and documents;
-* the detail layer is experienced as clickable text grains, down to individual keywords, words, characters, and dictionary / Unicode detail.
+* the macro domain layer is experienced as Star Gallery and is primarily AI-cartographed;
+* the topic/source-orientation layers are AI-organized semantic terrain;
+* the content layer is experienced as a tile field of webpages, documents, PDFs, images, and source candidates;
+* source-backed tiles are created only after DataService can load or observe the candidate;
+* the detail layer is experienced as a Deep Lens over the focused source or selection, not as a long stack of separate user-facing panels.
 
 Every visible object belongs to a scene, data pool, and derived object pool. Rendering surfaces subscribe to those structures. User actions pass through typed events that mutate objects or request Scout observations. The UI must not depend on AI to decide frame-by-frame interaction.
 
-AI enters where organization, synthesis, explanation, or uncertain adjacent possibilities are needed. Heuristics, local source parsing, object pools, and Playwright Scout observations should carry as much of the ordinary exploration loop as possible before asking a model.
+AI Cartographer is the main terrain producer for L0-L3, recursive seed bootstrap, orphan context reconstruction, and same-layer frontier expansion. DataService is the reality-probing and loading layer: it validates AI-proposed URLs, source candidates, pages, PDFs, images, and future file snapshots before those objects become source-backed tiles.
 
 ## 5.1 Workspace
 
@@ -199,7 +201,7 @@ X and Y define spatial relation inside the current layer. Z defines abstraction 
 
 A layer is a semantic depth, not a graphics-only zoom level.
 
-Canonical 12Level ladder:
+P5 uses the canonical L0-L11 12Level ladder as the current implementation spine:
 
 * L0: 领域 / Star Gallery / seed pool;
 * L1: 主题;
@@ -216,6 +218,18 @@ Canonical 12Level ladder:
 
 The system must support deeper layers without redesigning the architecture.
 
+P6 changes the user-facing target from a fixed 12-step ladder to a modular Level Runtime:
+
+* Supra Macro: broader context above the current domain;
+* L0 Star Gallery: domain and seed pool;
+* L1 Topic Field;
+* L2 Source Orientation;
+* L3 Tile Field;
+* Deep Lens: sections, paragraphs, sentences, phrases, words, characters, Unicode/dictionary, and future byte/hex views inside one close-reading mode;
+* Recursive Seed: any grain or region becomes a new exploration universe.
+
+Each user-facing band should be independently testable through a CLI harness and should support AI generation, schema validation, chunk caching, and renderer subscription without requiring the full Electron UI.
+
 ## 5.5 Cognitive Lens
 
 The visible canvas uses a lens effect:
@@ -228,8 +242,9 @@ The visible canvas uses a lens effect:
 The lens is both visual and semantic:
 
 * the UI magnifies the center;
-* the Agent prioritizes the center;
-* the scout preloads near the edge.
+* the AI Cartographer prioritizes the center and the near frontier;
+* DataService validates AI-proposed source candidates near the edge;
+* the chunk cache preloads one or more rings beyond the current viewport.
 
 ### 5.5.1 Macro Lens Gallery
 
@@ -237,9 +252,9 @@ At macro layers, SeekStar should not look like a dashboard grid of rounded cards
 
 Layers L0 and L1 use a dense Star Gallery bubble lens: colorful but restrained solid bubbles clustered in a semantic field. The center of the viewport is larger, clearer, and more readable; the edge becomes smaller, dimmer, and eventually fades. This is a cognitive orientation surface, not decoration.
 
-Macro bubbles are entry points for exploration when the user does not yet know what to ask. They may represent domains, topic regions, seed fields, fog regions, scout-pending regions, or constellation anchors. They must still preserve source state and confidence: source-backed, generated, weak, inferred, and fog content cannot look interchangeable.
+Macro bubbles are entry points for exploration when the user does not yet know what to ask. They may represent domains, topic regions, seed fields, fog regions, cartographer-primary terrain, source-backed content, or constellation anchors. AI-generated terrain is the default map material; source-backed terrain is stronger provenance, not the only legitimate content state.
 
-P4.6 pauses long-press fracture. Macro discovery should instead feel like moving a telescope horizontally across a star field: when the user drifts near the edge of the current layer, Scout may request same-layer frontier observations and place new candidate stars near that edge. It must not turn into a ranked result list or chatbot answer.
+P4.6 pauses long-press fracture. Macro discovery should instead feel like moving a telescope horizontally across a star field: when the user drifts near the edge of the current layer, AI Cartographer should prepare adjacent chunks and DataService may validate source candidates inside those chunks. It must not turn into a ranked result list or chatbot answer.
 
 ## 5.6 Constellation
 
@@ -1282,7 +1297,7 @@ P5.11 defines L3 content terrain as a real tile field:
 * hyperlinks inside absorbed tiles open new SeekStar tabs at the webpage/document tile level with backlink context;
 * orphan parent context is filled only through AI Service as structured, marked Cartographer output.
 
-Implementation status as of P5.17:
+Implementation status as of P5.18:
 
 * the core schema now carries `TerrainScene.runtime` for focused tile and browser absorption state;
 * `SourceSnapshot` is a shared protocol for Scout, Constellation Engine, Storage snapshots, and desktop boundaries;
@@ -1296,6 +1311,9 @@ Implementation status as of P5.17:
 * command input treats direct `http`/`https` URLs as real source intake: add to current Seek runs Scout and creates a source-backed L3 tile, while open as new Seek creates an active tab and ingests the page at L3;
 * direct URL Scout writeback now targets the intended tab scene, so a new URL tab does not remain a local seed map after asynchronous Scout completion;
 * the main content projection distinguishes domain gallery, source intake pending, source intake failed, source-backed tile field, browser absorption, text grain, and empty source field states;
+* keyword discovery now enters an L3 `source_candidate_field`: provider search results are rendered as Pixi candidate URL tiles with provenance, but they remain Scout observations until the user observes one source;
+* `TerrainPixiProjection` separates `candidateTileSurfaces` from source-backed `tileSurfaces`, so candidate URLs do not prewarm thumbnails, mount live WebContents, or enter browser absorption;
+* candidate inspector actions now run direct URL Scout; only successful source observation creates a source-backed L3 webpage/document tile;
 * visible/focused L3 tiles can be prewarmed as offscreen thumbnails without stealing telescope input;
 * clicking an already focused L3 tile and crossing the 80% viewport threshold first play a tile absorption transition, then commit the Constellation Engine absorption event;
 * absorbed tiles use Electron native live surfaces only after absorption is committed and retain the top exit label;
@@ -1305,4 +1323,4 @@ Implementation status as of P5.17:
 * Constellation Engine now owns Scout job execution/writeback rules through `ScoutJobCoordinator`;
 * Constellation Engine now owns open/close/reorder/activate tab-session transactions through `TabSessionCoordinator`;
 * default New Seek L3 terrain remains local placeholder terrain until Scout or source intake provides a `sourceUrl`; only source-backed L3 webpage/document nodes produce tile surfaces or enter live browser absorption;
-* remaining usability work is PDF/image-specific snapshot extraction, encrypted provider key handling, viewport-demand text materialization, remaining shell tab-registration/reset helper decoupling, and AI parent-context patches for orphan linked pages.
+* remaining usability work is PDF/image-specific snapshot extraction, richer candidate failure recovery UI, encrypted provider key handling, viewport-demand text materialization, remaining shell tab-registration/reset helper decoupling, and AI parent-context patches for orphan linked pages.

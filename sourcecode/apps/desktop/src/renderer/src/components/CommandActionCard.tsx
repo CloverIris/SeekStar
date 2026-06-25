@@ -23,13 +23,13 @@ export function CommandActionCard({
       <button className="command-action primary" type="button" onMouseDown={(event) => event.preventDefault()} onClick={onAddToCurrentPage}>
         <span>{isUrl ? "Add URL to current Seek" : "Add to current Seek"}</span>
         <small>
-          {isUrl ? "Run Scout and create a source-backed L3 tile" : "Rename this tab and start the exploration flow"}
+          {isUrl ? "Run Scout and create a source-backed L3 tile" : "Discover candidate sources in this tab"}
         </small>
       </button>
       <button className="command-action" type="button" onMouseDown={(event) => event.preventDefault()} onClick={onUseAsSeed}>
         <span>{isUrl ? "Open URL as new Seek" : "Use as new Seek"}</span>
         <small>
-          {isUrl ? "Create a new tab and ingest this source" : "Create an independent telescope tab"}
+          {isUrl ? "Create a new tab and ingest this source" : "Create a tab and discover candidate sources"}
         </small>
       </button>
       <button

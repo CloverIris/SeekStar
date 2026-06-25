@@ -54,6 +54,8 @@ export function App(): ReactElement {
     handleUseHyperlinkAsSeed: createHyperlinkTab,
     handleIngestDirectUrlIntoCurrentTab: ingestDirectUrlIntoCurrentTab,
     handleOpenDirectUrlAsSeek: openDirectUrlAsSeek,
+    handleObserveCandidateIntoCurrentTab: observeCandidateIntoCurrentTab,
+    handleOpenCandidateAsSeek: openCandidateAsSeek,
     handleTabSelect: selectTab,
     handleCloseTab: closeTab,
     handleReorderTabs: reorderTabs,
@@ -394,7 +396,7 @@ export function App(): ReactElement {
       return;
     }
 
-    const result = exploreInCurrentTab(seed);
+    const result = await exploreInCurrentTab(seed);
 
     resetCommandAndSearch();
     resetSelection();
@@ -424,9 +426,15 @@ export function App(): ReactElement {
       return;
     }
 
-    createSeedTab(seed);
     resetCommandAndSearch();
     resetSelection();
+
+    const result = await createSeedTab(seed);
+
+    if (result) {
+      applySelection(result);
+    }
+    setRightSidebarCollapsed(false);
   }
 
   function handleSearchCurrentTab(): void {
@@ -755,6 +763,34 @@ export function App(): ReactElement {
     setRightSidebarCollapsed(false);
   }
 
+  async function handleObserveCandidateSource(observation: ScoutObservation): Promise<void> {
+    const result = await observeCandidateIntoCurrentTab(observation.id);
+
+    if (!result) {
+      return;
+    }
+
+    applySelection(result);
+    setSelectedObservationId(undefined);
+    setSearchQuery("");
+    setSearchResults([]);
+    setIsSelectionActionCardOpen(false);
+    setRightSidebarCollapsed(false);
+  }
+
+  async function handleOpenCandidateAsSeek(observation: ScoutObservation): Promise<void> {
+    const result = await openCandidateAsSeek(observation.id);
+
+    if (!result) {
+      return;
+    }
+
+    resetCommandAndSearch();
+    resetSelection();
+    applySelection(result);
+    setRightSidebarCollapsed(false);
+  }
+
   async function handleResetWorkspace(): Promise<void> {
     const result = await resetWorkspace();
 
@@ -960,6 +996,8 @@ export function App(): ReactElement {
             onClearBasket={handleClearBasket}
             onClearSelection={handleClearSelection}
             onConvertScoutObservation={handleConvertScoutObservation}
+            onObserveCandidate={handleObserveCandidateSource}
+            onOpenCandidateAsSeek={handleOpenCandidateAsSeek}
             onRemoveBasketItem={handleRemoveBasketItem}
             onRunScoutPlan={handleRunScoutPlanWithUi}
             onScoutSourceLinks={handleScoutSourceLinksWithUi}

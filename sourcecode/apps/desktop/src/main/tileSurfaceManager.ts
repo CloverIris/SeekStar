@@ -150,6 +150,19 @@ export class TileSurfaceManager {
     }
   }
 
+  clearAll(): void {
+    for (const [key, entry] of this.liveEntriesByKey.entries()) {
+      this.destroyLiveEntry(key, entry);
+    }
+
+    for (const [key, job] of this.thumbnailJobsByKey.entries()) {
+      this.cancelThumbnailJob(key, job);
+    }
+
+    this.thumbnailRequestsByKey.clear();
+    this.thumbnailCacheByKey.clear();
+  }
+
   syncSurfaces(input: TileSurfaceSyncInput): void {
     const host = this.resolveHost(input.tabId);
 
