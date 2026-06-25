@@ -5,20 +5,24 @@ import type {
   TerrainNode,
   TerrainRelation,
   TerrainScene,
+  TileAbsorptionTrigger,
   ViewportState,
 } from "@seekstar/core-schema";
 import { isMacroLayer } from "@seekstar/core-schema";
-import type { PointerEvent, ReactElement } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, PointerEvent, ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LocateFixed, Maximize2, RotateCcw } from "lucide-react";
 import "pixi.js/unsafe-eval";
 import { Application, Container, Graphics, Rectangle, Sprite, Text } from "pixi.js";
 import {
   createTerrainPixiProjection,
+  createTileAbsorptionTransition,
   type CanvasPoint,
   type CanvasTool,
   type LassoDraft,
+  type MainContentProjection,
   type ProjectionViewportBounds,
+  type TileAbsorptionTransition,
   type TerrainTileSurface,
   fitViewportToNodes,
   normalizeRect,
@@ -39,14 +43,21 @@ interface TerrainCanvasProps {
   onObservationSelect: (observationId: string) => void;
   onRelationSelect: (relationId: string) => void;
   onSelectionChange: (nodeIds: string[], focusNodeId?: string, showSelectionActions?: boolean) => void;
-  onTileAbsorptionThreshold: (nodeId: string) => void;
+  onTileAbsorptionComplete: (nodeId: string, trigger: TileAbsorptionTrigger) => void;
   onViewportChange: (viewport: ViewportState) => void;
   scene: TerrainScene;
   selectedNodeIds: string[];
   selectedObservationId?: string;
   selectedRelationId?: string;
+  tileAbsorptionRequest?: TileAbsorptionRequest;
   tileFieldTargetCount?: number;
   viewport: ViewportState;
+}
+
+export interface TileAbsorptionRequest {
+  nodeId: string;
+  requestId: number;
+  trigger: TileAbsorptionTrigger;
 }
 
 type CanvasDragState =
@@ -89,12 +100,13 @@ export function TerrainCanvas({
   onObservationSelect,
   onRelationSelect,
   onSelectionChange,
-  onTileAbsorptionThreshold,
+  onTileAbsorptionComplete,
   onViewportChange,
   scene,
   selectedNodeIds,
   selectedObservationId,
   selectedRelationId,
+  tileAbsorptionRequest,
   tileFieldTargetCount,
   viewport,
 }: TerrainCanvasProps): ReactElement {
@@ -111,8 +123,11 @@ export function TerrainCanvas({
   const [dragState, setDragState] = useState<CanvasDragState | undefined>();
   const [hoverPreview, setHoverPreview] = useState<HoverPreviewState | undefined>();
   const [tileThumbnailsByNodeId, setTileThumbnailsByNodeId] = useState<Map<string, TileThumbnailState>>(() => new Map());
+  const [activeAbsorptionTransition, setActiveAbsorptionTransition] = useState<TileAbsorptionTransition | undefined>();
+  const absorptionTransitionTimeoutRef = useRef<number | undefined>(undefined);
+  const lastAbsorptionRequestIdRef = useRef<number | undefined>(undefined);
   const lassoRect = dragState?.mode === "lasso" ? normalizeRect(dragState.draft.start, dragState.draft.current) : undefined;
-  const { candidateObservations, renderedNodes, tileSurfaces, visibleNodes, visibleNodeIds, visibleRelations } = useMemo(
+  const { candidateObservations, mainContent, renderedNodes, tileSurfaces, visibleNodes, visibleNodeIds, visibleRelations } = useMemo(
     () =>
       createTerrainPixiProjection(scene, viewport, {
         absorbedNodeId: scene.runtime.browser_absorption.status === "absorbed" ? scene.runtime.browser_absorption.node_id : undefined,
@@ -122,7 +137,48 @@ export function TerrainCanvas({
       }),
     [focusedNodeId, scene, tileFieldTargetCount, viewport, viewportBounds],
   );
-  const absorbedTileSurface = tileSurfaces.find((surface) => surface.absorption.shouldAbsorb && surface.sourceUrl);
+  const isBrowserAbsorbed = scene.runtime.browser_absorption.status === "absorbed";
+  const absorbedTileSurface = isBrowserAbsorbed
+    ? tileSurfaces.find((surface) => surface.nodeId === scene.runtime.browser_absorption.node_id && surface.sourceUrl)
+    : undefined;
+  const beginTileAbsorptionTransition = useCallback(
+    (nodeId: string, trigger: TileAbsorptionTrigger): void => {
+      if (isBrowserAbsorbed || activeAbsorptionTransition) {
+        return;
+      }
+
+      if (!viewportBounds) {
+        onTileAbsorptionComplete(nodeId, trigger);
+        return;
+      }
+
+      const surface = tileSurfaces.find((candidate) => candidate.nodeId === nodeId && candidate.sourceUrl);
+
+      if (!surface) {
+        onTileAbsorptionComplete(nodeId, trigger);
+        return;
+      }
+
+      const transition = createTileAbsorptionTransition({
+        surface,
+        trigger,
+        viewport,
+        viewportBounds,
+      });
+
+      if (absorptionTransitionTimeoutRef.current) {
+        window.clearTimeout(absorptionTransitionTimeoutRef.current);
+      }
+
+      setActiveAbsorptionTransition(transition);
+      absorptionTransitionTimeoutRef.current = window.setTimeout(() => {
+        setActiveAbsorptionTransition(undefined);
+        absorptionTransitionTimeoutRef.current = undefined;
+        onTileAbsorptionComplete(transition.nodeId, transition.trigger);
+      }, transition.durationMs);
+    },
+    [activeAbsorptionTransition, isBrowserAbsorbed, onTileAbsorptionComplete, tileSurfaces, viewport, viewportBounds],
+  );
 
   useEffect(() => {
     viewportRef.current = viewport;
@@ -188,6 +244,15 @@ export function TerrainCanvas({
       destroyPixiApplication(app);
     };
   }, []);
+
+  useEffect(
+    () => () => {
+      if (absorptionTransitionTimeoutRef.current) {
+        window.clearTimeout(absorptionTransitionTimeoutRef.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     const app = appRef.current;
@@ -275,44 +340,61 @@ export function TerrainCanvas({
     const exitLabelHeight = 34;
     const hostRect = host.getBoundingClientRect();
     const surfaces = tileSurfaces.filter(
-      (surface) => surface.sourceUrl && (surface.absorption.shouldAbsorb || surface.visibility === "focused" || surface.visibility === "visible"),
+      (surface) =>
+        surface.sourceUrl &&
+        ((isBrowserAbsorbed && surface.nodeId === scene.runtime.browser_absorption.node_id) ||
+          surface.visibility === "focused" ||
+          surface.visibility === "visible"),
     );
     const syncInput = {
       tabId: scene.active_tab_id,
-      surfaces: surfaces.map((surface) => ({
-        bounds: surface.absorption.shouldAbsorb
-          ? {
-              x: hostRect.left,
-              y: hostRect.top + exitLabelHeight,
-              width: hostRect.width,
-              height: Math.max(1, hostRect.height - exitLabelHeight),
-            }
-          : toTileSurfaceSyncBounds(surface.screenBounds),
-        loadPriority: surface.loadPriority,
-        loadState: surface.absorption.shouldAbsorb ? ("renderer_focused" as const) : surface.loadState,
-        nodeId: surface.nodeId,
-        renderMode: surface.absorption.shouldAbsorb ? ("live" as const) : ("thumbnail" as const),
-        sourceId: surface.sourceId,
-        sourceUrl: surface.sourceUrl ?? "",
-        title: surface.title,
-        visibility: surface.visibility,
-      })),
+      surfaces: surfaces.map((surface) => {
+        const isAbsorbedSurface = isBrowserAbsorbed && surface.nodeId === scene.runtime.browser_absorption.node_id;
+
+        return {
+          bounds: isAbsorbedSurface
+            ? {
+                x: hostRect.left,
+                y: hostRect.top + exitLabelHeight,
+                width: hostRect.width,
+                height: Math.max(1, hostRect.height - exitLabelHeight),
+              }
+            : toTileSurfaceSyncBounds(surface.screenBounds),
+          loadPriority: surface.loadPriority,
+          loadState: isAbsorbedSurface ? ("renderer_focused" as const) : surface.loadState,
+          nodeId: surface.nodeId,
+          renderMode: isAbsorbedSurface ? ("live" as const) : ("thumbnail" as const),
+          sourceId: surface.sourceId,
+          sourceUrl: surface.sourceUrl ?? "",
+          title: surface.title,
+          visibility: surface.visibility,
+        };
+      }),
     };
 
     void window.seekstar.tiles.sync(syncInput);
-  }, [scene.active_tab_id, tileSurfaces]);
+  }, [isBrowserAbsorbed, scene.active_tab_id, scene.runtime.browser_absorption.node_id, tileSurfaces]);
 
   useEffect(() => {
-    if (scene.runtime.browser_absorption.status === "absorbed") {
+    if (isBrowserAbsorbed || activeAbsorptionTransition) {
       return;
     }
 
     const thresholdSurface = tileSurfaces.find((surface) => surface.absorption.shouldAbsorb && surface.sourceUrl);
 
     if (thresholdSurface) {
-      onTileAbsorptionThreshold(thresholdSurface.nodeId);
+      beginTileAbsorptionTransition(thresholdSurface.nodeId, "threshold");
     }
-  }, [onTileAbsorptionThreshold, scene.runtime.browser_absorption.status, tileSurfaces]);
+  }, [activeAbsorptionTransition, beginTileAbsorptionTransition, isBrowserAbsorbed, tileSurfaces]);
+
+  useEffect(() => {
+    if (!tileAbsorptionRequest || tileAbsorptionRequest.requestId === lastAbsorptionRequestIdRef.current) {
+      return;
+    }
+
+    lastAbsorptionRequestIdRef.current = tileAbsorptionRequest.requestId;
+    beginTileAbsorptionTransition(tileAbsorptionRequest.nodeId, tileAbsorptionRequest.trigger);
+  }, [beginTileAbsorptionTransition, tileAbsorptionRequest]);
 
   useEffect(() => {
     setTileThumbnailsByNodeId(new Map());
@@ -526,6 +608,7 @@ export function TerrainCanvas({
           }}
         />
       ) : null}
+      <MainContentStatusOverlay mainContent={mainContent} />
       <ViewportControls
         canFocusSelection={selectedNodeIds.length > 0}
         onFitScene={handleFitScene}
@@ -539,6 +622,13 @@ export function TerrainCanvas({
         zoom={viewport.zoom}
       />
       <DeepZoomMiniMap currentLayer={viewport.layer} layers={scene.layers} nodes={scene.nodes} onLayerSelect={handleLayerSelect} />
+      {activeAbsorptionTransition ? (
+        <div
+          aria-hidden="true"
+          className="tile-absorption-transition"
+          style={createAbsorptionTransitionStyle(activeAbsorptionTransition)}
+        />
+      ) : null}
       {absorbedTileSurface ? (
         <button className="browser-absorption-exit" onClick={handleExitBrowserMode} type="button">
           Click exit browser mode to keep exploring downward
@@ -547,6 +637,57 @@ export function TerrainCanvas({
       {hoverPreview ? <NodeHoverPreview preview={hoverPreview} /> : null}
     </section>
   );
+}
+
+function MainContentStatusOverlay({ mainContent }: { mainContent: MainContentProjection }): ReactElement | null {
+  if (
+    mainContent.mode !== "source_intake_pending" &&
+    mainContent.mode !== "source_intake_failed" &&
+    mainContent.mode !== "empty_source_field"
+  ) {
+    return null;
+  }
+
+  const title =
+    mainContent.mode === "source_intake_pending"
+      ? "Observing source"
+      : mainContent.mode === "source_intake_failed"
+        ? "Source intake failed"
+        : "No source-backed tile";
+  const body =
+    mainContent.mode === "source_intake_pending"
+      ? mainContent.statusText ?? "Scout is observing the source before creating terrain."
+      : mainContent.mode === "source_intake_failed"
+        ? mainContent.statusText ?? mainContent.emptyReason ?? "Scout could not observe this source."
+        : mainContent.emptyReason ?? "Add or observe a source to create a real L3 tile field.";
+
+  return (
+    <aside className={`main-content-status main-content-status-${mainContent.mode}`} aria-live="polite">
+      <span>{mainContent.mode.replace(/_/g, " ")}</span>
+      <strong>{title}</strong>
+      <p>{body}</p>
+      {mainContent.statusUrl ? <small>{mainContent.statusUrl}</small> : null}
+    </aside>
+  );
+}
+
+function createAbsorptionTransitionStyle(transition: TileAbsorptionTransition): CSSProperties {
+  const from = transition.fromScreenBounds;
+  const target = transition.targetScreenBounds;
+  const width = Math.max(1, from.width);
+  const height = Math.max(1, from.height);
+
+  return {
+    left: `${Math.round(from.x)}px`,
+    top: `${Math.round(from.y)}px`,
+    width: `${Math.round(width)}px`,
+    height: `${Math.round(height)}px`,
+    "--tile-absorption-duration": `${transition.durationMs}ms`,
+    "--tile-absorption-dx": `${Math.round(target.x - from.x)}px`,
+    "--tile-absorption-dy": `${Math.round(target.y - from.y)}px`,
+    "--tile-absorption-sx": String(Math.max(0.01, target.width / width)),
+    "--tile-absorption-sy": String(Math.max(0.01, target.height / height)),
+  } as CSSProperties;
 }
 
 function renderPixiScene({

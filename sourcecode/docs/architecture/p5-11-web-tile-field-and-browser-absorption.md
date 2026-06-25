@@ -113,6 +113,9 @@ This keeps the telescope honest: existence comes from observed content, while un
 - `WorkspacePersistenceCoordinator` in the Constellation Engine now owns hydrate/persist snapshot merge rules through a storage port, so desktop React no longer hand-builds workspace snapshots.
 - `ScoutJobCoordinator` in the Constellation Engine now owns Scout plan execution, failure observations, frontier/outlink placement, hyperlink L3 source intake, and observation-to-source conversion through a Scout port.
 - `TabSessionCoordinator` in the Constellation Engine now owns open, close, reorder, and activate tab-session transactions through Storage and App Framework tab runtime ports.
+- P5.13 promotes `SourceSnapshot` to core schema, carries structured Scout snapshots through observations, stores snapshots on source refs, and uses snapshot visible text for source-backed L3-L8 terrain.
+- P5.13 adds a pure Pixi Runtime Adapter helper for tile absorption transitions. Desktop plays the transition before committing `tile.absorption.entered`, so live browser surfaces mount only after absorption is semantically real.
+- P5.14 makes direct URL command input a real source intake path. Successful Scout candidates become source-backed L3 webpage/document tiles; failed runs remain observations and do not create live browser tiles.
 
 ## Remaining Usability Gap
 
@@ -121,6 +124,6 @@ SeekStar is structurally past mock/prototype scaffolding, but it is not yet a co
 The shortest path to usable is:
 
 1. Move remaining shell-only tab registration and reset helpers behind explicit engine/app-framework ports.
-2. Add tile click-to-absorb animation state, not only final state.
-3. Add richer Scout snapshot-to-tile loading for webpage/PDF/image content and failure recovery UI.
+2. Add richer PDF/image snapshot adapters and failure recovery UI.
+3. Add viewport-demand incremental text materialization beyond the current profile-based first terrain.
 4. Add AI Service orphan-parent Cartographer patches for upward exploration from linked pages.

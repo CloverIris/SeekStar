@@ -11,6 +11,8 @@
   "scripts": {
     "dev": "npm --workspace @seekstar/core-schema run build && npm --workspace @seekstar/constellation-engine run build && npm --workspace @seekstar/ai-service run build && npm --workspace @seekstar/scout-service run build && npm --workspace @seekstar/storage-service run build && npm --workspace @seekstar/desktop run dev",
     "build": "npm --workspace @seekstar/core-schema run build && npm --workspace @seekstar/constellation-engine run build && npm --workspace @seekstar/ai-service run build && npm --workspace @seekstar/scout-service run build && npm --workspace @seekstar/storage-service run build && npm --workspace @seekstar/desktop run build",
+    "smoke:modules": "node scripts/module-smoke.mjs",
+    "smoke:modules:public": "node scripts/module-smoke.mjs --public-search",
     "typecheck": "npm --workspace @seekstar/core-schema run typecheck && npm --workspace @seekstar/constellation-engine run typecheck && npm --workspace @seekstar/ai-service run typecheck && npm --workspace @seekstar/scout-service run typecheck && npm --workspace @seekstar/storage-service run typecheck && npm --workspace @seekstar/desktop run typecheck",
     "clean": "npm run clean --workspaces --if-present"
   },

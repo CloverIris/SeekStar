@@ -431,18 +431,31 @@ function SourceReadinessPanel({ scene }: { scene: TerrainScene }): ReactElement 
   const nodeCounts = getSourceStateCounts(scene.nodes);
   const sourceBackedCount = nodeCounts.source_backed ?? 0;
   const generatedCount = (nodeCounts.generated ?? 0) + (nodeCounts.agent_inferred ?? 0) + (nodeCounts.weak_hypothesis ?? 0);
+  const directUrlObservation = getLatestDirectUrlObservation(scene);
+  const statusLabel =
+    directUrlObservation?.status === "pending"
+      ? "observing"
+      : directUrlObservation?.status === "failed"
+        ? "failed"
+        : scene.sources.length === 0
+          ? "local only"
+          : `${scene.sources.length} sources`;
+  const readinessCopy =
+    directUrlObservation?.status === "pending"
+      ? `Scout is observing ${directUrlObservation.url ?? directUrlObservation.query}. Source-backed terrain will appear only after evidence returns.`
+      : directUrlObservation?.status === "failed"
+        ? directUrlObservation.failure_reason ?? "Scout could not observe this source. No source-backed tile was created."
+        : sourceBackedCount > 0
+          ? "Some terrain is source-backed. Generated and inferred nodes remain visually marked."
+          : "This map is local-only terrain. No factual node is presented as source-backed yet.";
 
   return (
     <div className="source-readiness-panel" aria-label="Source readiness">
       <div className="source-readiness-header">
         <h2>Source readiness</h2>
-        <span>{scene.sources.length === 0 ? "local only" : `${scene.sources.length} sources`}</span>
+        <span>{statusLabel}</span>
       </div>
-      <p>
-        {sourceBackedCount > 0
-          ? "Some terrain is source-backed. Generated and inferred nodes remain visually marked."
-          : "This map is local-only terrain. No factual node is presented as source-backed yet."}
-      </p>
+      <p>{readinessCopy}</p>
       <dl className="source-state-list">
         {(["source_backed", "generated", "agent_inferred", "weak_hypothesis", "fog"] satisfies SourceState[]).map((state) => (
           <div key={state}>
@@ -457,6 +470,16 @@ function SourceReadinessPanel({ scene }: { scene: TerrainScene }): ReactElement 
       </div>
     </div>
   );
+}
+
+function getLatestDirectUrlObservation(scene: TerrainScene): ScoutObservation | undefined {
+  return [...(scene.scout_observations ?? [])]
+    .filter(
+      (observation) =>
+        observation.discovery_mode === "direct_url" &&
+        (observation.status === "pending" || observation.status === "failed"),
+    )
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
 }
 
 function SelectedNodePanel({

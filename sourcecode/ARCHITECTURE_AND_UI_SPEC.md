@@ -99,6 +99,24 @@ When the shell renderer receives an external workspace change, it must respect t
 Tab close persistence note:
 Closing a tab removes its scene from workspace before closing the Electron runtime entry. If a closed tab renderer has a stale locked-tab autosave in flight, `createPersistableWorkspaceSnapshot` treats absence from the latest workspace snapshot as a close tombstone and refuses to recreate the scene. This keeps a deleted tab from reappearing as a leftover scene at the bottom of the tab list.
 
+P5.13 implementation note:
+The telescope closure now has a shared `SourceSnapshot` protocol in `@seekstar/core-schema`. Scout observations can carry final URL, content type, visible text, outlinks, media candidates, and source type into the Constellation Engine. Source terrain ingestion stores the snapshot and uses profile-based text-grain materialization instead of demo-sized caps. The Pixi Runtime Adapter exposes a pure tile absorption transition helper; desktop plays the animation first, then commits `tile.absorption.entered` so Electron live surfaces mount only after the semantic absorption state is real.
+
+P5.14 implementation note:
+Direct `http`/`https` command input is a real source intake path, not a keyword seed fallback. Adding a URL to the current Seek or opening it as a new Seek runs Scout through `ScoutJobCoordinator.ingestDirectUrlSource`; successful source candidates become source-backed L3 webpage/document tiles, while failed Scout runs remain failed observations and do not fabricate live tiles. Default New Seek local L3 placeholders have no `sourceUrl` and therefore do not enter browser absorption.
+
+P5.15 implementation note:
+Main content projection is now a first-class runtime contract. `TerrainPixiProjection.mainContent` distinguishes domain gallery, source intake pending/failed, real source tile field, browser absorption, text grain, and empty source field. `TerrainTileSurface` is generated only for L3 source-backed webpage/document nodes with a `sourceUrl`; local placeholders stay semantic terrain and cannot mount thumbnails or live browser surfaces. Asynchronous direct URL Scout writeback uses target-tab scene persistence: if the target tab is absent from the latest workspace snapshot, the stale writeback is discarded instead of resurrecting the tab.
+
+P5.15 module validation note:
+`scripts/module-smoke.mjs` is the current cross-module harness. It verifies `@seekstar/scout-service` Playwright snapshot capture, desktop `ScoutWorkerRuntime` direct URL observation, `ScoutJobCoordinator` source-backed L3 ingestion, Pixi `source_tile_field` projection, and App Shell workspace hydrate. The public variant also verifies `frontier_web_search` through the desktop Scout worker. During validation, hydrate fallback overwrite and brittle search parsing were fixed so module boundaries can be tested independently rather than only through the full Electron UI.
+
+P5.16 DataService note:
+Web discovery and source observation are now separate protocols. `SearchCandidate` records come from search providers or page-outlink providers and remain candidate observations. `SourceObservationResult` records come from source observer/extractor providers and may carry a `SourceSnapshot`. The default DataService registry lives in `@seekstar/scout-service`; Electron Scout workers validate IPC and delegate to that package instead of maintaining duplicate search/extraction logic. Browser-mediated DuckDuckGo/Bing search remains a development provider, while API-backed providers such as Brave, Tavily, Exa, Google CSE, extractor services, and future SQLite/FTS cache providers can register behind the same boundary without changing React, Pixi, or Constellation Engine terrain semantics.
+
+P5.17 Content Provider note:
+The DataService registry is now settings-driven. `@seekstar/core-schema` owns the built-in provider catalog and `SeekStarSettings.content_providers` persists activation, priority, languages, URL-only domains, and key-reference metadata. Default active discovery uses arXiv, GitHub, Wikipedia, Wikidata, and a low-priority local Playwright browser-assisted fallback. Zhihu and Runoob are built in as disabled URL-only providers: they may discover candidate URLs when enabled, but they do not extract page bodies or fabricate source-backed terrain during search. Electron passes the current provider settings into each Scout utility-process run, so the UI edits provider availability without coupling React to provider implementation details.
+
 These events are the telescope operation protocol. Viewport movement may reveal same-layer frontiers. Layer changes move between macro orientation, source-backed tile surfaces, and text-grain detail. Selection and lasso create addressable regions that can be inspected, promoted, exported, or passed to AI only when the user asks for interpretation.
 
 P5.6 implementation note:
@@ -136,7 +154,7 @@ Agent output must be structured, inspectable, cancellable, and cacheable.
 
 Responsibilities:
 
-* execute planned searches;
+* execute provider-backed candidate discovery;
 * retrieve pages;
 * extract visible content and metadata;
 * record source provenance;
@@ -144,9 +162,12 @@ Responsibilities:
 * pass observations to Agent.
 
 Design principle:
-Playwright is a scout, not a browser UI replacement.
+Playwright is a scout and browser observer, not the whole web-search architecture and not a browser UI replacement.
 
 Scout may be triggered by telescope events such as direct URL intake, source-anchored outlink exploration, or drifting near a same-layer frontier. It returns structured observations into the data pool. It must not drive animation, rank truth, decide meaning, or directly create source-backed terrain.
+
+P5.16 implementation note:
+The Scout/DataService module has a provider registry. Search providers produce `SearchCandidate` records only. Source observer providers produce `SourceSnapshot` records or explicit failure. Constellation Engine converts snapshots into source-backed terrain through typed events; search candidates remain Scout observations until selected or observed.
 
 ### 2.5 Local Data Layer
 
@@ -592,6 +613,12 @@ Implementation note:
 
 Hyperlink implementation note:
 Links activated inside an absorbed tile create a new tab, run direct URL Scout with that tab id, convert the resulting observation into source-backed terrain, and set the new scene's initial layer to L3. Storage Service workspace change notifications propagate the saved source-backed terrain to docked and detached tab renderers without forcing a tab refresh.
+
+Direct URL command note:
+The command composer uses the same source-backed intake contract for direct URLs. `Add URL to current Seek` ingests into the current scene; `Open URL as new Seek` creates an active independent tab, then hydrates it with the observed L3 tile. Both paths preserve command/backlink provenance and keep AI out of the frame-level navigation loop.
+
+P5.15 source command note:
+The direct URL command now writes an initial pending Scout observation to the target tab before the network observation starts. Completion updates the same target tab scene. If the tab is absent from the latest workspace snapshot before the Scout result returns, Storage discards the stale source writeback.
 
 P2 implementation note:
 Manual source ingestion creates source-backed terrain from user-provided text or URL metadata before Playwright retrieval exists. The source enters the map as `SourceRef`, source-backed nodes, and `source_contains` relations. It must not appear as a ranked result list or chat answer.

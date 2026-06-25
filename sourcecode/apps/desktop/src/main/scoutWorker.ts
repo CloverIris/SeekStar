@@ -18,7 +18,7 @@ async function handleMessage(message: unknown): Promise<void> {
   }
 
   try {
-    const result = await runtime.run(message.request);
+    const result = await runtime.run(message.request, message.content_providers);
     postMessage({
       type: "scout:result",
       request_id: message.request_id,

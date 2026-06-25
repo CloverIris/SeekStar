@@ -70,6 +70,7 @@ export function WorkbenchHeader({
 }
 
 export function CommandComposer({
+  commandKind,
   commandInputRef,
   commandValue,
   isCommandModalOpen,
@@ -80,6 +81,7 @@ export function CommandComposer({
   onSearchCurrentTab,
   onUseAsSeed,
 }: {
+  commandKind: "keyword" | "url";
   commandInputRef: RefObject<HTMLInputElement | null>;
   commandValue: string;
   isCommandModalOpen: boolean;
@@ -95,6 +97,7 @@ export function CommandComposer({
       <div className="command-composer-inner">
         {isCommandModalOpen ? (
           <CommandActionCard
+            kind={commandKind}
             value={commandValue.trim()}
             onAddToCurrentPage={onAddToCurrentPage}
             onSearchCurrentTab={onSearchCurrentTab}

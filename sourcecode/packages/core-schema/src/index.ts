@@ -76,6 +76,34 @@ export type SourceType =
   | "generated_summary"
   | "unknown";
 
+export interface SourceSnapshotOutlink {
+  title: string;
+  url: string;
+  snippet?: string;
+}
+
+export interface SourceSnapshotMedia {
+  kind: "image" | "video" | "audio" | "pdf" | "unknown";
+  url: string;
+  title?: string;
+  alt?: string;
+  mime_type?: string;
+}
+
+export interface SourceSnapshot {
+  url: string;
+  final_url: string;
+  title: string;
+  content_type?: string;
+  visible_text: string;
+  excerpt?: string;
+  outlinks: SourceSnapshotOutlink[];
+  media: SourceSnapshotMedia[];
+  source_type: SourceType;
+  retrieved_at: string;
+  failure_reason?: string;
+}
+
 export type AgentJobStatus =
   | "queued"
   | "running"
@@ -318,6 +346,7 @@ export interface SourceRef {
   snippet?: string;
   reliability_hints: string[];
   created_from_observation_id?: string;
+  source_snapshot?: SourceSnapshot;
 }
 
 export type Source = SourceRef;
@@ -386,6 +415,222 @@ export interface ScoutPlan {
 
 export type ScoutDiscoveryMode = "direct_url" | "frontier_web_search" | "page_outlinks";
 
+export type DataServiceProviderKind =
+  | "authority"
+  | "search_api"
+  | "url_only"
+  | "browser_search"
+  | "browser_observer"
+  | "extractor"
+  | "page_outlinks"
+  | "cache";
+
+export type SearchCandidateDiscoveryMode = "frontier_web_search" | "page_outlinks";
+
+export type ContentProviderGroup =
+  | "authority"
+  | "search_api"
+  | "browser_assisted"
+  | "url_only";
+
+export type ContentProviderHealthStatus =
+  | "ready"
+  | "requires_key"
+  | "unavailable"
+  | "disabled";
+
+export interface ContentProviderDefinition {
+  id: string;
+  label: string;
+  group: ContentProviderGroup;
+  provider_kind: DataServiceProviderKind;
+  default_enabled: boolean;
+  default_priority: number;
+  requires_api_key?: boolean;
+  api_key_env_var?: string;
+  default_languages?: string[];
+  supported_languages?: string[];
+  domains?: string[];
+  homepage_url?: string;
+  documentation_url?: string;
+  rate_limit_note?: string;
+}
+
+export interface ContentProviderSettings {
+  id: string;
+  enabled: boolean;
+  priority: number;
+  languages?: string[];
+  region?: string;
+  base_url?: string;
+  api_key_env_var?: string;
+  health_status?: ContentProviderHealthStatus;
+  health_message?: string;
+}
+
+export const BUILT_IN_CONTENT_PROVIDER_DEFINITIONS = [
+  {
+    id: "arxiv",
+    label: "arXiv",
+    group: "authority",
+    provider_kind: "authority",
+    default_enabled: true,
+    default_priority: 10,
+    default_languages: ["en"],
+    supported_languages: ["en"],
+    domains: ["arxiv.org"],
+    homepage_url: "https://arxiv.org/",
+    documentation_url: "https://info.arxiv.org/help/api/index.html",
+    rate_limit_note: "Free Atom API. Keep repeated calls polite and low frequency.",
+  },
+  {
+    id: "github",
+    label: "GitHub",
+    group: "authority",
+    provider_kind: "authority",
+    default_enabled: true,
+    default_priority: 20,
+    api_key_env_var: "GITHUB_TOKEN",
+    default_languages: ["en"],
+    domains: ["github.com"],
+    homepage_url: "https://github.com/",
+    documentation_url: "https://docs.github.com/en/rest/search/search",
+    rate_limit_note: "REST Search API. Unauthenticated use is rate limited; token is optional.",
+  },
+  {
+    id: "wikipedia",
+    label: "Wikipedia",
+    group: "authority",
+    provider_kind: "authority",
+    default_enabled: true,
+    default_priority: 30,
+    default_languages: ["zh", "en"],
+    supported_languages: ["zh", "en"],
+    domains: ["wikipedia.org"],
+    homepage_url: "https://www.wikipedia.org/",
+    documentation_url: "https://www.mediawiki.org/wiki/API:Search",
+    rate_limit_note: "MediaWiki API. Send a clear User-Agent and obey throttling.",
+  },
+  {
+    id: "wikidata",
+    label: "Wikidata",
+    group: "authority",
+    provider_kind: "authority",
+    default_enabled: true,
+    default_priority: 40,
+    default_languages: ["zh", "en"],
+    supported_languages: ["zh", "en"],
+    domains: ["wikidata.org"],
+    homepage_url: "https://www.wikidata.org/",
+    documentation_url: "https://www.wikidata.org/wiki/Wikidata:Data_access",
+    rate_limit_note: "Entity search for authority discovery; SPARQL is not used for text search.",
+  },
+  {
+    id: "browser-assisted-playwright",
+    label: "Browser-assisted search",
+    group: "browser_assisted",
+    provider_kind: "browser_search",
+    default_enabled: true,
+    default_priority: 90,
+    domains: ["duckduckgo.com", "bing.com"],
+    rate_limit_note: "Local Playwright search fallback. Candidate discovery only.",
+  },
+  {
+    id: "runoob-url",
+    label: "菜鸟教程",
+    group: "url_only",
+    provider_kind: "url_only",
+    default_enabled: false,
+    default_priority: 110,
+    default_languages: ["zh"],
+    supported_languages: ["zh"],
+    domains: ["runoob.com"],
+    homepage_url: "https://www.runoob.com/",
+    rate_limit_note: "URL-only site-restricted discovery. No HTML body extraction in search.",
+  },
+  {
+    id: "zhihu-url",
+    label: "知乎",
+    group: "url_only",
+    provider_kind: "url_only",
+    default_enabled: false,
+    default_priority: 120,
+    default_languages: ["zh"],
+    supported_languages: ["zh"],
+    domains: ["zhihu.com", "zhida.zhihu.com"],
+    homepage_url: "https://www.zhihu.com/",
+    rate_limit_note: "URL-only provider until a stable official public API is confirmed.",
+  },
+] as const satisfies readonly ContentProviderDefinition[];
+
+export const DEFAULT_CONTENT_PROVIDER_SETTINGS = BUILT_IN_CONTENT_PROVIDER_DEFINITIONS.map((provider): ContentProviderSettings => {
+  const definition: ContentProviderDefinition = provider;
+
+  return {
+    id: definition.id,
+    enabled: definition.default_enabled,
+    priority: definition.default_priority,
+    languages: definition.default_languages ? [...definition.default_languages] : undefined,
+    api_key_env_var: definition.api_key_env_var,
+    health_status: definition.default_enabled ? "ready" : "disabled",
+  };
+});
+
+export interface SearchCandidate {
+  id: string;
+  provider_id: string;
+  provider_kind: DataServiceProviderKind;
+  discovery_mode: SearchCandidateDiscoveryMode;
+  query: string;
+  title: string;
+  url: string;
+  snippet?: string;
+  rank: number;
+  confidence: number;
+  source_type: SourceType;
+  discovered_at: string;
+  metadata?: Record<string, string | number | boolean>;
+}
+
+export interface SearchCandidateProviderRun {
+  provider_id: string;
+  provider_kind: DataServiceProviderKind;
+  status: "completed" | "failed" | "skipped";
+  candidate_count: number;
+  failure_reason?: string;
+}
+
+export interface SearchCandidateRequest {
+  tab_id: string;
+  query: string;
+  discovery_mode: SearchCandidateDiscoveryMode;
+  limit?: number;
+  provider_ids?: string[];
+  source_url?: string;
+  requested_at: string;
+}
+
+export interface SearchCandidateResult {
+  candidates: SearchCandidate[];
+  provider_runs: SearchCandidateProviderRun[];
+  completed_at: string;
+}
+
+export interface SourceObservationRequest {
+  tab_id: string;
+  url: string;
+  provider_id?: string;
+  requested_at: string;
+}
+
+export interface SourceObservationResult {
+  provider_id: string;
+  provider_kind: DataServiceProviderKind;
+  snapshot?: SourceSnapshot;
+  failure_reason?: string;
+  completed_at: string;
+}
+
 export interface ScoutObservation {
   id: string;
   tab_id: string;
@@ -402,6 +647,7 @@ export interface ScoutObservation {
   target_node_ids: string[];
   url?: string;
   snippet?: string;
+  source_snapshot?: SourceSnapshot;
   source_type?: SourceType;
   retrieved_at?: string;
   failure_reason?: string;

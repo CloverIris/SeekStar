@@ -5,6 +5,12 @@ import {
   type DomainLexicon,
   type DomainLexiconTerm,
 } from "@seekstar/constellation-engine";
+import {
+  BUILT_IN_CONTENT_PROVIDER_DEFINITIONS,
+  DEFAULT_CONTENT_PROVIDER_SETTINGS,
+  type ContentProviderDefinition,
+  type ContentProviderSettings,
+} from "@seekstar/core-schema";
 import type { SeekStarSettings } from "../../../../main/appSettingsStore";
 import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
@@ -12,6 +18,7 @@ import {
   ArrowLeft,
   Compass,
   Folder,
+  Globe2,
   Plus,
   RefreshCw,
   Search,
@@ -22,7 +29,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-type SettingsSectionId = "general" | "domainLexicon" | "runtime" | "scout" | "storage" | "development";
+type SettingsSectionId = "general" | "domainLexicon" | "contentProviders" | "runtime" | "scout" | "storage" | "development";
 
 interface SettingsPageProps {
   onApplyDomainLexicon: (settings: SeekStarSettings) => Promise<void> | void;
@@ -41,6 +48,10 @@ const settingsSectionMeta: Record<SettingsSectionId, { title: string; descriptio
   domainLexicon: {
     title: "Domain lexicon",
     description: "Configure the L0 field vocabulary used by the default New Seek tab.",
+  },
+  contentProviders: {
+    title: "Content providers",
+    description: "Configure URL-first authority discovery and browser-assisted source candidates.",
   },
   runtime: {
     title: "Runtime",
@@ -93,6 +104,7 @@ export function SettingsPage({
   const tileLiveSurfaceLimit = draft?.tile_live_surface_limit ?? 1;
   const tileThumbnailPrewarmConcurrency = draft?.tile_thumbnail_prewarm_concurrency ?? 2;
   const domainLexicons = draft?.domain_lexicons ?? cloneDomainLexicons(DEFAULT_DOMAIN_LEXICONS);
+  const contentProviders = draft?.content_providers ?? cloneContentProviderSettings(DEFAULT_CONTENT_PROVIDER_SETTINGS);
   const selectedLexicon =
     domainLexicons.find((lexicon) => lexicon.id === selectedLexiconId) ??
     domainLexicons.find((lexicon) => lexicon.active) ??
@@ -120,6 +132,29 @@ export function SettingsPage({
         active: lexicon.id === activeId,
         updated_at: new Date().toISOString(),
       })),
+    });
+  }
+
+  function updateContentProvider(providerId: string, patch: Partial<ContentProviderSettings>): void {
+    updateDraft({
+      content_providers: contentProviders.map((provider) => (provider.id === providerId ? { ...provider, ...patch } : provider)),
+    });
+  }
+
+  function handleContentProvidersReset(): void {
+    updateDraft({
+      content_providers: cloneContentProviderSettings(DEFAULT_CONTENT_PROVIDER_SETTINGS),
+    });
+  }
+
+  function handleContentProviderValidate(providerId: string): void {
+    const definition = BUILT_IN_CONTENT_PROVIDER_DEFINITIONS.find((provider) => provider.id === providerId);
+    const current = contentProviders.find((provider) => provider.id === providerId);
+    const enabled = current?.enabled ?? definition?.default_enabled ?? false;
+
+    updateContentProvider(providerId, {
+      health_status: enabled ? "ready" : "disabled",
+      health_message: enabled ? "Ready for the next Scout registry rebuild." : "Disabled by settings.",
     });
   }
 
@@ -262,6 +297,7 @@ export function SettingsPage({
   const settingsNavItems: Array<{ id: SettingsSectionId; label: string; icon: LucideIcon }> = [
     { id: "general", label: "General", icon: Settings },
     { id: "domainLexicon", label: "Domain lexicon", icon: Star },
+    { id: "contentProviders", label: "Content providers", icon: Globe2 },
     { id: "runtime", label: "Runtime", icon: Compass },
     { id: "scout", label: "Scout service", icon: Sparkles },
     { id: "storage", label: "Storage", icon: Folder },
@@ -355,6 +391,16 @@ export function SettingsPage({
                 onLexiconUpdate={updateSelectedLexicon}
                 selectedLexicon={selectedLexicon}
                 selectedTerm={selectedTerm}
+              />
+            ) : null}
+
+            {resolvedActiveSection === "contentProviders" ? (
+              <ContentProviderEditor
+                definitions={BUILT_IN_CONTENT_PROVIDER_DEFINITIONS}
+                onProviderUpdate={updateContentProvider}
+                onReset={handleContentProvidersReset}
+                onValidate={handleContentProviderValidate}
+                providers={contentProviders}
               />
             ) : null}
 
@@ -488,6 +534,125 @@ export function SettingsPage({
             Save settings
           </button>
         </footer>
+      </div>
+    </section>
+  );
+}
+
+function ContentProviderEditor({
+  definitions,
+  onProviderUpdate,
+  onReset,
+  onValidate,
+  providers,
+}: {
+  definitions: readonly ContentProviderDefinition[];
+  onProviderUpdate: (providerId: string, patch: Partial<ContentProviderSettings>) => void;
+  onReset: () => void;
+  onValidate: (providerId: string) => void;
+  providers: ContentProviderSettings[];
+}): ReactElement {
+  const providersById = new Map(providers.map((provider) => [provider.id, provider]));
+  const groupedDefinitions = groupContentProviderDefinitions(definitions);
+  const enabledCount = providers.filter((provider) => provider.enabled).length;
+
+  return (
+    <section className="settings-section content-provider-section">
+      <div className="content-provider-toolbar">
+        <div>
+          <strong>Provider registry</strong>
+          <span>{enabledCount} active providers</span>
+        </div>
+        <button onClick={onReset} type="button">
+          <RefreshCw aria-hidden="true" size={14} strokeWidth={1.8} />
+          Reset defaults
+        </button>
+      </div>
+
+      <div className="content-provider-groups">
+        {groupedDefinitions.map((group) => (
+          <section className="content-provider-group" key={group.id}>
+            <header>
+              <span>{group.label}</span>
+              <small>{group.items.filter((definition) => providersById.get(definition.id)?.enabled).length} enabled</small>
+            </header>
+            <div className="content-provider-list">
+              {group.items.length === 0 ? <p className="content-provider-empty">No built-in provider in this group yet.</p> : null}
+              {group.items.map((definition) => {
+                const setting = providersById.get(definition.id) ?? createDefaultContentProviderSetting(definition);
+                const languages = setting.languages ?? definition.default_languages ?? [];
+
+                return (
+                  <article className="content-provider-card" data-provider-enabled={setting.enabled} key={definition.id}>
+                    <div className="content-provider-card-main">
+                      <label className="content-provider-enable">
+                        <input
+                          checked={setting.enabled}
+                          onChange={(event) =>
+                            onProviderUpdate(definition.id, {
+                              enabled: event.target.checked,
+                              health_status: event.target.checked ? "ready" : "disabled",
+                            })
+                          }
+                          type="checkbox"
+                        />
+                      </label>
+                      <div className="content-provider-identity">
+                        <strong>{definition.label}</strong>
+                        <small>{definition.domains?.join(", ") ?? definition.provider_kind}</small>
+                      </div>
+                      <span className="content-provider-status">{setting.health_status ?? (setting.enabled ? "ready" : "disabled")}</span>
+                    </div>
+
+                    <div className="content-provider-controls">
+                      <label>
+                        <span>Priority</span>
+                        <input
+                          min={1}
+                          max={999}
+                          onChange={(event) => onProviderUpdate(definition.id, { priority: Number(event.target.value) })}
+                          type="number"
+                          value={setting.priority}
+                        />
+                      </label>
+                      <label>
+                        <span>Languages</span>
+                        <input
+                          disabled={!definition.supported_languages?.length}
+                          onChange={(event) =>
+                            onProviderUpdate(definition.id, {
+                              languages: event.target.value
+                                .split(",")
+                                .map((language) => language.trim())
+                                .filter(Boolean),
+                            })
+                          }
+                          value={languages.join(", ")}
+                        />
+                      </label>
+                      <label>
+                        <span>Key ref</span>
+                        <input
+                          onChange={(event) => onProviderUpdate(definition.id, { api_key_env_var: event.target.value })}
+                          placeholder={definition.api_key_env_var ?? "ENV_VAR"}
+                          value={setting.api_key_env_var ?? ""}
+                        />
+                      </label>
+                      <button onClick={() => onValidate(definition.id)} type="button">
+                        Validate
+                      </button>
+                    </div>
+
+                    <div className="content-provider-meta">
+                      <span>{definition.provider_kind}</span>
+                      {definition.rate_limit_note ? <small>{definition.rate_limit_note}</small> : null}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        ))}
       </div>
     </section>
   );
@@ -659,7 +824,49 @@ function createSettingsDraft(settings?: SeekStarSettings): SeekStarSettings {
     tile_thumbnail_prewarm_concurrency: settings?.tile_thumbnail_prewarm_concurrency ?? 2,
     active_domain_lexicon_id: settings?.active_domain_lexicon_id ?? DEFAULT_DOMAIN_LEXICON_ID,
     domain_lexicons: settings?.domain_lexicons ?? cloneDomainLexicons(DEFAULT_DOMAIN_LEXICONS),
+    content_providers: settings?.content_providers ?? cloneContentProviderSettings(DEFAULT_CONTENT_PROVIDER_SETTINGS),
   };
+}
+
+function cloneContentProviderSettings(settings: readonly ContentProviderSettings[]): ContentProviderSettings[] {
+  return settings.map((provider) => ({
+    ...provider,
+    languages: provider.languages ? [...provider.languages] : undefined,
+  }));
+}
+
+function createDefaultContentProviderSetting(definition: ContentProviderDefinition): ContentProviderSettings {
+  return {
+    id: definition.id,
+    enabled: definition.default_enabled,
+    priority: definition.default_priority,
+    languages: definition.default_languages ? [...definition.default_languages] : undefined,
+    api_key_env_var: definition.api_key_env_var,
+    health_status: definition.default_enabled ? "ready" : "disabled",
+  };
+}
+
+function groupContentProviderDefinitions(definitions: readonly ContentProviderDefinition[]): Array<{
+  id: ContentProviderDefinition["group"];
+  label: string;
+  items: ContentProviderDefinition[];
+}> {
+  const labels: Record<ContentProviderDefinition["group"], string> = {
+    authority: "AuthorityProvider",
+    search_api: "SearchApiProvider",
+    browser_assisted: "BrowserAssistedSearchProvider",
+    url_only: "UrlOnlyProvider",
+  };
+  const order: ContentProviderDefinition["group"][] = ["authority", "search_api", "browser_assisted", "url_only"];
+
+  return order
+    .map((group) => ({
+      id: group,
+      label: labels[group],
+      items: definitions
+        .filter((definition) => definition.group === group)
+        .sort((left, right) => left.default_priority - right.default_priority || left.id.localeCompare(right.id)),
+    }));
 }
 
 function createUiId(prefix: string): string {

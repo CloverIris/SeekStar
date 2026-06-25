@@ -1282,15 +1282,27 @@ P5.11 defines L3 content terrain as a real tile field:
 * hyperlinks inside absorbed tiles open new SeekStar tabs at the webpage/document tile level with backlink context;
 * orphan parent context is filled only through AI Service as structured, marked Cartographer output.
 
-Implementation status as of P5.11/P5.12:
+Implementation status as of P5.17:
 
 * the core schema now carries `TerrainScene.runtime` for focused tile and browser absorption state;
+* `SourceSnapshot` is a shared protocol for Scout, Constellation Engine, Storage snapshots, and desktop boundaries;
+* Scout observations can carry final URL, content type, visible text, outlinks, media candidates, source type, and retrieval time;
+* `SearchCandidate` is now a shared protocol for web-search and page-outlink discovery; it represents possible sources, not source-backed terrain;
+* Scout/DataService has a provider registry boundary: source observers produce `SourceSnapshot`, search/outlink providers produce `SearchCandidate`, and API/authority/browser-assisted/URL-only providers register without changing the renderer or terrain engine;
+* content provider settings now expose default active arXiv, GitHub, Wikipedia, Wikidata, and local Playwright browser-assisted discovery, with Zhihu and Runoob built in as disabled URL-only providers;
+* the Electron Scout worker now delegates to the Scout/DataService package instead of owning a duplicate browser-search implementation;
+* source terrain ingestion stores structured snapshots and uses snapshot visible text before falling back to snippets;
+* text-grain terrain is generated through a materialization profile instead of fixed demo-sized caps;
+* command input treats direct `http`/`https` URLs as real source intake: add to current Seek runs Scout and creates a source-backed L3 tile, while open as new Seek creates an active tab and ingests the page at L3;
+* direct URL Scout writeback now targets the intended tab scene, so a new URL tab does not remain a local seed map after asynchronous Scout completion;
+* the main content projection distinguishes domain gallery, source intake pending, source intake failed, source-backed tile field, browser absorption, text grain, and empty source field states;
 * visible/focused L3 tiles can be prewarmed as offscreen thumbnails without stealing telescope input;
-* absorbed tiles use Electron native live surfaces and retain the top exit label;
-* clicking an already focused L3 tile and crossing the 80% viewport threshold now route through Constellation Engine events;
+* clicking an already focused L3 tile and crossing the 80% viewport threshold first play a tile absorption transition, then commit the Constellation Engine absorption event;
+* absorbed tiles use Electron native live surfaces only after absorption is committed and retain the top exit label;
 * hyperlink-created tabs now run direct URL Scout, ingest the observed page as source-backed terrain, and open at L3 webpage/document tile level;
 * Storage Service workspace change notifications now propagate saved source intake across docked and detached tab renderers without forcing tab refresh;
 * Constellation Engine now owns workspace hydrate/persist merge rules through `WorkspacePersistenceCoordinator`;
 * Constellation Engine now owns Scout job execution/writeback rules through `ScoutJobCoordinator`;
 * Constellation Engine now owns open/close/reorder/activate tab-session transactions through `TabSessionCoordinator`;
-* remaining usability work is animated absorption transitions, richer Scout snapshot handling, remaining shell tab-registration/reset helper decoupling, and AI parent-context patches for orphan linked pages.
+* default New Seek L3 terrain remains local placeholder terrain until Scout or source intake provides a `sourceUrl`; only source-backed L3 webpage/document nodes produce tile surfaces or enter live browser absorption;
+* remaining usability work is PDF/image-specific snapshot extraction, encrypted provider key handling, viewport-demand text materialization, remaining shell tab-registration/reset helper decoupling, and AI parent-context patches for orphan linked pages.

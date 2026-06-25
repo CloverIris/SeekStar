@@ -43,19 +43,20 @@ class ScoutService {
   }
 
   private async runNow(request: ScoutRunRequest): Promise<ScoutRunResult> {
-    return this.withScoutSlot(async () => {
+    const settings = await loadSettings().catch(() => defaultSettings);
+
+    return this.withScoutSlot(settings.scout_concurrency, async () => {
       try {
-        return await this.runInUtilityProcess(request);
+        return await this.runInUtilityProcess(request, settings.content_providers);
       } catch (error) {
         console.warn(`[SeekStar] Scout utility process unavailable; falling back in main process. ${getErrorMessage(error)}`);
-        return this.fallbackRuntime.run(request);
+        return this.fallbackRuntime.run(request, settings.content_providers);
       }
     });
   }
 
-  private async withScoutSlot<T>(task: () => Promise<T>): Promise<T> {
-    const settings = await loadSettings().catch(() => defaultSettings);
-    const maxConcurrency = Math.max(1, settings.scout_concurrency);
+  private async withScoutSlot<T>(scoutConcurrency: number, task: () => Promise<T>): Promise<T> {
+    const maxConcurrency = Math.max(1, scoutConcurrency);
 
     if (this.activeScoutRuns >= maxConcurrency) {
       await new Promise<void>((resolve) => {
@@ -73,13 +74,14 @@ class ScoutService {
     }
   }
 
-  private runInUtilityProcess(request: ScoutRunRequest): Promise<ScoutRunResult> {
+  private runInUtilityProcess(request: ScoutRunRequest, contentProviders: ScoutWorkerInboundMessage["content_providers"]): Promise<ScoutRunResult> {
     const worker = this.ensureWorker();
     const requestId = `scout-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const message: ScoutWorkerInboundMessage = {
       type: "scout:run",
       request_id: requestId,
       request,
+      content_providers: contentProviders,
     };
 
     return new Promise<ScoutRunResult>((resolve) => {

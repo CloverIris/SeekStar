@@ -1,9 +1,10 @@
-import type { CreatedFromRef, LayerId, SourceRef, SourceType, TerrainNode, TerrainRelation, TerrainScene } from "@seekstar/core-schema";
+import type { CreatedFromRef, LayerId, SourceRef, SourceSnapshot, SourceType, TerrainNode, TerrainRelation, TerrainScene } from "@seekstar/core-schema";
 
 export interface SourceIngestionInput {
   title: string;
   url?: string;
-  body: string;
+  body?: string;
+  snapshot?: SourceSnapshot;
   sourceType?: SourceType;
   retrievedAt?: string;
   reliabilityHints?: string[];
@@ -11,6 +12,18 @@ export interface SourceIngestionInput {
   createdFrom?: CreatedFromRef;
   observationId?: string;
   initialLayer?: LayerId;
+  materialization?: Partial<TextMaterializationProfile>;
+}
+
+export interface TextMaterializationProfile {
+  paragraphLimit: number;
+  sentenceLimitPerParagraph: number;
+  phraseLimitPerSentence: number;
+  wordLimitPerPhrase: number;
+  characterLimitPerWord: number;
+  heuristicCandidateLimit: number;
+  wordsPerSentenceScanLimit: number;
+  phraseWordScanLimit: number;
 }
 
 export interface SourceTerrainPatch {
@@ -72,10 +85,13 @@ let sourceCounter = 0;
 export function createSourceTerrainPatch(input: SourceIngestionInput, scene: TerrainScene): SourceTerrainPatch {
   sourceCounter += 1;
 
-  const createdAt = input.retrievedAt ?? new Date().toISOString();
-  const title = normalizeTitle(input.title);
-  const sourceText = normalizeBody(input.body);
-  const textTerrain = createTextTerrain(sourceText);
+  const snapshot = input.snapshot;
+  const createdAt = input.retrievedAt ?? snapshot?.retrieved_at ?? new Date().toISOString();
+  const title = normalizeTitle(input.title || snapshot?.title || snapshot?.final_url || snapshot?.url || "Untitled source");
+  const sourceUrl = input.url?.trim() || snapshot?.final_url || snapshot?.url;
+  const sourceText = normalizeBody(input.body ?? snapshot?.visible_text ?? snapshot?.excerpt ?? title);
+  const materialization = resolveTextMaterializationProfile(input);
+  const textTerrain = createTextTerrain(sourceText, materialization);
   const slug = toSlug(title);
   const stamp = `${Date.now()}-${sourceCounter}`;
   const sourceId = `source-${slug}-${stamp}`;
@@ -88,12 +104,22 @@ export function createSourceTerrainPatch(input: SourceIngestionInput, scene: Ter
   const source: SourceRef = {
     id: sourceId,
     title,
-    url: input.url?.trim() || undefined,
-    source_type: input.sourceType ?? (input.url?.trim() ? "webpage" : "document"),
+    url: sourceUrl || undefined,
+    source_type: input.sourceType ?? snapshot?.source_type ?? (sourceUrl ? "webpage" : "document"),
     retrieved_at: createdAt,
-    snippet: textTerrain.paragraphs[0]?.text ?? sourceText.slice(0, 220),
-    reliability_hints: input.reliabilityHints ?? ["manual user-provided source", "not retrieved by Playwright"],
+    snippet: snapshot?.excerpt ?? textTerrain.paragraphs[0]?.text ?? sourceText.slice(0, 220),
+    reliability_hints:
+      input.reliabilityHints ??
+      (snapshot
+        ? [
+            "observed by Playwright Scout adapter",
+            snapshot.content_type ? `content type: ${snapshot.content_type}` : "content type unavailable",
+            `${snapshot.outlinks.length} outlinks captured`,
+            `${snapshot.media.length} media candidates captured`,
+          ]
+        : ["manual user-provided source", "not retrieved by Playwright"]),
     created_from_observation_id: input.observationId,
+    source_snapshot: snapshot,
   };
 
   const sourceNode: TerrainNode = {
@@ -166,7 +192,7 @@ export function createSourceTerrainPatch(input: SourceIngestionInput, scene: Ter
     }),
   ];
 
-  const paragraphNodes = textTerrain.paragraphs.slice(0, 4).map((paragraph, paragraphIndex) =>
+  const paragraphNodes = textTerrain.paragraphs.slice(0, materialization.paragraphLimit).map((paragraph, paragraphIndex) =>
     appendParagraphTerrain({
       anchor,
       createdAt,
@@ -181,10 +207,11 @@ export function createSourceTerrainPatch(input: SourceIngestionInput, scene: Ter
       source,
       stamp,
       tags,
+      materialization,
     }),
   );
   const heuristicCandidateNodes = createHeuristicCandidates(textTerrain)
-    .slice(0, 8)
+    .slice(0, materialization.heuristicCandidateLimit)
     .map((candidate, index) =>
       createHeuristicCandidateNode({
         anchor,
@@ -237,6 +264,7 @@ function appendParagraphTerrain(input: {
   source: SourceRef;
   stamp: string;
   tags: string[];
+  materialization: TextMaterializationProfile;
 }): TerrainNode {
   const paragraphOrdinal = input.paragraphIndex + 1;
   const paragraphNodeId = `node-${input.slug}-paragraph-${paragraphOrdinal}-${input.stamp}`;
@@ -277,7 +305,7 @@ function appendParagraphTerrain(input: {
     }),
   );
 
-  const sentenceNodes = input.paragraph.sentences.slice(0, 2).map((sentence, sentenceIndex) =>
+  const sentenceNodes = input.paragraph.sentences.slice(0, input.materialization.sentenceLimitPerParagraph).map((sentence, sentenceIndex) =>
     appendSentenceTerrain({
       ...input,
       paragraphNodeId,
@@ -308,6 +336,7 @@ function appendSentenceTerrain(input: {
   source: SourceRef;
   stamp: string;
   tags: string[];
+  materialization: TextMaterializationProfile;
 }): TerrainNode {
   const paragraphOrdinal = input.paragraphIndex + 1;
   const sentenceOrdinal = input.sentenceIndex + 1;
@@ -349,7 +378,7 @@ function appendSentenceTerrain(input: {
     }),
   );
 
-  const phraseNodes = input.sentence.phrases.slice(0, 2).map((phrase, phraseIndex) =>
+  const phraseNodes = input.sentence.phrases.slice(0, input.materialization.phraseLimitPerSentence).map((phrase, phraseIndex) =>
     appendPhraseTerrain({
       ...input,
       phrase,
@@ -381,6 +410,7 @@ function appendPhraseTerrain(input: {
   source: SourceRef;
   stamp: string;
   tags: string[];
+  materialization: TextMaterializationProfile;
 }): TerrainNode {
   const paragraphOrdinal = input.paragraphIndex + 1;
   const sentenceOrdinal = input.sentenceIndex + 1;
@@ -427,7 +457,7 @@ function appendPhraseTerrain(input: {
     }),
   );
 
-  const wordNodes = input.phrase.words.slice(0, 3).map((word, wordIndex) =>
+  const wordNodes = input.phrase.words.slice(0, input.materialization.wordLimitPerPhrase).map((word, wordIndex) =>
     appendWordTerrain({
       ...input,
       phraseNodeId,
@@ -460,6 +490,7 @@ function appendWordTerrain(input: {
   tags: string[];
   word: WordGrain;
   wordIndex: number;
+  materialization: TextMaterializationProfile;
 }): TerrainNode {
   const paragraphOrdinal = input.paragraphIndex + 1;
   const sentenceOrdinal = input.sentenceIndex + 1;
@@ -506,7 +537,7 @@ function appendWordTerrain(input: {
     }),
   );
 
-  const characterNodes = createCharacterGrains(input.word).slice(0, 2).map((character, characterIndex) =>
+  const characterNodes = createCharacterGrains(input.word).slice(0, input.materialization.characterLimitPerWord).map((character, characterIndex) =>
     appendCharacterTerrain({
       ...input,
       character,
@@ -845,7 +876,65 @@ function getSourceAnchor(scene: TerrainScene): { x: number; y: number } {
   };
 }
 
-function createTextTerrain(body: string): TextTerrain {
+const DEFAULT_TEXT_MATERIALIZATION: TextMaterializationProfile = {
+  paragraphLimit: 12,
+  sentenceLimitPerParagraph: 4,
+  phraseLimitPerSentence: 3,
+  wordLimitPerPhrase: 6,
+  characterLimitPerWord: 4,
+  heuristicCandidateLimit: 14,
+  wordsPerSentenceScanLimit: 48,
+  phraseWordScanLimit: 12,
+};
+
+const TEXT_GRAIN_MATERIALIZATION: TextMaterializationProfile = {
+  paragraphLimit: 18,
+  sentenceLimitPerParagraph: 6,
+  phraseLimitPerSentence: 4,
+  wordLimitPerPhrase: 8,
+  characterLimitPerWord: 6,
+  heuristicCandidateLimit: 18,
+  wordsPerSentenceScanLimit: 72,
+  phraseWordScanLimit: 18,
+};
+
+function resolveTextMaterializationProfile(input: SourceIngestionInput): TextMaterializationProfile {
+  const base =
+    input.initialLayer === "L5" ||
+    input.initialLayer === "L6" ||
+    input.initialLayer === "L7" ||
+    input.initialLayer === "L8" ||
+    input.initialLayer === "L9" ||
+    input.initialLayer === "L10"
+      ? TEXT_GRAIN_MATERIALIZATION
+      : DEFAULT_TEXT_MATERIALIZATION;
+
+  const profile = {
+    ...base,
+    ...input.materialization,
+  };
+
+  return {
+    paragraphLimit: clampMaterializationLimit(profile.paragraphLimit, 1, 80),
+    sentenceLimitPerParagraph: clampMaterializationLimit(profile.sentenceLimitPerParagraph, 1, 18),
+    phraseLimitPerSentence: clampMaterializationLimit(profile.phraseLimitPerSentence, 1, 12),
+    wordLimitPerPhrase: clampMaterializationLimit(profile.wordLimitPerPhrase, 1, 20),
+    characterLimitPerWord: clampMaterializationLimit(profile.characterLimitPerWord, 1, 16),
+    heuristicCandidateLimit: clampMaterializationLimit(profile.heuristicCandidateLimit, 0, 48),
+    wordsPerSentenceScanLimit: clampMaterializationLimit(profile.wordsPerSentenceScanLimit, 8, 180),
+    phraseWordScanLimit: clampMaterializationLimit(profile.phraseWordScanLimit, 4, 60),
+  };
+}
+
+function clampMaterializationLimit(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function createTextTerrain(body: string, materialization: TextMaterializationProfile): TextTerrain {
   let tokenCursor = 0;
   const paragraphMatches = [...body.matchAll(/[^\n]+(?:\n(?!\n)[^\n]+)*/g)];
   const paragraphs = paragraphMatches
@@ -858,10 +947,10 @@ function createTextTerrain(body: string): TextTerrain {
       const sentences = sentenceMatches.map<SentenceGrain>((sentenceMatch) => {
         const sentenceText = sentenceMatch[0].trim();
         const sentenceStart = start + (sentenceMatch.index ?? 0);
-        const words = createWordGrains(sentenceText, sentenceStart, tokenCursor);
+        const words = createWordGrains(sentenceText, sentenceStart, tokenCursor, materialization.wordsPerSentenceScanLimit);
         const sentenceTokenStart = tokenCursor;
         tokenCursor += words.length;
-        const phrases = createPhraseGrains(words, sentenceText, sentenceStart);
+        const phrases = createPhraseGrains(words, sentenceText, sentenceStart, materialization);
 
         return {
           start: sentenceStart,
@@ -888,7 +977,7 @@ function createTextTerrain(body: string): TextTerrain {
     return { paragraphs };
   }
 
-  const fallbackWords = createWordGrains(body, 0, 0);
+  const fallbackWords = createWordGrains(body, 0, 0, materialization.wordsPerSentenceScanLimit);
 
   return {
     paragraphs: [
@@ -905,7 +994,7 @@ function createTextTerrain(body: string): TextTerrain {
             text: body,
             tokenStart: 0,
             tokenEnd: Math.max(0, fallbackWords.length - 1),
-            phrases: createPhraseGrains(fallbackWords, body, 0),
+            phrases: createPhraseGrains(fallbackWords, body, 0, materialization),
           },
         ],
       },
@@ -1027,8 +1116,8 @@ function collectCandidate(
   });
 }
 
-function createWordGrains(text: string, offset: number, tokenStart: number): WordGrain[] {
-  return [...text.matchAll(/[\p{L}\p{N}_-]+/gu)].slice(0, 24).map((match, index) => ({
+function createWordGrains(text: string, offset: number, tokenStart: number, limit: number): WordGrain[] {
+  return [...text.matchAll(/[\p{L}\p{N}_-]+/gu)].slice(0, limit).map((match, index) => ({
     start: offset + (match.index ?? 0),
     end: offset + (match.index ?? 0) + match[0].length,
     text: match[0],
@@ -1036,17 +1125,26 @@ function createWordGrains(text: string, offset: number, tokenStart: number): Wor
   }));
 }
 
-function createPhraseGrains(words: WordGrain[], sentenceText: string, sentenceOffset: number): PhraseGrain[] {
+function createPhraseGrains(
+  words: WordGrain[],
+  sentenceText: string,
+  sentenceOffset: number,
+  materialization: TextMaterializationProfile,
+): PhraseGrain[] {
   if (words.length === 0) {
     return [];
   }
 
-  const phraseWords = words.slice(0, Math.min(6, words.length));
+  const phraseWords = words.slice(0, Math.min(materialization.phraseWordScanLimit, words.length));
   const phraseSize = phraseWords.length >= 4 ? 3 : Math.min(2, phraseWords.length);
   const chunks: WordGrain[][] = [phraseWords.slice(0, phraseSize)];
 
   if (phraseWords.length > phraseSize) {
     chunks.push(phraseWords.slice(phraseSize, phraseSize * 2));
+  }
+
+  if (phraseWords.length > phraseSize * 2) {
+    chunks.push(phraseWords.slice(phraseSize * 2, phraseSize * 3));
   }
 
   return chunks

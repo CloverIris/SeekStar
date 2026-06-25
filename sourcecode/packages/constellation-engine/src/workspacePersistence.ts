@@ -26,6 +26,7 @@ export interface WorkspacePersistInput<TBasketItem = unknown> {
   fallbackScene?: TerrainScene;
   lockedTabId?: string;
   scenesByTabId: Record<string, TerrainScene>;
+  targetLockedTabId?: string;
 }
 
 export class WorkspacePersistenceCoordinator<TBasketItem = unknown> {
@@ -60,6 +61,7 @@ export class WorkspacePersistenceCoordinator<TBasketItem = unknown> {
       latestSnapshot,
       lockedTabId: input.lockedTabId,
       scenesByTabId: input.scenesByTabId,
+      targetLockedTabId: input.targetLockedTabId,
     });
 
     await this.options.storage.saveWorkspaceSnapshot(snapshot);

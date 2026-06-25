@@ -31,6 +31,8 @@ export {
   clampTileFieldTargetCount,
   createTerrainPixiProjection,
   resolveTileAbsorption,
+  type MainContentMode,
+  type MainContentProjection,
   type ProjectionRect,
   type ProjectionViewportBounds,
   type TerrainPixiProjection,
@@ -41,6 +43,11 @@ export {
   type TileSurfaceLoadState,
   type TileSurfaceVisibility,
 } from "./pixiRuntime.js";
+export {
+  createTileAbsorptionTransition,
+  type TileAbsorptionTransition,
+  type TileAbsorptionTransitionInput,
+} from "./tileAbsorptionTransition.js";
 export {
   clampZoom,
   fitViewportToNodes,
@@ -81,6 +88,8 @@ export {
 } from "./scoutPlanning.js";
 export {
   ScoutJobCoordinator,
+  type DirectUrlSourceIntakeInput,
+  type DirectUrlSourceIntakeResult,
   type HyperlinkSourceIntakeInput,
   type HyperlinkSourceIntakeResult,
   type ScoutJobCoordinatorOptions,

@@ -147,6 +147,7 @@ export class TabRuntimeManager {
     this.mainWindow = window;
     window.on("closed", () => {
       if (this.mainWindow === window) {
+        this.closeDetachedWindowsAfterMainClose();
         this.mainWindow = undefined;
         this.dockBounds = undefined;
       }
@@ -850,6 +851,43 @@ export class TabRuntimeManager {
     }
   }
 
+  private closeDetachedWindowsAfterMainClose(): void {
+    let changed = false;
+
+    for (const [windowId, detached] of Array.from(this.detachedWindowsById.entries())) {
+      const runtimeEntry = this.entriesByTabId.get(detached.tabId);
+
+      if (runtimeEntry) {
+        if (runtimeEntry.view && runtimeEntry.owner === detached.window) {
+          safeRemoveChildView(detached.window, runtimeEntry.view);
+        }
+        this.closeEntryWebContents(runtimeEntry);
+        runtimeEntry.owner = undefined;
+        runtimeEntry.record = {
+          ...runtimeEntry.record,
+          window_state: "main",
+          runtime_status: detached.tabId === this.activeTabId ? "active" : "inactive",
+          updated_at: new Date().toISOString(),
+        };
+        changed = true;
+      }
+
+      this.detachedWindowsById.delete(windowId);
+      if (!isWindowDestroyed(detached.window)) {
+        try {
+          detached.window.close();
+        } catch {
+          // The OS may already be closing all top-level windows.
+        }
+      }
+    }
+
+    if (changed) {
+      void this.save().catch((error) => logRuntimeWarning("Failed to save detached-window shutdown recovery.", error));
+      this.broadcastChange();
+    }
+  }
+
   private removeViewFromOwner(entry: RuntimeEntry): void {
     if (!entry.owner || !entry.view) {
       return;
@@ -1157,7 +1195,7 @@ function normalizeTabRecord(value: unknown, order: number): TabRecord {
     favorite: Boolean(candidate.favorite),
     folder_id: typeof candidate.folder_id === "string" ? candidate.folder_id : undefined,
     workspace_id: typeof candidate.workspace_id === "string" ? candidate.workspace_id : undefined,
-    window_state: candidate.window_state === "detached" ? "detached" : candidate.window_state === "hidden" ? "hidden" : "main",
+    window_state: candidate.window_state === "hidden" ? "hidden" : "main",
     runtime_status: candidate.runtime_status === "crashed" ? "crashed" : "inactive",
     session_partition: typeof candidate.session_partition === "string" ? candidate.session_partition : `persist:seekstar-tab-${id}`,
     cache_policy: candidate.cache_policy ?? defaultCachePolicy(),

@@ -1,6 +1,6 @@
 ﻿import type { ExplorationTab, LayerId, ScoutObservation, ScoutPlan, SourceRef, TerrainNode, TerrainScene } from "@seekstar/core-schema";
-import { isTileLayer } from "@seekstar/core-schema";
-import type { CanvasTool, SourceIngestionInput } from "@seekstar/constellation-engine";
+import type { TileAbsorptionTrigger } from "@seekstar/core-schema";
+import { isDirectHttpUrl, type CanvasTool, type SourceIngestionInput } from "@seekstar/constellation-engine";
 import type { SeekStarSettings } from "../../main/appSettingsStore";
 import type { TabRuntimeSnapshot } from "../../main/tabRuntimeManager";
 import type { ChangeEvent, KeyboardEvent, ReactElement } from "react";
@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { DetachedTabTitleBar, ShellDockWorkbench, SidebarRail, WindowTitleBar } from "./components/AppChrome";
 import { ObservatorySidebar } from "./components/ObservatorySidebar";
 import { TerrainCanvas } from "./components/TerrainCanvas";
+import type { TileAbsorptionRequest } from "./components/TerrainCanvas";
 import { CommandComposer, SelectionActionCard, StatusStrip, WorkbenchHeader } from "./components/WorkbenchChrome";
 import { InspectorSidebar } from "./components/inspector/InspectorSidebar";
 import { SettingsPage } from "./components/settings/SettingsPage";
@@ -51,6 +52,8 @@ export function App(): ReactElement {
     handleApplyDomainLexiconToDefaultSeek: applyDomainLexiconToDefaultSeek,
     handleUseAsSeed: createSeedTab,
     handleUseHyperlinkAsSeed: createHyperlinkTab,
+    handleIngestDirectUrlIntoCurrentTab: ingestDirectUrlIntoCurrentTab,
+    handleOpenDirectUrlAsSeek: openDirectUrlAsSeek,
     handleTabSelect: selectTab,
     handleCloseTab: closeTab,
     handleReorderTabs: reorderTabs,
@@ -78,6 +81,8 @@ export function App(): ReactElement {
   const [splashVisible, setSplashVisible] = useState(true);
   const [splashFading, setSplashFading] = useState(false);
   const [activeCanvasTool, setActiveCanvasTool] = useState<CanvasTool>("pointer");
+  const [tileAbsorptionRequest, setTileAbsorptionRequest] = useState<TileAbsorptionRequest | undefined>();
+  const tileAbsorptionRequestCounterRef = useRef(0);
   const [isSelectionActionCardOpen, setIsSelectionActionCardOpen] = useState(false);
   const [tabRuntimeSnapshot, setTabRuntimeSnapshot] = useState<TabRuntimeSnapshot | undefined>();
   const [pendingRuntimeActiveTabId, setPendingRuntimeActiveTabId] = useState<string | undefined>();
@@ -260,6 +265,13 @@ export function App(): ReactElement {
   const activeTab = getActiveTab(scene);
   const activeLayer = getActiveLayer(scene);
   const activeLayerLabel = getActiveLayerLabel(scene);
+  const commandKind = isDirectHttpUrl(commandValue.trim()) ? "url" : "keyword";
+  const shouldShowWorkbenchPrompt =
+    selectedNodeIds.length === 0 &&
+    scene.viewport.layer === "L0" &&
+    scene.sources.length === 0 &&
+    (scene.scout_observations ?? []).length === 0 &&
+    !isDirectHttpUrl(activeTab.seed);
   const selectedNodes = useMemo(
     () => selectedNodeIds.map((nodeId) => scene.nodes.find((node) => node.id === nodeId)).filter((node): node is TerrainNode => Boolean(node)),
     [scene.nodes, selectedNodeIds],
@@ -358,14 +370,27 @@ export function App(): ReactElement {
 
     if (event.key === "Enter") {
       event.preventDefault();
-      handleAddKeywordToCurrentPage();
+      void handleAddKeywordToCurrentPage();
     }
   }
 
-  function handleAddKeywordToCurrentPage(): void {
+  async function handleAddKeywordToCurrentPage(): Promise<void> {
     const seed = commandValue.trim();
 
     if (!seed) {
+      return;
+    }
+
+    if (isDirectHttpUrl(seed)) {
+      resetCommandAndSearch();
+      resetSelection();
+      setRightSidebarCollapsed(false);
+
+      const result = await ingestDirectUrlIntoCurrentTab(seed);
+
+      if (result) {
+        applySelection(result);
+      }
       return;
     }
 
@@ -380,10 +405,22 @@ export function App(): ReactElement {
     setRightSidebarCollapsed(false);
   }
 
-  function handleUseAsSeed(): void {
+  async function handleUseAsSeed(): Promise<void> {
     const seed = commandValue.trim();
 
     if (!seed) {
+      return;
+    }
+
+    if (isDirectHttpUrl(seed)) {
+      resetCommandAndSearch();
+      resetSelection();
+
+      const result = await openDirectUrlAsSeek(seed);
+
+      if (result) {
+        applySelection(result);
+      }
       return;
     }
 
@@ -405,13 +442,26 @@ export function App(): ReactElement {
     setRightSidebarCollapsed(false);
   }
 
+  function requestTileAbsorption(nodeId: string, trigger: TileAbsorptionTrigger): void {
+    tileAbsorptionRequestCounterRef.current += 1;
+    setTileAbsorptionRequest({
+      nodeId,
+      trigger,
+      requestId: tileAbsorptionRequestCounterRef.current,
+    });
+  }
+
   function handleNodeSelect(nodeId: string): void {
     const node = scene.nodes.find((candidate) => candidate.id === nodeId);
 
     if (node && isAbsorbableCanvasTile(node)) {
       const isSameFocusedTile = scene.runtime.focused_node_id === nodeId || (selectedNodeIds.length === 1 && selectedNodeIds[0] === nodeId);
 
-      applySelection(isSameFocusedTile ? handleTileAbsorptionEnter(nodeId, "click") : handleTileFocus(nodeId));
+      if (isSameFocusedTile) {
+        requestTileAbsorption(nodeId, "click");
+      } else {
+        applySelection(handleTileFocus(nodeId));
+      }
       setRightSidebarCollapsed(false);
       return;
     }
@@ -849,18 +899,19 @@ export function App(): ReactElement {
                 onObservationSelect={handleScoutObservationSelect}
                 onRelationSelect={handleRelationSelect}
                 onSelectionChange={handleSceneSelection}
-                onTileAbsorptionThreshold={(nodeId) => {
-                  applySelection(handleTileAbsorptionEnter(nodeId, "threshold"));
+                onTileAbsorptionComplete={(nodeId, trigger) => {
+                  applySelection(handleTileAbsorptionEnter(nodeId, trigger));
                 }}
                 onViewportChange={handleSceneViewport}
                 scene={scene}
                 selectedNodeIds={selectedNodeIds}
                 selectedObservationId={selectedObservationId}
                 selectedRelationId={selectedRelationId}
+                tileAbsorptionRequest={tileAbsorptionRequest}
                 tileFieldTargetCount={settings?.tile_field_target_count}
                 viewport={scene.viewport}
               />
-              {selectedNodeIds.length === 0 ? (
+              {shouldShowWorkbenchPrompt ? (
                 <div className="workbench-prompt" aria-hidden="true">
                   <h1>What should we explore in {activeTab.title}?</h1>
                 </div>
@@ -876,6 +927,7 @@ export function App(): ReactElement {
             </div>
           </div>
           <CommandComposer
+            commandKind={commandKind}
             commandInputRef={commandInputRef}
             commandValue={commandValue}
             isCommandModalOpen={isCommandModalOpen}
@@ -936,8 +988,9 @@ export function App(): ReactElement {
 
 function isAbsorbableCanvasTile(node: TerrainNode): boolean {
   return Boolean(
-    node.source_url &&
-      isTileLayer(node.layer) &&
-      (node.type === "source" || node.type === "webpage" || node.type === "document" || node.type === "section"),
+    node.layer === "L3" &&
+      node.source_state === "source_backed" &&
+      node.source_url &&
+      (node.type === "webpage" || node.type === "document"),
   );
 }

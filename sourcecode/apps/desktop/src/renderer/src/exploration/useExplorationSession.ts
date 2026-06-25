@@ -2,16 +2,20 @@ import { assertValidTerrainScene, normalizeTerrainScene } from "@seekstar/core-s
 import type { LayerId, ScoutObservation, ScoutPlan, SourceRef, TerrainNode, TerrainScene } from "@seekstar/core-schema";
 import {
   applyExplorationEvent,
+  createDirectUrlScoutPlan,
   createDefaultNewSeekScene,
   createExplorationObjectPool,
+  createFailedScoutObservation,
   createSeedScene,
   defaultSeekStarSeedScene,
   isDirectHttpUrl,
   DEPRECATED_DEFAULT_TAB_IDS,
   resolveFrontierTrigger,
+  resolveZoomForLayer,
   resolveActiveDomainLexicon,
   ScoutJobCoordinator,
   TabSessionCoordinator,
+  type DirectUrlSourceIntakeResult,
   WorkspacePersistenceCoordinator,
   type DomainLexicon,
   type FrontierTrigger,
@@ -41,6 +45,9 @@ interface SyncWorkspaceFromStoreOptions {
   suppressAutosave?: boolean;
 }
 
+const DIRECT_URL_SOURCE_INTAKE_TIMEOUT_MS = 52_000;
+const STALE_DIRECT_URL_PENDING_MS = 90_000;
+
 export function useExplorationSession(options: UseExplorationSessionOptions = {}) {
   const initialScene = options.initialScene ?? defaultSeekStarSeedScene;
   const initialTabId = initialScene.active_tab_id;
@@ -61,6 +68,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
   const frontierTimersRef = useRef<Record<string, number>>({});
   const discoveredFrontiersRef = useRef<Set<string>>(new Set());
   const localNavigationRevisionRef = useRef(0);
+  const lastPersistedLocalNavigationRevisionRef = useRef(0);
   const lastWorkspaceChangeRevisionRef = useRef(0);
   const suppressNextAutosaveRef = useRef(false);
 
@@ -130,12 +138,17 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     [],
   );
 
-  const replaceScene = useCallback((tabId: string, nextScene: TerrainScene) => {
+  const replaceScene = useCallback((tabId: string, nextScene: TerrainScene): Record<string, TerrainScene> => {
     const normalized = assertValidTerrainScene(nextScene, `replaceScene:${tabId}`);
-    setScenesByTabId((current) => ({
-      ...current,
+    const nextScenesByTabId = {
+      ...scenesByTabIdRef.current,
       [tabId]: normalized,
-    }));
+    };
+
+    localNavigationRevisionRef.current += 1;
+    scenesByTabIdRef.current = nextScenesByTabId;
+    setScenesByTabId(nextScenesByTabId);
+    return nextScenesByTabId;
   }, []);
 
   const syncWorkspaceFromStore = useCallback(
@@ -143,10 +156,16 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       const revisionAtStart = localNavigationRevisionRef.current;
 
       try {
+        if (syncOptions.protectLocalNavigation && revisionAtStart !== lastPersistedLocalNavigationRevisionRef.current) {
+          return undefined;
+        }
+
         const launch = await workspacePersistence.hydrate({
           preferredActiveTabId: syncOptions.preferredActiveTabId,
           runtimeTabId,
         });
+        const settledLaunch = settleStaleDirectUrlPendingScenes(launch.scenesByTabId);
+        const launchScenesByTabId = settledLaunch.scenesByTabId;
 
         if (syncOptions.shouldCancel?.()) {
           return undefined;
@@ -165,18 +184,34 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
           suppressNextAutosaveRef.current = true;
         }
 
+        activeTabIdRef.current = launch.activeTabId;
+        scenesByTabIdRef.current = launchScenesByTabId;
+        basketByTabIdRef.current = launch.basketByTabId;
         setActiveTabId(launch.activeTabId);
-        setScenesByTabId(launch.scenesByTabId);
+        setScenesByTabId(launchScenesByTabId);
         setBasketByTabId(launch.basketByTabId);
 
         const shouldRegisterRuntimeTabs = !runtimeTabId && (syncOptions.registerRuntimeTabs ?? true);
 
         if (shouldRegisterRuntimeTabs) {
-          await registerRuntimeScenes(launch.scenesByTabId, launch.activeTabId);
+          await registerRuntimeScenes(launchScenesByTabId, launch.activeTabId);
           void closeDeprecatedRuntimeTabs();
         }
 
+        if (settledLaunch.changed) {
+          suppressNextAutosaveRef.current = true;
+          void workspacePersistence
+            .persist({
+              activeTabId: launch.activeTabId,
+              basketByTabId: launch.basketByTabId,
+              fallbackScene: launch.fallbackScene,
+              scenesByTabId: launchScenesByTabId,
+            })
+            .catch(() => undefined);
+        }
+
         setHydratedSelection(nextSelection);
+        lastPersistedLocalNavigationRevisionRef.current = localNavigationRevisionRef.current;
         setPersistenceStatus("saved");
 
         return nextSelection;
@@ -235,6 +270,8 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
 
     const timeoutId = window.setTimeout(() => {
       try {
+        const revisionAtSaveStart = localNavigationRevisionRef.current;
+
         setPersistenceStatus("saving");
         void workspacePersistence
           .persist({
@@ -245,6 +282,9 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
             scenesByTabId,
           })
           .then(() => {
+            if (localNavigationRevisionRef.current === revisionAtSaveStart) {
+              lastPersistedLocalNavigationRevisionRef.current = revisionAtSaveStart;
+            }
             setPersistenceStatus("saved");
           })
           .catch(() => {
@@ -422,6 +462,185 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       ).then((openedScene) => ingestHyperlinkSourceIntoScene(openedScene, url, parentBacklink));
     },
     [activeTabId, ingestHyperlinkSourceIntoScene, openSeedScene],
+  );
+
+  const persistWorkspaceAfterSceneChange = useCallback(
+    async (tabId: string, scenesOverride?: Record<string, TerrainScene>): Promise<void> => {
+      await workspacePersistence.persist({
+        activeTabId: tabId,
+        basketByTabId: basketByTabIdRef.current,
+        fallbackScene: initialScene,
+        scenesByTabId: scenesOverride ?? scenesByTabIdRef.current,
+        targetLockedTabId: tabId,
+      });
+    },
+    [initialScene, workspacePersistence],
+  );
+
+  const ingestDirectUrlSourceIntoScene = useCallback(
+    async (input: {
+      createdFrom?: NonNullable<TerrainScene["tabs"][number]["parent_backlink"]>;
+      scene: TerrainScene;
+      tabId: string;
+      tags?: string[];
+      targetNodeIds?: string[];
+      title?: string;
+      url: string;
+    }): Promise<SelectionSyncResult | undefined> => {
+      const url = input.url.trim();
+
+      if (!isDirectHttpUrl(url)) {
+        return undefined;
+      }
+
+      setPersistenceStatus("saving");
+
+      let pendingScene: TerrainScene | undefined;
+
+      try {
+        const pendingObservation = createPendingDirectUrlObservation({
+          createdAt: new Date().toISOString(),
+          tabId: input.tabId,
+          targetNodeIds: input.targetNodeIds ?? [],
+          url,
+        });
+        const pendingResult = applyExplorationEvent(input.scene, {
+          type: "scout.observations.appended",
+          observations: [pendingObservation],
+          viewport: {
+            ...input.scene.viewport,
+            layer: "L3",
+            zoom: Math.max(input.scene.viewport.zoom, resolveZoomForLayer("L3")),
+          },
+          description: `${input.scene.metadata.title} is observing ${url} through Scout.`,
+        });
+        pendingScene = pendingResult.scene;
+        const pendingScenesByTabId = replaceScene(input.tabId, pendingScene);
+        await persistWorkspaceAfterSceneChange(input.tabId, pendingScenesByTabId);
+
+        const result = await withTimeout(
+          scoutJobs.ingestDirectUrlSource({
+            createdFrom: input.createdFrom,
+            pendingObservationId: pendingObservation.id,
+            scene: pendingScene,
+            tabId: input.tabId,
+            tags: input.tags,
+            targetNodeIds: input.targetNodeIds,
+            title: input.title,
+            url,
+          }),
+          DIRECT_URL_SOURCE_INTAKE_TIMEOUT_MS,
+          () =>
+            createDirectUrlIntakeFailureResult({
+              pendingObservationId: pendingObservation.id,
+              scene: pendingResult.scene,
+              tabId: input.tabId,
+              targetNodeIds: input.targetNodeIds ?? [],
+              url,
+              reason: `Playwright Scout did not return within ${Math.round(DIRECT_URL_SOURCE_INTAKE_TIMEOUT_MS / 1000)} seconds.`,
+            }),
+        );
+
+        if (!scenesByTabIdRef.current[input.tabId]) {
+          return undefined;
+        }
+
+        const resultScenesByTabId = replaceScene(input.tabId, result.scene);
+        await persistWorkspaceAfterSceneChange(input.tabId, resultScenesByTabId);
+        setPersistenceStatus("saved");
+
+        return {
+          selectedNodeIds: result.scene.selection.node_ids,
+          focusNodeId: result.scene.runtime.focused_node_id ?? result.scene.selection.node_ids[0],
+        };
+      } catch (error) {
+        const sourceScene = pendingScene ?? input.scene;
+
+        if (scenesByTabIdRef.current[input.tabId]) {
+          const failedResult = createDirectUrlIntakeFailureResult({
+            pendingObservationId: sourceScene.scout_observations?.find((observation) => observation.status === "pending")?.id,
+            scene: sourceScene,
+            tabId: input.tabId,
+            targetNodeIds: input.targetNodeIds ?? [],
+            url,
+            reason: getErrorMessage(error, "Direct URL source intake failed before Scout returned."),
+          });
+          const failedScenesByTabId = replaceScene(input.tabId, failedResult.scene);
+          await persistWorkspaceAfterSceneChange(input.tabId, failedScenesByTabId).catch(() => undefined);
+        }
+
+        setPersistenceStatus("saved");
+        return undefined;
+      }
+    },
+    [persistWorkspaceAfterSceneChange, replaceScene, scoutJobs],
+  );
+
+  const handleIngestDirectUrlIntoCurrentTab = useCallback(
+    async (url: string): Promise<SelectionSyncResult | undefined> => {
+      const normalizedUrl = url.trim();
+
+      if (!isDirectHttpUrl(normalizedUrl)) {
+        return undefined;
+      }
+
+      const tabId = activeTabIdRef.current;
+      const currentScene = scenesByTabIdRef.current[tabId] ?? scene;
+      const selectedNodeId = currentScene.selection.node_ids[0];
+
+      return ingestDirectUrlSourceIntoScene({
+        createdFrom: {
+          tab_id: tabId,
+          node_id: selectedNodeId,
+          label: `Direct URL command in ${currentScene.metadata.title}`,
+          excerpt: normalizedUrl,
+        },
+        scene: currentScene,
+        tabId,
+        tags: ["scout-observation", "direct-url", "source-backed-command", "current-seek"],
+        targetNodeIds: currentScene.selection.node_ids,
+        url: normalizedUrl,
+      });
+    },
+    [ingestDirectUrlSourceIntoScene, scene],
+  );
+
+  const handleOpenDirectUrlAsSeek = useCallback(
+    async (url: string): Promise<SelectionSyncResult | undefined> => {
+      const normalizedUrl = url.trim();
+
+      if (!isDirectHttpUrl(normalizedUrl)) {
+        return undefined;
+      }
+
+      const originTabId = activeTabIdRef.current;
+      const originScene = scenesByTabIdRef.current[originTabId] ?? scene;
+      const originNodeId = originScene.selection.node_ids[0];
+      const parentBacklink = {
+        tab_id: originTabId,
+        node_id: originNodeId,
+        label: `Direct URL from ${originScene.metadata.title}`,
+        excerpt: normalizedUrl,
+      };
+      const openedScene = await openSeedScene(
+        createSeedScene(normalizedUrl, {
+          sourceMode: "new_seed",
+          parentBacklink,
+        }),
+      );
+      const tabId = openedScene.active_tab_id;
+      const latestScene = scenesByTabIdRef.current[tabId] ?? openedScene;
+
+      return ingestDirectUrlSourceIntoScene({
+        createdFrom: parentBacklink,
+        scene: latestScene,
+        tabId,
+        tags: ["scout-observation", "direct-url", "source-backed-command", "source-backed-tab"],
+        title: normalizedUrl,
+        url: normalizedUrl,
+      });
+    },
+    [ingestDirectUrlSourceIntoScene, openSeedScene, scene],
   );
 
   const handleExploreInCurrentTab = useCallback(
@@ -905,6 +1124,8 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     handleApplyDomainLexiconToDefaultSeek,
     handleUseAsSeed,
     handleUseHyperlinkAsSeed,
+    handleIngestDirectUrlIntoCurrentTab,
+    handleOpenDirectUrlAsSeek,
     handleTabSelect,
     handleCloseTab,
     handleReorderTabs,
@@ -955,4 +1176,163 @@ async function closeDeprecatedRuntimeTabs(): Promise<void> {
   for (const tabId of DEPRECATED_DEFAULT_TAB_IDS) {
     await window.seekstar.tabs.close(tabId).catch(() => undefined);
   }
+}
+
+function createPendingDirectUrlObservation(input: {
+  createdAt: string;
+  tabId: string;
+  targetNodeIds: string[];
+  url: string;
+}): ScoutObservation {
+  return {
+    id: `observation-direct-url-pending-${Date.now()}`,
+    tab_id: input.tabId,
+    status: "pending",
+    adapter: "playwright",
+    layer: "L3",
+    position_hint: { x: 0, y: 0 },
+    discovery_mode: "direct_url",
+    confidence: 0.36,
+    query: input.url,
+    title: `Observing ${input.url}`,
+    target_node_ids: input.targetNodeIds,
+    url: input.url,
+    snippet: "Playwright Scout is observing this URL before source-backed terrain is created.",
+    created_at: input.createdAt,
+    updated_at: input.createdAt,
+  };
+}
+
+function settleStaleDirectUrlPendingScenes(scenesByTabId: Record<string, TerrainScene>): {
+  changed: boolean;
+  scenesByTabId: Record<string, TerrainScene>;
+} {
+  let changed = false;
+  const now = Date.now();
+  const nextScenesByTabId = Object.fromEntries(
+    Object.entries(scenesByTabId).map(([tabId, scene]) => {
+      let nextScene = scene;
+      const staleObservations = (scene.scout_observations ?? []).filter(
+        (observation) =>
+          observation.discovery_mode === "direct_url" &&
+          observation.status === "pending" &&
+          isStaleTimestamp(observation.updated_at, now, STALE_DIRECT_URL_PENDING_MS),
+      );
+
+      for (const observation of staleObservations) {
+        changed = true;
+        nextScene = createDirectUrlIntakeFailureResult({
+          pendingObservationId: observation.id,
+          scene: nextScene,
+          tabId,
+          targetNodeIds: observation.target_node_ids,
+          url: observation.url ?? observation.query,
+          reason: "Direct URL Scout was interrupted before returning. Run source intake again to retry.",
+        }).scene;
+      }
+
+      return [tabId, nextScene];
+    }),
+  );
+
+  return {
+    changed,
+    scenesByTabId: nextScenesByTabId,
+  };
+}
+
+function createDirectUrlIntakeFailureResult(input: {
+  pendingObservationId?: string;
+  reason: string;
+  scene: TerrainScene;
+  tabId: string;
+  targetNodeIds: string[];
+  url: string;
+}): DirectUrlSourceIntakeResult {
+  const timestamp = new Date().toISOString();
+  const plan = createDirectUrlScoutPlan(input.url, input.targetNodeIds, timestamp);
+  const failedObservation = createFailedScoutObservation({
+    tabId: input.tabId,
+    plan,
+    title: `Direct URL Scout failed: ${input.url}`,
+    failureReason: input.reason,
+    timestamp,
+  });
+  const failedResult = applyExplorationEvent(settleScoutObservation(input.scene, input.pendingObservationId, "duplicate"), {
+    type: "scout.observations.appended",
+    observations: [failedObservation],
+    description: `${input.scene.metadata.title} could not observe ${input.url} through Scout.`,
+  });
+
+  return {
+    observation: failedObservation,
+    observations: [failedObservation],
+    scene: failedResult.scene,
+  };
+}
+
+function settleScoutObservation(
+  scene: TerrainScene,
+  observationId: string | undefined,
+  status: ScoutObservation["status"],
+): TerrainScene {
+  if (!observationId || !(scene.scout_observations ?? []).some((observation) => observation.id === observationId)) {
+    return scene;
+  }
+
+  const updatedAt = new Date().toISOString();
+
+  return {
+    ...scene,
+    scout_observations: (scene.scout_observations ?? []).map((observation) =>
+      observation.id === observationId
+        ? {
+            ...observation,
+            status,
+            updated_at: updatedAt,
+          }
+        : observation,
+    ),
+    metadata: {
+      ...scene.metadata,
+      updated_at: updatedAt,
+    },
+    runtime: {
+      ...scene.runtime,
+      updated_at: updatedAt,
+    },
+  };
+}
+
+function isStaleTimestamp(value: string, now: number, thresholdMs: number): boolean {
+  const timestamp = Date.parse(value);
+
+  if (!Number.isFinite(timestamp)) {
+    return true;
+  }
+
+  return now - timestamp > thresholdMs;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout: () => T): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      resolve(onTimeout());
+    }, timeoutMs);
+
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeoutId);
+        resolve(value);
+      },
+      (error: unknown) => {
+        window.clearTimeout(timeoutId);
+        reject(error);
+      },
+    );
+  });
+}
+
+function getErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error ? error.message : fallback;
 }

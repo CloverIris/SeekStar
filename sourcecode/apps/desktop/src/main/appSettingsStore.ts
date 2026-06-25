@@ -6,6 +6,12 @@ import {
   type DomainLexicon,
   type DomainLexiconTerm,
 } from "@seekstar/constellation-engine";
+import {
+  BUILT_IN_CONTENT_PROVIDER_DEFINITIONS,
+  DEFAULT_CONTENT_PROVIDER_SETTINGS,
+  type ContentProviderDefinition,
+  type ContentProviderSettings,
+} from "@seekstar/core-schema";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
@@ -18,6 +24,7 @@ export interface SeekStarSettings {
   tile_thumbnail_prewarm_concurrency: number;
   active_domain_lexicon_id: string;
   domain_lexicons: DomainLexicon[];
+  content_providers: ContentProviderSettings[];
 }
 
 export interface AppSettingsStoreOptions {
@@ -36,6 +43,7 @@ export const defaultSettings: SeekStarSettings = {
   tile_thumbnail_prewarm_concurrency: 2,
   active_domain_lexicon_id: DEFAULT_DOMAIN_LEXICON_ID,
   domain_lexicons: cloneDomainLexicons(DEFAULT_DOMAIN_LEXICONS),
+  content_providers: cloneContentProviderSettings(DEFAULT_CONTENT_PROVIDER_SETTINGS),
 };
 
 export function registerAppSettingsStore(options: AppSettingsStoreOptions = {}): void {
@@ -111,7 +119,79 @@ function normalizeSettings(value: unknown): SeekStarSettings {
     ),
     active_domain_lexicon_id: activeDomainLexiconId,
     domain_lexicons: lexicons,
+    content_providers: normalizeContentProviderSettings(candidate.content_providers),
   };
+}
+
+function normalizeContentProviderSettings(value: unknown): ContentProviderSettings[] {
+  const definitionsById = new Map<string, ContentProviderDefinition>(
+    BUILT_IN_CONTENT_PROVIDER_DEFINITIONS.map((provider) => [provider.id, provider as ContentProviderDefinition]),
+  );
+  const incomingById = new Map<string, Partial<ContentProviderSettings>>();
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item !== "object" || item === null) {
+        continue;
+      }
+
+      const candidate = item as Partial<ContentProviderSettings>;
+
+      if (typeof candidate.id === "string" && definitionsById.has(candidate.id)) {
+        incomingById.set(candidate.id, candidate);
+      }
+    }
+  }
+
+  return DEFAULT_CONTENT_PROVIDER_SETTINGS.map((fallback): ContentProviderSettings => {
+    const definition = definitionsById.get(fallback.id);
+    const candidate = incomingById.get(fallback.id);
+    const enabled = candidate?.enabled ?? fallback.enabled;
+
+    return {
+      id: fallback.id,
+      enabled,
+      priority: clampNumber(candidate?.priority, 1, 999, fallback.priority),
+      languages: normalizeProviderLanguages(candidate?.languages, fallback.languages, definition?.supported_languages),
+      region: normalizeOptionalString(candidate?.region),
+      base_url: normalizeOptionalString(candidate?.base_url),
+      api_key_env_var: normalizeOptionalString(candidate?.api_key_env_var) ?? fallback.api_key_env_var,
+      health_status: enabled ? (candidate?.health_status === "requires_key" ? "requires_key" : "ready") : "disabled",
+      health_message: normalizeOptionalString(candidate?.health_message),
+    };
+  }).sort((left, right) => left.priority - right.priority || left.id.localeCompare(right.id));
+}
+
+function cloneContentProviderSettings(settings: readonly ContentProviderSettings[]): ContentProviderSettings[] {
+  return settings.map((provider) => ({
+    ...provider,
+    languages: provider.languages ? [...provider.languages] : undefined,
+  }));
+}
+
+function normalizeProviderLanguages(
+  value: unknown,
+  fallback: readonly string[] | undefined,
+  supported: readonly string[] | undefined,
+): string[] | undefined {
+  const fallbackLanguages = fallback ? [...fallback] : undefined;
+
+  if (!Array.isArray(value)) {
+    return fallbackLanguages;
+  }
+
+  const supportedSet = supported ? new Set(supported) : undefined;
+  const languages = value
+    .filter((language): language is string => typeof language === "string" && Boolean(language.trim()))
+    .map((language) => language.trim())
+    .filter((language, index, list) => list.indexOf(language) === index)
+    .filter((language) => !supportedSet || supportedSet.has(language));
+
+  return languages.length > 0 ? languages : fallbackLanguages;
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function normalizeDomainLexicons(value: unknown, activeLexiconId: unknown): DomainLexicon[] {

@@ -1,9 +1,10 @@
-import type { ScoutRunRequest, ScoutRunResult } from "@seekstar/core-schema";
+import type { ContentProviderSettings, ScoutRunRequest, ScoutRunResult } from "@seekstar/core-schema";
 
 export interface ScoutWorkerRunMessage {
   type: "scout:run";
   request_id: string;
   request: ScoutRunRequest;
+  content_providers?: ContentProviderSettings[];
 }
 
 export interface ScoutWorkerResultMessage {

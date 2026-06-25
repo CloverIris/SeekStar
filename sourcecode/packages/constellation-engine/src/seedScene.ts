@@ -45,7 +45,11 @@ export function createSeedScene(seedText: string, options: SeedSceneOptions = {}
   const codePoint = character.codePointAt(0) ?? 0;
   const unicodeTitle = `U+${codePoint.toString(16).toUpperCase().padStart(4, "0")} ${character}`;
   const domainTerms = (options.domainLexicon?.terms ?? []).filter((term) => term.enabled).slice(0, 24);
-  const domainNodeIds = domainTerms.map((term) => `node-${slug}-domain-${toSlug(term.canonical)}-${stamp}`);
+  const domainNodeIds = domainTerms.map((term, index) => {
+    const termKey = term.id.trim() || term.canonical.trim() || `term-${index + 1}`;
+
+    return `node-${slug}-domain-${toSlug(termKey)}-${index + 1}-${stamp}`;
+  });
   const domainNodes: TerrainNode[] = domainTerms.map((term, index) => {
     const angle = (Math.PI * 2 * index) / Math.max(domainTerms.length, 1) - Math.PI / 2;
     const ring = 390 + (index % 2) * 90;

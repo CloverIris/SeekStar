@@ -70,10 +70,11 @@ export function removeDeprecatedDefaultScenes(
   fallbackScene: TerrainScene,
 ): Record<string, TerrainScene> {
   const entries = Object.entries(scenesByTabId).filter(([tabId]) => !deprecatedDefaultTabIds.has(tabId));
+  const scenes = Object.fromEntries(entries);
 
   return {
-    ...Object.fromEntries(entries),
-    [fallbackScene.active_tab_id]: fallbackScene,
+    ...scenes,
+    ...(scenes[fallbackScene.active_tab_id] ? {} : { [fallbackScene.active_tab_id]: fallbackScene }),
   };
 }
 
@@ -88,8 +89,11 @@ export function createPersistableWorkspaceSnapshot<TBasketItem>(input: {
   latestSnapshot?: unknown;
   lockedTabId?: string;
   scenesByTabId: Record<string, TerrainScene>;
+  targetLockedTabId?: string;
 }): WorkspaceSnapshot<TBasketItem> {
-  if (!input.lockedTabId) {
+  const lockedTabId = input.targetLockedTabId ?? input.lockedTabId;
+
+  if (!lockedTabId) {
     return buildWorkspaceSnapshot({
       activeTabId: input.activeTabId,
       basketByTabId: input.basketByTabId,
@@ -98,7 +102,7 @@ export function createPersistableWorkspaceSnapshot<TBasketItem>(input: {
     });
   }
 
-  const lockedScene = input.scenesByTabId[input.lockedTabId];
+  const lockedScene = input.scenesByTabId[lockedTabId];
 
   if (!lockedScene || !isWorkspaceSnapshot<TBasketItem>(input.latestSnapshot)) {
     return buildWorkspaceSnapshot({
@@ -109,7 +113,7 @@ export function createPersistableWorkspaceSnapshot<TBasketItem>(input: {
     });
   }
 
-  if (!input.latestSnapshot.scenes_by_tab_id[input.lockedTabId]) {
+  if (!input.latestSnapshot.scenes_by_tab_id[lockedTabId]) {
     return buildWorkspaceSnapshot({
       activeTabId: input.latestSnapshot.active_tab_id,
       basketByTabId: input.latestSnapshot.basket_by_tab_id,
@@ -122,15 +126,15 @@ export function createPersistableWorkspaceSnapshot<TBasketItem>(input: {
     activeTabId: input.latestSnapshot.active_tab_id,
     basketByTabId: {
       ...input.latestSnapshot.basket_by_tab_id,
-      [input.lockedTabId]:
-        input.basketByTabId[input.lockedTabId] ??
-        input.latestSnapshot.basket_by_tab_id[input.lockedTabId] ??
+      [lockedTabId]:
+        input.basketByTabId[lockedTabId] ??
+        input.latestSnapshot.basket_by_tab_id[lockedTabId] ??
         [],
     },
     fallbackScene: input.fallbackScene,
     scenesByTabId: {
       ...input.latestSnapshot.scenes_by_tab_id,
-      [input.lockedTabId]: lockedScene,
+      [lockedTabId]: lockedScene,
     },
   });
 }

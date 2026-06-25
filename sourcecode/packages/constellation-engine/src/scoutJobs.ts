@@ -32,6 +32,22 @@ export interface HyperlinkSourceIntakeResult extends ScoutJobResult {
   sourceCandidate?: ScoutObservation;
 }
 
+export interface DirectUrlSourceIntakeInput {
+  createdFrom?: NonNullable<TerrainScene["tabs"][number]["parent_backlink"]>;
+  pendingObservationId?: string;
+  reliabilityHints?: string[];
+  scene: TerrainScene;
+  tabId: string;
+  tags?: string[];
+  targetNodeIds?: string[];
+  title?: string;
+  url: string;
+}
+
+export interface DirectUrlSourceIntakeResult extends ScoutJobResult {
+  sourceCandidate?: ScoutObservation;
+}
+
 export class ScoutJobCoordinator {
   constructor(private readonly options: ScoutJobCoordinatorOptions) {}
 
@@ -108,6 +124,53 @@ export class ScoutJobCoordinator {
       scene: input.scene,
       tabId: input.tabId,
     });
+  }
+
+  async ingestDirectUrlSource(input: DirectUrlSourceIntakeInput): Promise<DirectUrlSourceIntakeResult> {
+    const url = input.url.trim();
+    const scoutPlan = createDirectUrlScoutPlan(url, input.targetNodeIds ?? [], new Date().toISOString());
+    const scoutResult = await this.runPlan({
+      plan: scoutPlan,
+      scene: input.scene,
+      tabId: input.tabId,
+      description: `${input.scene.metadata.title} received direct URL Scout observations.`,
+    });
+    const sourceCandidate = findSourceCandidate(scoutResult.observations);
+    const scoutScene = input.pendingObservationId
+      ? updateScoutObservationStatus(scoutResult.scene, input.pendingObservationId, sourceCandidate ? "converted" : "duplicate")
+      : scoutResult.scene;
+
+    if (!sourceCandidate) {
+      return {
+        ...scoutResult,
+        scene: scoutScene,
+        sourceCandidate,
+      };
+    }
+
+    const result = applyExplorationEvent(scoutScene, {
+      type: "source.snapshot.ingested",
+      input: {
+        title: input.title?.trim() || sourceCandidate.title,
+        url: sourceCandidate.url ?? url,
+        body: sourceCandidate.source_snapshot?.visible_text ?? sourceCandidate.snippet ?? sourceCandidate.query,
+        snapshot: sourceCandidate.source_snapshot,
+        sourceType: sourceCandidate.source_type,
+        retrievedAt: sourceCandidate.source_snapshot?.retrieved_at ?? sourceCandidate.retrieved_at,
+        reliabilityHints: createDirectUrlReliabilityHints(sourceCandidate, input.reliabilityHints ?? ["opened from direct URL command"]),
+        tags: input.tags ?? ["scout-observation", "direct-url", "source-backed-command"],
+        createdFrom: input.createdFrom,
+        observationId: sourceCandidate.id,
+        initialLayer: "L3",
+      },
+    });
+
+    return {
+      observation: scoutResult.observation,
+      observations: scoutResult.observations,
+      scene: result.scene,
+      sourceCandidate,
+    };
   }
 
   async runSourceOutlinks(input: {
@@ -189,42 +252,16 @@ export class ScoutJobCoordinator {
   }
 
   async ingestHyperlinkSource(input: HyperlinkSourceIntakeInput): Promise<HyperlinkSourceIntakeResult> {
-    const scoutPlan = createDirectUrlScoutPlan(input.url, [], new Date().toISOString());
-    const runResult = await this.options.scout.runPlan(input.tabId, scoutPlan);
-    const appended = applyExplorationEvent(input.scene, {
-      type: "scout.observations.appended",
-      observations: runResult.observations,
-      description: `${input.scene.metadata.title} received direct hyperlink Scout observations.`,
-    }).scene;
-    const sourceCandidate = findSourceCandidate(runResult.observations);
-    const scene = sourceCandidate
-      ? applyExplorationEvent(appended, {
-          type: "source.snapshot.ingested",
-          input: {
-            title: sourceCandidate.title,
-            url: sourceCandidate.url ?? input.url,
-            body: sourceCandidate.snippet ?? sourceCandidate.query,
-            sourceType: sourceCandidate.source_type,
-            retrievedAt: sourceCandidate.retrieved_at,
-            reliabilityHints: [
-              "observed by Playwright Scout adapter",
-              "opened from absorbed tile hyperlink",
-              `Scout status: ${sourceCandidate.status.replace("_", " ")}`,
-            ],
-            tags: ["scout-observation", "hyperlink", "source-backed-tab"],
-            createdFrom: input.parentBacklink,
-            observationId: sourceCandidate.id,
-            initialLayer: "L3",
-          },
-        }).scene
-      : appended;
-
-    return {
-      observation: runResult.observations[0],
-      observations: runResult.observations,
-      scene,
-      sourceCandidate,
-    };
+    return this.ingestDirectUrlSource({
+      createdFrom: input.parentBacklink,
+      reliabilityHints: [
+        "opened from absorbed tile hyperlink",
+      ],
+      scene: input.scene,
+      tabId: input.tabId,
+      tags: ["scout-observation", "hyperlink", "source-backed-tab"],
+      url: input.url,
+    });
   }
 
   convertObservationToSource(input: {
@@ -241,15 +278,19 @@ export class ScoutJobCoordinator {
       input: {
         title: input.observation.title,
         url: input.observation.url,
-        body: input.observation.snippet ?? input.observation.query,
+        body: input.observation.source_snapshot?.visible_text ?? input.observation.snippet ?? input.observation.query,
+        snapshot: input.observation.source_snapshot,
         sourceType: input.observation.source_type,
-        retrievedAt: input.observation.retrieved_at,
+        retrievedAt: input.observation.source_snapshot?.retrieved_at ?? input.observation.retrieved_at,
         reliabilityHints: [
           "user-confirmed Scout observation",
           input.observation.adapter === "playwright"
             ? "observed by Playwright Scout adapter"
             : "non-Playwright Scout observation",
           `Scout status: ${input.observation.status.replace("_", " ")}`,
+          input.observation.source_snapshot
+            ? `${input.observation.source_snapshot.outlinks.length} outlinks and ${input.observation.source_snapshot.media.length} media candidates captured`
+            : "structured source snapshot unavailable",
         ],
         tags: ["scout-observation"],
         createdFrom: {
@@ -266,6 +307,52 @@ export class ScoutJobCoordinator {
 
 function findSourceCandidate(observations: ScoutObservation[]): ScoutObservation | undefined {
   return observations.find((observation) => observation.status === "source_candidate" || observation.status === "observed");
+}
+
+function updateScoutObservationStatus(
+  scene: TerrainScene,
+  observationId: string,
+  status: ScoutObservation["status"],
+): TerrainScene {
+  const observations = scene.scout_observations ?? [];
+
+  if (!observations.some((observation) => observation.id === observationId)) {
+    return scene;
+  }
+
+  const updatedAt = new Date().toISOString();
+
+  return {
+    ...scene,
+    scout_observations: observations.map((observation) =>
+      observation.id === observationId
+        ? {
+            ...observation,
+            status,
+            updated_at: updatedAt,
+          }
+        : observation,
+    ),
+    metadata: {
+      ...scene.metadata,
+      updated_at: updatedAt,
+    },
+    runtime: {
+      ...scene.runtime,
+      updated_at: updatedAt,
+    },
+  };
+}
+
+function createDirectUrlReliabilityHints(observation: ScoutObservation, extraHints: string[]): string[] {
+  return [
+    "observed by Playwright Scout adapter",
+    ...extraHints,
+    `Scout status: ${observation.status.replace("_", " ")}`,
+    observation.source_snapshot
+      ? `${observation.source_snapshot.outlinks.length} outlinks and ${observation.source_snapshot.media.length} media candidates captured`
+      : "structured source snapshot unavailable",
+  ];
 }
 
 function getErrorMessage(error: unknown, fallback: string): string {

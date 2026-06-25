@@ -1,4 +1,4 @@
-import { isTileLayer, normalizeTerrainScene, validateTerrainScene } from "@seekstar/core-schema";
+import { normalizeTerrainScene, validateTerrainScene } from "@seekstar/core-schema";
 import type { LayerId, ScoutObservation, TerrainNode, TerrainScene, TileAbsorptionTrigger, ViewportState } from "@seekstar/core-schema";
 import { WORKSPACE_SCHEMA_REVISION, type HydratedWorkspace, type WorkspaceSnapshot } from "./types.js";
 import { resolveZoomForLayer } from "./lens.js";
@@ -199,6 +199,7 @@ export function applyTileFocus(scene: TerrainScene, nodeId: string): { scene: Te
     x: focusNode.position_hint?.x ?? scene.viewport.x,
     y: focusNode.position_hint?.y ?? scene.viewport.y,
     layer: focusNode.layer,
+    zoom: Math.max(scene.viewport.zoom, resolveZoomForLayer(focusNode.layer)),
   };
   const nextScene = withSceneViewport(
     {
@@ -433,5 +434,10 @@ function shouldClearAbsorptionForFocus(absorbedNodeId: string | undefined, focus
 }
 
 function isAbsorbableTileNode(node: TerrainNode): boolean {
-  return Boolean(node.source_url && isTileLayer(node.layer) && (node.type === "source" || node.type === "webpage" || node.type === "document" || node.type === "section"));
+  return Boolean(
+    node.layer === "L3" &&
+      node.source_state === "source_backed" &&
+      node.source_url &&
+      (node.type === "webpage" || node.type === "document"),
+  );
 }

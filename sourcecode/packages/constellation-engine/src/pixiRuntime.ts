@@ -1,9 +1,10 @@
-import { isTileLayer } from "@seekstar/core-schema";
+import { getLayerFocalBand, isMacroLayer, isTileLayer } from "@seekstar/core-schema";
 import type { LayerId, ScoutObservation, SourceState, TerrainNode, TerrainRelation, TerrainScene, ViewportState } from "@seekstar/core-schema";
 import { resolveZoomForLayer } from "./lens.js";
 
 export interface TerrainPixiProjection {
   candidateObservations: ScoutObservation[];
+  mainContent: MainContentProjection;
   renderedNodes: TerrainNode[];
   tileSurfaces: TerrainTileSurface[];
   visibleNodes: TerrainNode[];
@@ -14,6 +15,14 @@ export interface TerrainPixiProjection {
 export type TileSurfaceVisibility = "off_viewport" | "near_viewport" | "visible" | "focused";
 export type TileSurfaceLoadPriority = "none" | "low" | "medium" | "high";
 export type TileSurfaceLoadState = "metadata_only" | "thumbnail_ready" | "renderer_visible" | "renderer_focused";
+export type MainContentMode =
+  | "domain_gallery"
+  | "source_intake_pending"
+  | "source_intake_failed"
+  | "source_tile_field"
+  | "browser_absorbed"
+  | "text_grain"
+  | "empty_source_field";
 
 export interface ProjectionRect {
   x: number;
@@ -48,6 +57,17 @@ export interface TerrainTileSurface {
   type: TerrainNode["type"];
   visibility: TileSurfaceVisibility;
   worldBounds: ProjectionRect;
+}
+
+export interface MainContentProjection {
+  emptyReason?: string;
+  focusedSourceId?: string;
+  intakeStatus: "idle" | "pending" | "failed" | "ready";
+  mode: MainContentMode;
+  sourceTileSurfaces: TerrainTileSurface[];
+  statusObservationId?: string;
+  statusText?: string;
+  statusUrl?: string;
 }
 
 export interface TerrainPixiProjectionOptions {
@@ -89,11 +109,13 @@ export function createTerrainPixiProjection(
       candidateStatuses.has(observation.status) &&
       observation.status !== "converted",
   );
+  const tileSurfaces = createTileSurfaces(layerNodes, viewport, options);
 
   return {
     candidateObservations,
+    mainContent: createMainContentProjection(scene, viewport, tileSurfaces),
     renderedNodes,
-    tileSurfaces: createTileSurfaces(layerNodes, viewport, options),
+    tileSurfaces,
     visibleNodes: layerNodes,
     visibleNodeIds: layerNodeIds,
     visibleRelations: scene.relations.filter((relation) => renderedNodeIds.has(relation.from) && renderedNodeIds.has(relation.to)),
@@ -123,6 +145,98 @@ export function clampTileFieldTargetCount(value: number | undefined): number {
   }
 
   return Math.min(80, Math.max(4, Math.round(value)));
+}
+
+function createMainContentProjection(
+  scene: TerrainScene,
+  viewport: ViewportState,
+  sourceTileSurfaces: TerrainTileSurface[],
+): MainContentProjection {
+  const directUrlObservation = getLatestDirectUrlObservation(scene);
+
+  if (scene.runtime.browser_absorption.status === "absorbed") {
+    return {
+      focusedSourceId: scene.runtime.browser_absorption.source_id,
+      intakeStatus: "ready",
+      mode: "browser_absorbed",
+      sourceTileSurfaces,
+      statusUrl: scene.runtime.browser_absorption.source_url,
+    };
+  }
+
+  if (sourceTileSurfaces.length > 0) {
+    return {
+      focusedSourceId: sourceTileSurfaces.find((surface) => surface.visibility === "focused")?.sourceId ?? sourceTileSurfaces[0]?.sourceId,
+      intakeStatus: "ready",
+      mode: "source_tile_field",
+      sourceTileSurfaces,
+    };
+  }
+
+  if (directUrlObservation?.status === "pending") {
+    return {
+      intakeStatus: "pending",
+      mode: "source_intake_pending",
+      sourceTileSurfaces,
+      statusObservationId: directUrlObservation.id,
+      statusText: "Playwright Scout is observing this source before terrain is created.",
+      statusUrl: directUrlObservation.url ?? directUrlObservation.query,
+    };
+  }
+
+  if (directUrlObservation?.status === "failed") {
+    return {
+      emptyReason: directUrlObservation.failure_reason ?? "Scout could not observe this URL.",
+      intakeStatus: "failed",
+      mode: "source_intake_failed",
+      sourceTileSurfaces,
+      statusObservationId: directUrlObservation.id,
+      statusText: directUrlObservation.failure_reason ?? directUrlObservation.snippet,
+      statusUrl: directUrlObservation.url ?? directUrlObservation.query,
+    };
+  }
+
+  if (isMacroLayer(viewport.layer)) {
+    return {
+      intakeStatus: "idle",
+      mode: "domain_gallery",
+      sourceTileSurfaces,
+    };
+  }
+
+  if (viewport.layer === "L2" || viewport.layer === "L3") {
+    return {
+      emptyReason: "No source-backed webpage/document tile exists on this layer yet.",
+      intakeStatus: "idle",
+      mode: "empty_source_field",
+      sourceTileSurfaces,
+    };
+  }
+
+  if (viewport.layer === "L4" || getLayerFocalBand(viewport.layer) === "text_grain" || viewport.layer === "L11") {
+    return {
+      intakeStatus: "idle",
+      mode: "text_grain",
+      sourceTileSurfaces,
+    };
+  }
+
+  return {
+    emptyReason: "This layer has no source-backed surface to render.",
+    intakeStatus: "idle",
+    mode: "empty_source_field",
+    sourceTileSurfaces,
+  };
+}
+
+function getLatestDirectUrlObservation(scene: TerrainScene): ScoutObservation | undefined {
+  return [...(scene.scout_observations ?? [])]
+    .filter(
+      (observation) =>
+        observation.discovery_mode === "direct_url" &&
+        (observation.status === "pending" || observation.status === "failed"),
+    )
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
 }
 
 function createTileSurfaces(
@@ -177,7 +291,12 @@ function createTileSurfaces(
 }
 
 function isTileSurfaceNode(node: TerrainNode): boolean {
-  return node.type === "source" || node.type === "webpage" || node.type === "document" || node.type === "section";
+  return Boolean(
+    node.layer === "L3" &&
+      node.source_state === "source_backed" &&
+      node.source_url &&
+      (node.type === "webpage" || node.type === "document"),
+  );
 }
 
 function resolveTileWorldSize(
