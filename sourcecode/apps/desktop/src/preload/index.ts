@@ -18,7 +18,7 @@ import type {
   CartographerRuntimeViewportExpansionResult,
 } from "../main/cartographerRuntimeBridge";
 import type { TabRuntimeSnapshot, TabWorkspaceSyncInput } from "../main/tabRuntimeManager";
-import type { TileSurfaceLinkEvent, TileSurfaceThumbnailEvent } from "../main/tileSurfaceManager";
+import type { TileSurfaceDeepLensSnapshot, TileSurfaceLinkEvent, TileSurfaceThumbnailEvent } from "../main/tileSurfaceManager";
 
 export type WindowAction =
   | "reload"
@@ -139,6 +139,8 @@ contextBridge.exposeInMainWorld("seekstar", {
   },
   tiles: {
     clear: (tabId: string): Promise<void> => ipcRenderer.invoke("tiles:clear", tabId),
+    captureDeepLens: (input: { nodeId: string; tabId: string }): Promise<TileSurfaceDeepLensSnapshot> =>
+      ipcRenderer.invoke("tiles:capture-deep-lens", input),
     onLinkActivated: (callback: (event: TileSurfaceLinkEvent) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: TileSurfaceLinkEvent): void => callback(payload);
       ipcRenderer.on("tiles:link-activated", listener);

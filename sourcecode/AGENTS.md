@@ -16,15 +16,20 @@ The core product promise is:
 
 SeekStar is currently in MVP core-development mode.
 
-When the user explicitly says that a path is obsolete, mock-only, or blocking the MVP, the team should prefer a destructive cleanup over compatibility shims. Old renderer paths, old mock layouts, old placeholder UI, and stale product assumptions should be removed rather than preserved behind fallback flags.
+When the user says that a path is obsolete, mock-only, or blocking the MVP, treat that as a deletion instruction unless there is a concrete safety reason not to. This is not a mature product with existing user data obligations. Old logic, old caches, old UI panels, old fallback data, fake buttons, mock layouts, radial/spiral artifacts, and stale product assumptions should be physically removed rather than hidden, softened, or preserved behind compatibility flags.
+
+Do not "reduce noise" by merely not displaying old state. If the old path can re-enter the runtime, confuse the model boundary, resurrect cached mock scenes, or make the UI look like the previous prototype, delete the path and its cache/readback assumptions.
 
 Current MVP spine:
 
-* AI Cartographer is the primary L0-L3 and recursive-seed terrain producer.
-* DataService validates, observes, and loads sources; it is not the main map generator.
-* Level Runtime owns per-layer data contracts and layout contracts.
-* Pixi/App Framework render those contracts; they must not resurrect legacy radial, mock, or DOM placeholder layouts.
-* Right sidebar work should move toward AI map chat/control, not old inspector/debug sprawl.
+* AI Cartographer is the primary L0-L3, Supra Macro, and recursive-seed terrain producer.
+* AI-generated `cartographer_primary` terrain is the normal map material for L0-L3, not a suspicious fallback. Source-backed terrain is stronger provenance, not the only legitimate visible content.
+* DataService validates, observes, and loads sources for AI and user actions; it is a reality probe and tool surface, not the main map generator.
+* Failed AI-proposed URLs or source candidates must stay out of the main canvas. They may enter diagnostics/recovery queues, then be retried or replaced by AI.
+* Level Runtime owns per-band data contracts, prompt profiles, chunk policy, and layout families. AI supplies semantic material; the runtime decides the product spatial contract.
+* Pixi/App Framework render those contracts; they must not resurrect legacy radial, mock, DOM placeholder, debug-HUD, or old inspector-first layouts.
+* Right sidebar work should become an AI map chat/control surface. Old inspector/debug sprawl should be removed from the default product path.
+* Every level/band module should be CLI-testable with structured input, structured output, validation, and diagnostics. If a path cannot be tested outside the full Electron UI, it is not ready to be a core layer boundary.
 
 For this phase, "stable" means the main exploration loop is coherent and testable. It does not mean maintaining forward compatibility with earlier mock-stage scenes, cached chunks, or UI experiments.
 
@@ -53,7 +58,9 @@ Lists may exist, but only as secondary support inside panels, inspectors, search
 
 ### 1.3 Sources before confidence
 
-The Agent must not present unsupported claims as factual nodes.
+The Agent must not present unsupported claims as source-backed facts.
+
+This does not mean unsourced AI terrain is secondary or hidden. In the MVP, AI-generated terrain is the primary map material for macro and source-orientation exploration. It must be marked with the correct source state and validated against the schema, but it should render as normal exploration terrain.
 
 Every factual content node should prefer to carry:
 
@@ -66,7 +73,9 @@ Every factual content node should prefer to carry:
 * relation type;
 * reason for inclusion.
 
-If no source exists, the node must be marked as a concept node, hypothesis node, or generated question node.
+If no source exists, the node must be marked as `cartographer_primary`, `agent_inferred`, `weak_hypothesis`, `fog`, or another honest non-source-backed state. It should not claim `source_backed`.
+
+If a generated URL fails DataService observation or cannot produce a usable tile surface, do not show it as a broken tile on the main canvas. Keep failure evidence in recovery/diagnostics and ask AI for a replacement candidate when appropriate.
 
 ### 1.4 Structure before style
 
@@ -80,12 +89,14 @@ SeekStar supports infinite Z-axis depth, but every Z transition must preserve or
 
 The Agent must always identify:
 
-* current layer;
-* parent layer;
-* child layer;
+* current band or layer;
+* parent / supra context;
+* child / detail target;
 * sibling regions;
 * user’s current path;
 * meaningful exits.
+
+The visible product should not expose a brittle staircase of many text layers. L4-L10 style section, paragraph, sentence, phrase, word, character, Unicode, and dictionary detail belong inside Deep Lens unless a grain is promoted into a new recursive seed.
 
 ### 1.6 Unknown unknowns must not become hallucinated unknowns
 
@@ -118,19 +129,21 @@ The host must not let remote web pages directly control core application state.
 
 ### 2.2 Scout
 
-Playwright is the scout.
+Playwright and DataService are the scout.
 
 Responsibilities:
 
-* search the web;
-* open and inspect pages;
+* validate AI-proposed URLs and source candidates;
+* open and inspect pages when observation is requested;
 * extract titles, snippets, visible text, metadata, links, publication dates, and page structure;
+* distinguish HTML, PDF, image, and future file snapshots;
 * take structured observations;
 * report retrieval failures;
+* expose source probing as a tool/MCP-style capability to the local AI agent;
 * obey rate limits and safety constraints;
 * avoid bypassing authentication, paywalls, anti-bot systems, or private content boundaries.
 
-The scout fetches and observes. It does not decide meaning.
+The scout fetches and observes. It does not decide meaning, rank truth, or generate the L0-L3 map.
 
 ### 2.3 Cartographer
 
@@ -138,14 +151,19 @@ The AI Agent is the cartographer.
 
 Responsibilities:
 
+* generate `cartographer_primary` L0-L3 terrain;
+* generate Supra Macro context above L0 without using negative levels;
 * classify retrieved content;
 * detect parent, child, and sibling concepts;
 * assign semantic relations;
 * identify clusters and fog regions;
-* generate layer structures;
+* generate level/band structures;
+* expand same-band horizontal chunks as the user approaches viewport boundaries;
+* decompose focused regions downward through band-specific prompts;
+* summarize orphan content upward when parent context is missing;
 * produce explanations for selected regions;
 * generate learning paths, translations, summaries, and question sets;
-* decide what additional information should be scouted;
+* propose source candidates for DataService to validate;
 * generate structured data that the renderer can consume.
 
 The cartographer interprets. It does not perform raw rendering.
@@ -158,13 +176,13 @@ Responsibilities:
 
 * show cognitive lens effects;
 * render XY spatial fields;
-* handle Z-axis depth;
+* handle semantic band movement and camera depth;
 * provide lasso, brush, selection, search, tabs, sidebars, and inspectors;
 * preserve orientation;
 * make source traceability visible;
 * make unknown regions attractive but not misleading.
 
-The telescope focuses attention. It does not fabricate content.
+The telescope focuses attention. It does not fabricate content, but it should eagerly display valid Cartographer terrain without waiting for every object to be source-backed.
 
 ### 2.5 Archivist
 
@@ -456,9 +474,9 @@ Required fields:
 
 ### 4.3 Layer
 
-Layers are semantic depth levels, not merely zoom values.
+Layers and bands are semantic depths, not merely zoom values.
 
-Canonical 12Level ladder:
+The old canonical 12Level ladder remains useful as an internal address vocabulary and migration reference:
 
 * L0: 领域 / Star Gallery / seed pool;
 * L1: 主题;
@@ -473,7 +491,17 @@ Canonical 12Level ladder:
 * L10: Unicode / dictionary;
 * L11: term-as-new-seed loop.
 
-The ladder is extensible. The UI must not assume a hard maximum.
+The MVP product target is no longer a visible 12-step UI ladder. The user-facing runtime is modular:
+
+* Supra Macro: broader systems and parent domains above L0.
+* L0 Star Gallery: domain seed pool and broad exploration field.
+* L1 Topic Field: topic neighborhoods and same-layer branches.
+* L2 Source Orientation: source directions, reference families, communities, repositories, papers, and trails.
+* L3 Tile Field: webpage, article, PDF, image, and document candidates or source-backed tiles.
+* Deep Lens: section, paragraph, sentence, phrase, word, character, Unicode/dictionary, and future byte/hex inspection inside one close-reading mode.
+* Recursive Seed: any selected grain, region, link, file, image region, or text span becomes a new exploration universe.
+
+The runtime must be extensible. The UI must not assume a hard maximum or force every text granularity into its own visible product layer.
 
 ### 4.4 Constellation
 
@@ -539,13 +567,13 @@ When the user enters text and chooses “as new exploration seed”:
 
 1. Create a new independent tab.
 2. Do not inherit the previous tab’s navigation history.
-3. Use the text as L0 seed.
-4. Generate parent, child, and sibling fields.
-5. Plan web searches.
-6. Run scout tasks.
-7. Distill source nodes.
-8. Render initial map.
-9. Mark low-confidence regions as fog.
+3. Use the text as the seed context.
+4. Ask AI Cartographer to bootstrap Supra Macro, L0, L1, and L2 by default; L3 candidates may be prepared when useful.
+5. Render valid `cartographer_primary` terrain immediately after schema validation.
+6. Ask DataService to validate only the URL/source candidates that need reality probing.
+7. Promote successful observations into source-backed L3 tiles.
+8. Hide failed candidates from the main canvas and keep them in recovery/diagnostics.
+9. Preload nearby chunks according to settings.
 
 ### 5.3 Search within current tab
 
@@ -572,28 +600,28 @@ When the user clicks a hyperlink in content:
 
 When the user approaches an edge:
 
-1. Identify near-edge nodes and fog regions.
-2. Estimate whether expansion is useful.
-3. Generate candidate adjacent structures.
-4. Run scout tasks only if needed.
-5. Add new structures in the direction of travel.
-6. Do not re-layout the entire map unless necessary.
-7. Preserve spatial memory.
+1. Detect that the active viewport is near the prepared chunk boundary.
+2. Request AI Cartographer `expand_horizontal` for the next same-band chunk.
+3. Preload one or two rings when settings allow.
+4. Run DataService only for source candidates that require observation.
+5. Add new structures in the direction of travel without re-laying out the entire map.
+6. Put distant chunks to sleep, cache them, or evict them when budgets are exceeded.
+7. Preserve spatial memory and avoid visible chunk seams.
 
 ### 5.6 Z-axis transition
 
 When the user zooms in:
 
-1. Determine whether the next semantic layer should be revealed.
-2. Fade current layer into context.
-3. Reveal next layer with enough labels to preserve orientation.
-4. Keep parent breadcrumb visible.
-5. Generate child structures only when missing.
+1. Determine whether the next semantic band should be revealed.
+2. Fade the current band into context.
+3. Generate or hydrate child/detail terrain through the band module.
+4. Keep parent/supra context visible.
+5. Enter Deep Lens for text/content detail instead of marching through many visible text layers.
 
 When the user zooms out:
 
 1. Collapse child nodes into summaries.
-2. Fade lower layer to zero or near-zero opacity.
+2. Fade lower band detail to zero or near-zero opacity.
 3. Reveal parent region.
 4. Preserve the user’s trail.
 
@@ -603,9 +631,10 @@ At document level:
 
 1. Render content as a non-overlapping tiled plane.
 2. Maintain internal scale inside each tile.
-3. Allow zoom from page tile to section, paragraph, sentence, phrase, word, character, Unicode/dictionary, and recursive seed.
-4. Every lower-level text object must know its source location.
-5. Any phrase, word, character, Unicode/dictionary item, or recursive seed node can become a new L0 exploration seed.
+3. Absorb a focused tile into a browser/document surface when the user chooses or crosses the threshold.
+4. Use Deep Lens for section, paragraph, sentence, phrase, word, character, Unicode/dictionary, and future byte/hex inspection.
+5. Every lower-level address path must preserve source location when it came from a source-backed tile.
+6. Any phrase, word, character, image region, paragraph, sentence, or selected grain can become a recursive seed.
 
 ### 5.8 Lasso and brush AI action
 

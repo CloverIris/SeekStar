@@ -1,6 +1,6 @@
 # P6 AI Cartographer and Level Runtime Redesign
 
-Status: P6 implementation baseline active through P6.57
+Status: P6 implementation baseline active through P6.61
 
 P6 changes the center of gravity of SeekStar.
 
@@ -447,6 +447,17 @@ P6.60 treats old L0/L1 radial and chunk-island scenes as incompatible MVP artifa
 - The default prompt profile is bumped to `seekstar-default-p6-gallery-v3`, and old P6 profile ids normalize into the new profile to avoid stale chunk cache reuse.
 
 This is intentionally destructive. During MVP, user-facing coherence of the telescope canvas has higher priority than compatibility with mock-stage cached terrain.
+
+## P6.61 MVP Doctrine Documentation Reset
+
+P6.61 makes the product doctrine explicit across PRD and AGENTS guidance:
+
+- MVP cleanup is destructive. Old logic, old caches, fake buttons, old debug panels, old fallback paths, and mock-stage render artifacts should be deleted when touched rather than hidden or kept compatible.
+- AI Cartographer is the default L0-L3 and recursive-seed terrain producer. `cartographer_primary` is normal map material after schema validation.
+- DataService is a reality probe and AI/user tool boundary. It validates source candidates and loads pages, PDFs, images, and future files, but it does not generate the main map.
+- Failed source candidates stay out of the main canvas and move to recovery/diagnostics, with retry or AI replacement paths.
+- The visible product target is Supra Macro, L0 Star Gallery, L1 Topic Field, L2 Source Orientation, L3 Tile Field, Deep Lens, and Recursive Seed. The old L0-L11 ladder remains only an internal address vocabulary and migration reference.
+- Right sidebar work should converge on AI map chat/control with typed user-approved app actions, not legacy inspector/debug sprawl.
 
 ## Right Sidebar Redesign
 

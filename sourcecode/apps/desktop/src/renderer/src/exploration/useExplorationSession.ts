@@ -1,5 +1,5 @@
 import { assertValidTerrainScene, normalizeTerrainScene } from "@seekstar/core-schema";
-import type { LayerId, ScoutObservation, ScoutPlan, SourceRef, TerrainNode, TerrainScene } from "@seekstar/core-schema";
+import type { DeepLensSnapshot, LayerId, ScoutObservation, ScoutPlan, SourceRef, TerrainNode, TerrainScene } from "@seekstar/core-schema";
 import {
   applyExplorationEvent,
   createDirectUrlScoutPlan,
@@ -483,12 +483,38 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
           scenesByTabId: nextScenesByTabId,
         });
 
+        try {
+          const orphanSeed = createHyperlinkOrphanSeed(nextScene, parentBacklink);
+          const cartographerResult = await window.seekstar.cartographer.runBootstrapTransaction({
+            forceRefresh: false,
+            scene: nextScene,
+            seed: orphanSeed,
+            tabId,
+          });
+          applyCartographerChunkSnapshot(cartographerResult.snapshot);
+          const cartographerScene = cartographerResult.scene;
+          const cartographerScenesByTabId = replaceScene(tabId, cartographerScene);
+          await workspacePersistence.persist({
+            activeTabId: tabId,
+            basketByTabId: basketByTabIdRef.current,
+            fallbackScene: initialScene,
+            scenesByTabId: cartographerScenesByTabId,
+          });
+          setCartographerStatus(cartographerResult.status);
+        } catch {
+          setCartographerStatus({
+            message: `Cartographer orphan context failed for ${url}`,
+            phase: "error",
+            updatedAt: new Date().toISOString(),
+          });
+        }
+
         setPersistenceStatus("saved");
       } catch {
         setPersistenceStatus("error");
       }
     },
-    [initialScene, scoutJobs, workspacePersistence],
+    [applyCartographerChunkSnapshot, initialScene, replaceScene, scoutJobs, workspacePersistence],
   );
 
   const handleUseHyperlinkAsSeed = useCallback(
@@ -1205,6 +1231,21 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     };
   }, [activeTabId, replaceScene, scene]);
 
+  const handleEnterDeepLens = useCallback(
+    (snapshot: DeepLensSnapshot): SelectionSyncResult => {
+      const result = applyExplorationEvent(scene, {
+        type: "deep_lens.entered",
+        snapshot,
+      });
+      replaceScene(activeTabId, result.scene);
+      return {
+        selectedNodeIds: result.selectedNodeIds ?? result.scene.selection.node_ids,
+        focusNodeId: result.focusNodeId,
+      };
+    },
+    [activeTabId, replaceScene, scene],
+  );
+
   const handleRunScoutPlan = useCallback(
     async (plan: ScoutPlan, placement?: ScoutObservationPlacement): Promise<ScoutObservation | undefined> => {
       const tabId = activeTabIdRef.current;
@@ -1726,6 +1767,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     handleTileFocus,
     handleTileAbsorptionEnter,
     handleTileAbsorptionExit,
+    handleEnterDeepLens,
     handleResetWorkspace,
     handleExploreInCurrentTab,
     handleApplyDomainLexiconToDefaultSeek,
@@ -1827,6 +1869,17 @@ function shouldBootstrapCartographerTerrain(scene: TerrainScene): boolean {
   const seed = (activeTab?.seed || scene.metadata.title).trim();
 
   return Boolean(seed) && !isDirectHttpUrl(seed);
+}
+
+function createHyperlinkOrphanSeed(
+  scene: TerrainScene,
+  parentBacklink: NonNullable<TerrainScene["tabs"][number]["parent_backlink"]>,
+): string {
+  const sourceTitle = scene.sources[0]?.title ?? scene.metadata.title;
+  const parentLabel = parentBacklink.label.replace(/^Hyperlink from\s+/i, "").trim();
+  const parentContext = parentLabel && parentLabel !== "Hyperlink" ? parentLabel : undefined;
+
+  return parentContext ? `${sourceTitle} in context of ${parentContext}` : sourceTitle;
 }
 
 function isCartographerExpandableLayer(layer: LayerId): layer is CartographerLevelBandId {

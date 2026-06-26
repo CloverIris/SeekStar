@@ -17,7 +17,7 @@ import type {
   CartographerRuntimeViewportExpansionResult,
 } from "../../main/cartographerRuntimeBridge";
 import type { TabRuntimeSnapshot, TabWorkspaceSyncInput } from "../../main/tabRuntimeManager";
-import type { TileSurfaceLinkEvent, TileSurfaceThumbnailEvent } from "../../main/tileSurfaceManager";
+import type { TileSurfaceDeepLensSnapshot, TileSurfaceLinkEvent, TileSurfaceThumbnailEvent } from "../../main/tileSurfaceManager";
 
 export type WindowAction =
   | "reload"
@@ -125,6 +125,7 @@ export interface TileSurfaceSyncItem {
 
 export interface SeekStarTilesApi {
   clear: (tabId: string) => Promise<void>;
+  captureDeepLens: (input: { nodeId: string; tabId: string }) => Promise<TileSurfaceDeepLensSnapshot>;
   onLinkActivated: (callback: (event: TileSurfaceLinkEvent) => void) => () => void;
   onThumbnailUpdated: (callback: (event: TileSurfaceThumbnailEvent) => void) => () => void;
   sync: (input: TileSurfaceSyncInput) => Promise<void>;

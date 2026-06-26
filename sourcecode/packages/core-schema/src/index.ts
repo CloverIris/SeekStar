@@ -153,6 +153,30 @@ export interface SourcePositionRange {
   excerpt?: string;
 }
 
+export interface DeepLensTextGrainSnapshot {
+  locator: string;
+  text: string;
+  kind: "section" | "paragraph" | "phrase" | "word";
+  start: number;
+  end: number;
+  rects?: Array<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  }>;
+}
+
+export interface DeepLensSnapshot {
+  node_id: string;
+  source_id?: string;
+  source_url?: string;
+  title: string;
+  captured_at: string;
+  text: string;
+  grains: DeepLensTextGrainSnapshot[];
+}
+
 export interface TokenRangeRef {
   source_id?: string;
   node_id?: string;

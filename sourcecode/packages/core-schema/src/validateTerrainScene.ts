@@ -240,7 +240,7 @@ function normalizeRuntimeState(value: unknown): TerrainScene["runtime"] {
       source_id: typeof absorption?.source_id === "string" && absorption.source_id.trim() ? absorption.source_id.trim() : undefined,
       source_url: typeof absorption?.source_url === "string" && absorption.source_url.trim() ? absorption.source_url.trim() : undefined,
       entered_at: typeof absorption?.entered_at === "string" ? absorption.entered_at : undefined,
-      exit_layer: typeof absorption?.exit_layer === "string" ? absorption.exit_layer : "L4",
+      exit_layer: typeof absorption?.exit_layer === "string" ? absorption.exit_layer : "L3",
       trigger:
         absorption?.trigger === "threshold" || absorption?.trigger === "click" || absorption?.trigger === "command"
           ? absorption.trigger

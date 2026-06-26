@@ -1,3 +1,4 @@
+import { getLayerDefinition } from "@seekstar/core-schema";
 import type { AgentJob, AgentJobStatus, ExplorationTab, SourceRef, SourceState, TerrainNode, TerrainRelation, TerrainScene } from "@seekstar/core-schema";
 import type { PersistenceStatus } from "@seekstar/constellation-engine";
 export {
@@ -43,7 +44,7 @@ export function getActiveLayer(scene: TerrainScene): TerrainScene["layers"][numb
 }
 
 export function getActiveLayerLabel(scene: TerrainScene): string {
-  return scene.layers.find((layer) => layer.id === scene.viewport.layer)?.label ?? scene.viewport.layer;
+  return getLayerDefinition(scene.viewport.layer)?.label ?? scene.layers.find((layer) => layer.id === scene.viewport.layer)?.label ?? scene.viewport.layer;
 }
 
 export function getRelationNodes(scene: TerrainScene, relation: TerrainRelation): { from?: TerrainNode; to?: TerrainNode } {

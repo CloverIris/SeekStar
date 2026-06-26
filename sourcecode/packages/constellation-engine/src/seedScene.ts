@@ -392,7 +392,7 @@ export function createSeedScene(seedText: string, options: SeedSceneOptions = {}
       focused_node_id: undefined,
       browser_absorption: {
         status: "idle",
-        exit_layer: "L4",
+        exit_layer: "L3",
       },
       updated_at: createdAt,
     },

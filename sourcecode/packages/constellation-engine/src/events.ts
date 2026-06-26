@@ -1,4 +1,4 @@
-import type { LayerId, ScoutObservation, TerrainScene, TileAbsorptionTrigger, ViewportState } from "@seekstar/core-schema";
+import type { DeepLensSnapshot, LayerId, ScoutObservation, TerrainScene, TileAbsorptionTrigger, ViewportState } from "@seekstar/core-schema";
 import type { SourceIngestionInput } from "./sourceTerrain.js";
 import {
   appendScoutObservations,
@@ -8,6 +8,7 @@ import {
   applyTileAbsorptionEnter,
   applyTileAbsorptionExit,
   applyTileFocus,
+  enterDeepLensFromSnapshot,
   ingestSourceSnapshot,
 } from "./sceneMutations.js";
 
@@ -39,6 +40,10 @@ export type ExplorationEvent =
     }
   | {
       type: "tile.absorption.exited";
+    }
+  | {
+      type: "deep_lens.entered";
+      snapshot: DeepLensSnapshot;
     }
   | {
       type: "scout.observations.appended";
@@ -86,6 +91,8 @@ export function applyExplorationEvent(scene: TerrainScene, event: ExplorationEve
       return applyTileAbsorptionEnter(scene, event.nodeId, event.trigger);
     case "tile.absorption.exited":
       return applyTileAbsorptionExit(scene);
+    case "deep_lens.entered":
+      return enterDeepLensFromSnapshot(scene, event.snapshot);
     case "scout.observations.appended":
       return {
         scene: appendScoutObservations(scene, event.observations, {

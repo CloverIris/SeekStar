@@ -1,5 +1,6 @@
 import { BaseWindow, BrowserWindow, WebContentsView, ipcMain, shell, webContents } from "electron";
 import type { IpcMainInvokeEvent, Rectangle } from "electron";
+import type { DeepLensSnapshot } from "@seekstar/core-schema";
 import type { SeekStarSettings } from "./appSettingsStore";
 
 export interface TileSurfaceHost {
@@ -28,6 +29,8 @@ export interface TileSurfaceThumbnailEvent {
   title: string;
   updatedAt: string;
 }
+
+export type TileSurfaceDeepLensSnapshot = DeepLensSnapshot;
 
 interface TileSurfaceSyncInput {
   surfaces: TileSurfaceSyncItem[];
@@ -93,6 +96,99 @@ const THUMBNAIL_CAPTURE_HEIGHT = 400;
 const THUMBNAIL_CAPTURE_DELAY_MS = 650;
 const THUMBNAIL_LOAD_TIMEOUT_MS = 12_000;
 const MAX_THUMBNAIL_CACHE_ENTRIES = 160;
+const DEEP_LENS_EXTRACTION_SCRIPT = `
+(() => {
+  const MAX_PARAGRAPHS = 24;
+  const MAX_WORDS_PER_PARAGRAPH = 5;
+  const MAX_TEXT = 24000;
+
+  function normalizeText(value) {
+    return String(value || "").replace(/\\s+/g, " ").trim();
+  }
+
+  function cssPath(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) {
+      return "document";
+    }
+
+    const parts = [];
+    let current = element;
+
+    while (current && current.nodeType === Node.ELEMENT_NODE && parts.length < 8) {
+      const tag = current.tagName.toLowerCase();
+      const id = current.id ? "#" + current.id.replace(/[^a-zA-Z0-9_-]/g, "") : "";
+
+      if (id) {
+        parts.unshift(tag + id);
+        break;
+      }
+
+      const siblings = Array.from(current.parentElement?.children || []).filter((item) => item.tagName === current.tagName);
+      const index = siblings.indexOf(current) + 1;
+      parts.unshift(siblings.length > 1 ? tag + ":nth-of-type(" + index + ")" : tag);
+      current = current.parentElement;
+    }
+
+    return parts.join(" > ") || "document";
+  }
+
+  function rectsForElement(element) {
+    return Array.from(element.getClientRects()).slice(0, 4).map((rect) => ({
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    }));
+  }
+
+  const candidates = Array.from(document.querySelectorAll("main h1, main h2, main h3, main p, article h1, article h2, article h3, article p, section h1, section h2, section h3, section p, h1, h2, h3, p"))
+    .map((element) => ({ element, text: normalizeText(element.innerText || element.textContent) }))
+    .filter((item) => item.text.length >= 24)
+    .slice(0, MAX_PARAGRAPHS);
+
+  const allText = normalizeText(document.body?.innerText || document.documentElement?.textContent || "").slice(0, MAX_TEXT);
+  let cursor = 0;
+  const grains = [];
+
+  for (const [index, item] of candidates.entries()) {
+    const textStart = allText.indexOf(item.text.slice(0, Math.min(80, item.text.length)), cursor);
+    const start = textStart >= 0 ? textStart : cursor;
+    const end = Math.min(MAX_TEXT, start + item.text.length);
+    const tag = item.element.tagName.toLowerCase();
+    const kind = /^h[1-3]$/.test(tag) ? "section" : "paragraph";
+    const locator = cssPath(item.element);
+
+    cursor = end;
+    grains.push({
+      locator,
+      kind,
+      text: item.text.slice(0, 1200),
+      start,
+      end,
+      rects: rectsForElement(item.element),
+    });
+
+    const words = item.text.match(/[\\p{L}\\p{N}][\\p{L}\\p{N}_-]{3,}/gu) || [];
+    for (const [wordIndex, word] of Array.from(new Set(words)).slice(0, MAX_WORDS_PER_PARAGRAPH).entries()) {
+      const wordStart = allText.indexOf(word, start);
+      grains.push({
+        locator: locator + "::word(" + (wordIndex + 1) + ")",
+        kind: "word",
+        text: word,
+        start: wordStart >= 0 ? wordStart : start,
+        end: (wordStart >= 0 ? wordStart : start) + word.length,
+        rects: [],
+      });
+    }
+  }
+
+  return {
+    title: normalizeText(document.title) || location.href,
+    text: allText,
+    grains,
+  };
+})()
+`;
 
 export class TileSurfaceManager {
   private readonly liveEntriesByKey = new Map<string, LiveTileSurfaceEntry>();
@@ -121,6 +217,9 @@ export class TileSurfaceManager {
     });
     registerHandler("tiles:clear", async (_event, tabId) => {
       this.clearTab(parseTabId(tabId));
+    });
+    registerHandler("tiles:capture-deep-lens", async (_event, input) => {
+      return this.captureDeepLensSnapshot(parseTileSurfaceDeepLensRequest(input));
     });
   }
 
@@ -175,6 +274,33 @@ export class TileSurfaceManager {
 
     this.syncThumbnailRequests(input.tabId, rankedSurfaces);
     this.syncLiveSurfaces(input.tabId, host, rankedSurfaces);
+  }
+
+  async captureDeepLensSnapshot(input: { nodeId: string; tabId: string }): Promise<TileSurfaceDeepLensSnapshot> {
+    const key = createTileSurfaceKey(input.tabId, input.nodeId);
+    const entry = this.liveEntriesByKey.get(key);
+
+    if (!entry || entry.view.webContents.isDestroyed()) {
+      throw new Error("No live browser tile is available for Deep Lens capture.");
+    }
+
+    const extracted = await entry.view.webContents.executeJavaScript(DEEP_LENS_EXTRACTION_SCRIPT, true) as Partial<DeepLensSnapshot>;
+    const capturedAt = new Date().toISOString();
+    const text = typeof extracted.text === "string" ? extracted.text : "";
+    const grains = Array.isArray(extracted.grains) ? extracted.grains : [];
+
+    return {
+      node_id: entry.item.nodeId,
+      source_id: entry.item.sourceId,
+      source_url: entry.currentUrl ?? entry.expectedUrl ?? entry.item.sourceUrl,
+      title: typeof extracted.title === "string" && extracted.title.trim() ? extracted.title.trim() : entry.item.title,
+      captured_at: capturedAt,
+      text,
+      grains: grains
+        .map((grain) => normalizeDeepLensGrain(grain))
+        .filter((grain): grain is DeepLensSnapshot["grains"][number] => Boolean(grain))
+        .slice(0, 96),
+    };
   }
 
   private syncThumbnailRequests(tabId: string, surfaces: TileSurfaceSyncItem[]): void {
@@ -544,6 +670,53 @@ function parseTileSurfaceSyncInput(value: unknown): TileSurfaceSyncInput {
     : [];
 
   return { tabId, surfaces };
+}
+
+function parseTileSurfaceDeepLensRequest(value: unknown): { nodeId: string; tabId: string } {
+  const candidate = typeof value === "object" && value !== null ? value as { nodeId?: unknown; tabId?: unknown } : {};
+  const tabId = parseTabId(candidate.tabId);
+  const nodeId = typeof candidate.nodeId === "string" && candidate.nodeId.trim() ? candidate.nodeId.trim() : undefined;
+
+  if (!nodeId) {
+    throw new Error("Deep Lens capture requires a node id.");
+  }
+
+  return { nodeId, tabId };
+}
+
+function normalizeDeepLensGrain(value: unknown): DeepLensSnapshot["grains"][number] | undefined {
+  const candidate = typeof value === "object" && value !== null ? value as Partial<DeepLensSnapshot["grains"][number]> : {};
+  const text = typeof candidate.text === "string" ? candidate.text.trim() : "";
+  const locator = typeof candidate.locator === "string" && candidate.locator.trim() ? candidate.locator.trim() : undefined;
+  const kind =
+    candidate.kind === "section" || candidate.kind === "paragraph" || candidate.kind === "phrase" || candidate.kind === "word"
+      ? candidate.kind
+      : undefined;
+  const start = typeof candidate.start === "number" && Number.isFinite(candidate.start) ? Math.max(0, Math.round(candidate.start)) : undefined;
+  const end = typeof candidate.end === "number" && Number.isFinite(candidate.end) ? Math.max(start ?? 0, Math.round(candidate.end)) : undefined;
+
+  if (!text || !locator || !kind || start === undefined || end === undefined) {
+    return undefined;
+  }
+
+  return {
+    locator,
+    text: text.slice(0, 1_200),
+    kind,
+    start,
+    end,
+    rects: Array.isArray(candidate.rects)
+      ? candidate.rects.flatMap((rect) => {
+          const box = typeof rect === "object" && rect !== null ? rect as { x?: unknown; y?: unknown; width?: unknown; height?: unknown } : {};
+          return typeof box.x === "number" &&
+            typeof box.y === "number" &&
+            typeof box.width === "number" &&
+            typeof box.height === "number"
+            ? [{ x: box.x, y: box.y, width: box.width, height: box.height }]
+            : [];
+        }).slice(0, 4)
+      : undefined,
+  };
 }
 
 function parseTileSurfaceSyncItem(value: unknown): TileSurfaceSyncItem | undefined {

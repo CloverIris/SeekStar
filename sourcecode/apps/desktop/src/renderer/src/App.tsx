@@ -1,5 +1,6 @@
 ﻿import type { ExplorationTab, LayerId, ScoutObservation, ScoutPlan, SourceRef, TerrainNode, TerrainScene } from "@seekstar/core-schema";
 import type { TileAbsorptionTrigger } from "@seekstar/core-schema";
+import type { DeepLensSnapshot } from "@seekstar/core-schema";
 import type { AiAssistantAction } from "@seekstar/ai-service";
 import { isDirectHttpUrl, type CanvasTool, type SourceIngestionInput } from "@seekstar/constellation-engine";
 import type { SeekStarSettings } from "../../main/appSettingsStore";
@@ -51,6 +52,7 @@ export function App(): ReactElement {
     handleTileFocus,
     handleTileAbsorptionEnter,
     handleTileAbsorptionExit,
+    handleEnterDeepLens,
     handleExploreInCurrentTab: exploreInCurrentTab,
     handleApplyDomainLexiconToDefaultSeek: applyDomainLexiconToDefaultSeek,
     handleUseAsSeed: createSeedTab,
@@ -93,6 +95,7 @@ export function App(): ReactElement {
   const [splashFading, setSplashFading] = useState(false);
   const [activeCanvasTool, setActiveCanvasTool] = useState<CanvasTool>("pointer");
   const [tileAbsorptionRequest, setTileAbsorptionRequest] = useState<TileAbsorptionRequest | undefined>();
+  const [tileActionNodeId, setTileActionNodeId] = useState<string | undefined>();
   const [chunkAutoDiscoveryOverride, setChunkAutoDiscoveryOverride] = useState<boolean | undefined>();
   const tileAbsorptionRequestCounterRef = useRef(0);
   const [isSelectionActionCardOpen, setIsSelectionActionCardOpen] = useState(false);
@@ -471,6 +474,32 @@ export function App(): ReactElement {
       trigger,
       requestId: tileAbsorptionRequestCounterRef.current,
     });
+    setTileActionNodeId(undefined);
+  }
+
+  async function enterDeepLensForNode(nodeId: string): Promise<void> {
+    const node = scene.nodes.find((candidate) => candidate.id === nodeId);
+
+    if (!node) {
+      return;
+    }
+
+    setTileActionNodeId(undefined);
+
+    try {
+      const snapshot = await window.seekstar.tiles.captureDeepLens({
+        tabId: scene.active_tab_id,
+        nodeId,
+      });
+      applySelection(handleEnterDeepLens(snapshot));
+      return;
+    } catch {
+      const fallback = createFallbackDeepLensSnapshot(scene, node);
+
+      if (fallback) {
+        applySelection(handleEnterDeepLens(fallback));
+      }
+    }
   }
 
   function handleNodeSelect(nodeId: string): void {
@@ -480,9 +509,10 @@ export function App(): ReactElement {
       const isSameFocusedTile = scene.runtime.focused_node_id === nodeId || (selectedNodeIds.length === 1 && selectedNodeIds[0] === nodeId);
 
       if (isSameFocusedTile) {
-        requestTileAbsorption(nodeId, "click");
+        setTileActionNodeId(nodeId);
       } else {
         applySelection(handleTileFocus(nodeId));
+        setTileActionNodeId(undefined);
       }
       setRightSidebarCollapsed(false);
       return;
@@ -494,6 +524,7 @@ export function App(): ReactElement {
     }
 
     handleSceneSelection([nodeId], nodeId);
+    setTileActionNodeId(undefined);
     setRightSidebarCollapsed(false);
   }
 
@@ -1251,6 +1282,9 @@ export function App(): ReactElement {
                 onBrowserModeExit={() => {
                   applySelection(handleTileAbsorptionExit());
                 }}
+                onCurrentPageDeepLens={(nodeId) => {
+                  void enterDeepLensForNode(nodeId);
+                }}
                 onFrontierDiscovery={(viewport) => {
                   if (!chunkAutoDiscoveryEnabled) {
                     return;
@@ -1285,6 +1319,16 @@ export function App(): ReactElement {
                   onDismiss={() => setIsSelectionActionCardOpen(false)}
                   onSaveSelection={handleSaveSelectionToTray}
                   onUseAsSeed={handleUseSelectionAsSeedTab}
+                />
+              ) : null}
+              {tileActionNodeId ? (
+                <TileActionChooser
+                  node={scene.nodes.find((node) => node.id === tileActionNodeId)}
+                  onDismiss={() => setTileActionNodeId(undefined)}
+                  onEnterBrowser={() => requestTileAbsorption(tileActionNodeId, "click")}
+                  onEnterDeepLens={() => {
+                    void enterDeepLensForNode(tileActionNodeId);
+                  }}
                 />
               ) : null}
             </div>
@@ -1362,6 +1406,59 @@ function isAbsorbableCanvasTile(node: TerrainNode): boolean {
       node.source_state === "source_backed" &&
       node.source_url &&
       (node.type === "webpage" || node.type === "document"),
+  );
+}
+
+function createFallbackDeepLensSnapshot(scene: TerrainScene, node: TerrainNode): DeepLensSnapshot | undefined {
+  const source = node.source_id ? scene.sources.find((candidate) => candidate.id === node.source_id) : undefined;
+  const text = source?.source_snapshot?.visible_text || node.quote || node.summary || source?.snippet || "";
+
+  if (!text.trim()) {
+    return undefined;
+  }
+
+  return {
+    node_id: node.id,
+    source_id: node.source_id,
+    source_url: node.source_url ?? source?.url,
+    title: source?.source_snapshot?.title || source?.title || node.title,
+    captured_at: new Date().toISOString(),
+    text,
+    grains: [],
+  };
+}
+
+function TileActionChooser({
+  node,
+  onDismiss,
+  onEnterBrowser,
+  onEnterDeepLens,
+}: {
+  node?: TerrainNode;
+  onDismiss: () => void;
+  onEnterBrowser: () => void;
+  onEnterDeepLens: () => void;
+}): ReactElement | null {
+  if (!node) {
+    return null;
+  }
+
+  return (
+    <aside className="tile-action-chooser" aria-label="Tile actions">
+      <button className="tile-action-chooser-backdrop" aria-label="Dismiss tile actions" onClick={onDismiss} type="button" />
+      <div className="tile-action-chooser-panel">
+        <span>L3 Tile Field</span>
+        <strong>{node.title}</strong>
+        <div>
+          <button onClick={onEnterDeepLens} type="button">
+            进入DeepLens
+          </button>
+          <button onClick={onEnterBrowser} type="button">
+            进入浏览器模式
+          </button>
+        </div>
+      </div>
+    </aside>
   );
 }
 

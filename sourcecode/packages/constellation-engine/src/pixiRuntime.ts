@@ -332,6 +332,10 @@ function applyMvpLayerLayout(nodes: TerrainNode[], layer: LayerId): TerrainNode[
     return createMvpGalleryNodes(nodes);
   }
 
+  if (layer === "L3") {
+    return createMvpTileFieldNodes(nodes);
+  }
+
   return nodes;
 }
 
@@ -347,6 +351,97 @@ function createMvpGalleryNodes(nodes: TerrainNode[]): TerrainNode[] {
     ...node,
     position_hint: createMvpGalleryPosition(index, total),
   }));
+}
+
+function createMvpTileFieldNodes(nodes: TerrainNode[]): TerrainNode[] {
+  const sortedNodes = [...nodes].sort(compareGalleryNodes);
+  const columns = 5;
+  const cellWidth = 300;
+  const cellHeight = 190;
+  let cursorX = 0;
+  let cursorY = 0;
+  let rowHeight = 1;
+  const occupiedRows: Array<Array<boolean>> = [];
+
+  return sortedNodes.map((node, index) => {
+    const span = getLiveTileSpan(index);
+    const slot = findTileSlot(occupiedRows, columns, cursorX, cursorY, span.width, span.height);
+
+    markTileSlot(occupiedRows, slot.x, slot.y, span.width, span.height);
+    cursorX = slot.x + span.width;
+    cursorY = slot.y;
+    rowHeight = Math.max(rowHeight, span.height);
+
+    if (cursorX >= columns) {
+      cursorX = 0;
+      cursorY += rowHeight;
+      rowHeight = 1;
+    }
+
+    return {
+      ...node,
+      position_hint: {
+        x: Math.round((slot.x + span.width / 2 - columns / 2) * cellWidth),
+        y: Math.round((slot.y + span.height / 2) * cellHeight),
+      },
+    };
+  });
+}
+
+function getLiveTileSpan(index: number): { width: number; height: number } {
+  const pattern = [
+    { width: 2, height: 2 },
+    { width: 1, height: 1 },
+    { width: 1, height: 1 },
+    { width: 2, height: 1 },
+    { width: 1, height: 2 },
+    { width: 1, height: 1 },
+    { width: 2, height: 1 },
+    { width: 1, height: 1 },
+  ];
+
+  return pattern[index % pattern.length] ?? { width: 1, height: 1 };
+}
+
+function findTileSlot(
+  occupiedRows: Array<Array<boolean>>,
+  columns: number,
+  startX: number,
+  startY: number,
+  spanWidth: number,
+  spanHeight: number,
+): { x: number; y: number } {
+  for (let y = startY; y < startY + 80; y += 1) {
+    for (let x = y === startY ? startX : 0; x <= columns - spanWidth; x += 1) {
+      if (isTileSlotFree(occupiedRows, x, y, spanWidth, spanHeight)) {
+        return { x, y };
+      }
+    }
+  }
+
+  return { x: 0, y: startY + 1 };
+}
+
+function isTileSlotFree(occupiedRows: Array<Array<boolean>>, x: number, y: number, spanWidth: number, spanHeight: number): boolean {
+  for (let row = y; row < y + spanHeight; row += 1) {
+    for (let column = x; column < x + spanWidth; column += 1) {
+      if (occupiedRows[row]?.[column]) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+function markTileSlot(occupiedRows: Array<Array<boolean>>, x: number, y: number, spanWidth: number, spanHeight: number): void {
+  for (let row = y; row < y + spanHeight; row += 1) {
+    occupiedRows[row] = occupiedRows[row] ?? [];
+
+    for (let column = x; column < x + spanWidth; column += 1) {
+      occupiedRows[row][column] = true;
+    }
+  }
 }
 
 function compareGalleryNodes(left: TerrainNode, right: TerrainNode): number {

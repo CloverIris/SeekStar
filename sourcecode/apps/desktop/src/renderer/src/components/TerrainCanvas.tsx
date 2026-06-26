@@ -8,7 +8,7 @@ import type {
   TileAbsorptionTrigger,
   ViewportState,
 } from "@seekstar/core-schema";
-import { isMacroLayer } from "@seekstar/core-schema";
+import { getLayerDefinition, isMacroLayer } from "@seekstar/core-schema";
 import type { CSSProperties, PointerEvent, ReactElement } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LocateFixed, Maximize2, RotateCcw } from "lucide-react";
@@ -43,6 +43,7 @@ interface TerrainCanvasProps {
   highlightedNodeIds: string[];
   onFrontierDiscovery: (viewport: ViewportState) => void;
   onBrowserModeExit: () => void;
+  onCurrentPageDeepLens: (nodeId: string) => void;
   onNodeSelect: (nodeId: string) => void;
   onObservationSelect: (observationId: string) => void;
   onRelationSelect: (relationId: string) => void;
@@ -113,6 +114,7 @@ export function TerrainCanvas({
   focusedNodeId,
   highlightedNodeIds,
   onBrowserModeExit,
+  onCurrentPageDeepLens,
   onFrontierDiscovery,
   onNodeSelect,
   onObservationSelect,
@@ -652,11 +654,10 @@ export function TerrainCanvas({
       />
       <SemanticLayerRail
         currentLayer={viewport.layer}
-        layers={scene.layers}
+        layers={scene.layers.filter(isMvpVisibleLayer)}
         onLayerSelect={handleLayerSelect}
         zoom={viewport.zoom}
       />
-      <DeepZoomMiniMap currentLayer={viewport.layer} layers={scene.layers} nodes={scene.nodes} onLayerSelect={handleLayerSelect} />
       {activeAbsorptionTransition ? (
         <div
           aria-hidden="true"
@@ -665,9 +666,14 @@ export function TerrainCanvas({
         />
       ) : null}
       {absorbedTileSurface ? (
-        <button className="browser-absorption-exit" onClick={handleExitBrowserMode} type="button">
-          Click exit browser mode to keep exploring downward
-        </button>
+        <div className="browser-absorption-exit" role="toolbar" aria-label="Browser mode">
+          <button onClick={handleExitBrowserMode} type="button">
+            退出浏览器模式
+          </button>
+          <button onClick={() => onCurrentPageDeepLens(absorbedTileSurface.nodeId)} type="button">
+            进入当前页面的DeepLens
+          </button>
+        </div>
       ) : null}
       {hoverPreview ? <NodeHoverPreview preview={hoverPreview} /> : null}
     </section>
@@ -1517,7 +1523,7 @@ function SemanticLayerRail({
       }}
     >
       <div className="semantic-layer-rail-header">
-        <span>Semantic depth</span>
+        <span>MVP bands</span>
         <strong>{zoom.toFixed(2)}x</strong>
       </div>
       <div className="semantic-layer-list">
@@ -1530,7 +1536,7 @@ function SemanticLayerRail({
             type="button"
           >
             <span>{layer.id}</span>
-            <strong>{layer.label}</strong>
+            <strong>{getLayerDefinition(layer.id)?.label ?? layer.label}</strong>
           </button>
         ))}
       </div>
@@ -1538,7 +1544,7 @@ function SemanticLayerRail({
   );
 }
 
-function DeepZoomMiniMap({
+export function DeepZoomMiniMap({
   currentLayer,
   layers,
   nodes,
@@ -1558,7 +1564,7 @@ function DeepZoomMiniMap({
       }}
     >
       <div className="deep-zoom-minimap-header">
-        <span>Spine</span>
+        <span>Internal lens</span>
         <strong>{currentLayer}</strong>
       </div>
       <div className="deep-zoom-minimap-track">
@@ -1609,6 +1615,10 @@ function NodeHoverPreview({ preview }: { preview: HoverPreviewState }): ReactEle
 
 function isMacroBubbleNode(node: TerrainNode): boolean {
   return isMacroLayer(node.layer);
+}
+
+function isMvpVisibleLayer(layer: TerrainLayer): boolean {
+  return layer.id === "L0" || layer.id === "L1" || layer.id === "L2" || layer.id === "L3" || layer.id === "L4" || layer.id === "L11";
 }
 
 function getMacroLensDistance(node: TerrainNode, viewport: ViewportState): number {
