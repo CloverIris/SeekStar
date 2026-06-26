@@ -100,6 +100,33 @@ export {
 export { createSourceTerrainPatch, type SourceIngestionInput, type SourceTerrainPatch } from "./sourceTerrain.js";
 export { createSeedScene, type SeedSceneOptions } from "./seedScene.js";
 export {
+  applyLevelRuntimeOutputToScene,
+  CartographerChunkCoordinator,
+  createCartographerChunkCacheKey,
+  mapLevelBandToLayer,
+  type CartographerChunkCacheRecord,
+  type CartographerChunkCacheStatus,
+  type CartographerChunkCoordinatorOptions,
+  type CartographerChunkLifecyclePhase,
+  type CartographerChunkLifecycleRecord,
+  type CartographerChunkLifecycleRole,
+  type CartographerChunkRequest,
+  type CartographerChunkRequestResult,
+  type CartographerChunkStoragePort,
+  type CartographerGenerationMode,
+  type CartographerLevelBandId,
+  type CartographerLevelChunkKey,
+  type CartographerLevelNodeDraft,
+  type CartographerLevelRelationDraft,
+  type CartographerLevelRuntimeFocus,
+  type CartographerLevelRuntimeInput,
+  type CartographerLevelRuntimeOutput,
+  type CartographerLevelRuntimeSettings,
+  type CartographerRuntimeSceneApplyOptions,
+  type CartographerRuntimeSceneApplyResult,
+  type CartographerLevelSourceCandidateDraft,
+} from "./cartographerRuntime.js";
+export {
   WORKSPACE_SCHEMA_REVISION,
   type FrontierDirection,
   type FrontierTrigger,

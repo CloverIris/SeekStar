@@ -1,8 +1,23 @@
 import { contextBridge, ipcRenderer } from "electron";
+import type { AiAssistantInput, AiAssistantOutput } from "@seekstar/ai-service";
 import type { ScoutPlan, ScoutRunResult } from "@seekstar/core-schema";
 import type { WorkspaceChangeEvent } from "@seekstar/storage-service";
 import type { SeekStarSettings } from "../main/appSettingsStore";
-import type { TabRuntimeSnapshot } from "../main/tabRuntimeManager";
+import type { AiCartographerPromptPreviewRequest, AiCartographerPromptPreviewResult } from "../main/aiAssistantBridge";
+import type { AiCostLedgerSnapshot } from "../main/aiCostLedgerStore";
+import type { AssistantSessionSnapshot } from "../main/assistantSessionStore";
+import type { CartographerChunkStoreSnapshot } from "../main/cartographerChunkStore";
+import type {
+  CartographerRuntimeBootstrapRequest,
+  CartographerRuntimeBootstrapResult,
+  CartographerRuntimeCancelRequest,
+  CartographerRuntimeCancelResult,
+  CartographerRuntimeSourceReplacementRequest,
+  CartographerRuntimeSourceReplacementResult,
+  CartographerRuntimeViewportExpansionRequest,
+  CartographerRuntimeViewportExpansionResult,
+} from "../main/cartographerRuntimeBridge";
+import type { TabRuntimeSnapshot, TabWorkspaceSyncInput } from "../main/tabRuntimeManager";
 import type { TileSurfaceLinkEvent, TileSurfaceThumbnailEvent } from "../main/tileSurfaceManager";
 
 export type WindowAction =
@@ -61,6 +76,7 @@ contextBridge.exposeInMainWorld("seekstar", {
       ipcRenderer.invoke("tabs:reorder", { sourceTabId, targetTabId }),
     setDockBounds: (bounds?: { x: number; y: number; width: number; height: number }): Promise<TabRuntimeSnapshot> =>
       ipcRenderer.invoke("tabs:set-dock-bounds", bounds),
+    syncWorkspaceTabs: (input: TabWorkspaceSyncInput): Promise<TabRuntimeSnapshot> => ipcRenderer.invoke("tabs:sync-workspace-tabs", input),
     toggleFavorite: (tabId: string): Promise<TabRuntimeSnapshot> => ipcRenderer.invoke("tabs:toggle-favorite", tabId),
     togglePin: (tabId: string): Promise<TabRuntimeSnapshot> => ipcRenderer.invoke("tabs:toggle-pin", tabId),
   },
@@ -75,6 +91,51 @@ contextBridge.exposeInMainWorld("seekstar", {
         plan,
         requested_at: new Date().toISOString(),
       }),
+  },
+  cartographer: {
+    cancelTransaction: (input: CartographerRuntimeCancelRequest): Promise<CartographerRuntimeCancelResult> =>
+      ipcRenderer.invoke("cartographer:cancel-transaction", input),
+    clearChunkRecords: (tabId: string): Promise<CartographerChunkStoreSnapshot> => ipcRenderer.invoke("cartographer-chunks:clear", tabId),
+    subscribeChunkRecords: (tabId: string, callback: (snapshot: CartographerChunkStoreSnapshot) => void): (() => void) => {
+      let active = true;
+      const listener = (_event: Electron.IpcRendererEvent, snapshot: CartographerChunkStoreSnapshot): void => {
+        if (active && snapshot.tab_id === tabId) {
+          callback(snapshot);
+        }
+      };
+
+      ipcRenderer.on("cartographer-chunks:changed", listener);
+      void ipcRenderer.invoke("cartographer-chunks:subscribe", tabId).then((snapshot: CartographerChunkStoreSnapshot) => {
+        if (active && snapshot.tab_id === tabId) {
+          callback(snapshot);
+        }
+      });
+
+      return () => {
+        active = false;
+        ipcRenderer.removeListener("cartographer-chunks:changed", listener);
+      };
+    },
+    runBootstrapTransaction: (input: CartographerRuntimeBootstrapRequest): Promise<CartographerRuntimeBootstrapResult> =>
+      ipcRenderer.invoke("cartographer:run-bootstrap-transaction", input),
+    runSourceReplacementTransaction: (
+      input: CartographerRuntimeSourceReplacementRequest,
+    ): Promise<CartographerRuntimeSourceReplacementResult> => ipcRenderer.invoke("cartographer:run-source-replacement-transaction", input),
+    runViewportExpansionTransaction: (
+      input: CartographerRuntimeViewportExpansionRequest,
+    ): Promise<CartographerRuntimeViewportExpansionResult> => ipcRenderer.invoke("cartographer:run-viewport-expansion-transaction", input),
+  },
+  ai: {
+    assist: (input: AiAssistantInput): Promise<AiAssistantOutput> => ipcRenderer.invoke("ai:assist", input),
+    clearCostLedger: (): Promise<AiCostLedgerSnapshot> => ipcRenderer.invoke("ai-cost-ledger:clear"),
+    clearSession: (tabId: string): Promise<AssistantSessionSnapshot> => ipcRenderer.invoke("assistant-session:clear", tabId),
+    exportCostLedger: (): Promise<string> => ipcRenderer.invoke("ai-cost-ledger:export"),
+    loadCostLedger: (): Promise<AiCostLedgerSnapshot> => ipcRenderer.invoke("ai-cost-ledger:load"),
+    loadSession: (tabId: string): Promise<AssistantSessionSnapshot> => ipcRenderer.invoke("assistant-session:load", tabId),
+    previewCartographerPrompt: (input: AiCartographerPromptPreviewRequest): Promise<AiCartographerPromptPreviewResult> =>
+      ipcRenderer.invoke("ai:preview-cartographer-prompt", input),
+    saveSession: (snapshot: AssistantSessionSnapshot): Promise<AssistantSessionSnapshot> =>
+      ipcRenderer.invoke("assistant-session:save", snapshot),
   },
   tiles: {
     clear: (tabId: string): Promise<void> => ipcRenderer.invoke("tiles:clear", tabId),

@@ -5,9 +5,13 @@ import type { TerrainScene } from "@seekstar/core-schema";
 import {
   AiCartographerService,
   UnconfiguredAiService,
+  buildAssistantMessages,
+  buildCartographerMessages,
   resolveAiProviderConfig,
+  validateAssistantOutput,
   validateCartographerGenerationOutput,
   type AiProviderConfig,
+  type AiAssistantInput,
   type CartographerGenerationInput,
 } from "./index.js";
 
@@ -27,6 +31,9 @@ async function run(commandName: string | undefined, argsList: string[]): Promise
       commands: [
         "status [--provider mock|openai-compatible] [--base-url url] [--model model] [--api-key-env ENV]",
         "generate --input input.json|- [--provider mock|openai-compatible] [--base-url url] [--model model] [--api-key-env ENV]",
+        "prompt --input input.json|-",
+        "assist --input input.json|- [--provider mock|openai-compatible]",
+        "assistant-prompt --input input.json|-",
         "validate --input output.json|-",
         "build-context --scene scene.json [--selection node-a,node-b] [--prompt text]",
       ],
@@ -45,6 +52,31 @@ async function run(commandName: string | undefined, argsList: string[]): Promise
     return service.generate(input);
   }
 
+  if (commandName === "prompt") {
+    const options = parseArgs(argsList);
+    const input = readJson<CartographerGenerationInput>(required(options, "input"));
+
+    return {
+      messages: buildCartographerMessages(input),
+    };
+  }
+
+  if (commandName === "assist") {
+    const options = parseArgs(argsList);
+    const input = readJson<AiAssistantInput>(required(options, "input"));
+    const service = new AiCartographerService(parseProviderConfig(options));
+    return service.assist(input);
+  }
+
+  if (commandName === "assistant-prompt") {
+    const options = parseArgs(argsList);
+    const input = readJson<AiAssistantInput>(required(options, "input"));
+
+    return {
+      messages: buildAssistantMessages(input),
+    };
+  }
+
   if (commandName === "validate") {
     const options = parseArgs(argsList);
     const value = readJson<unknown>(required(options, "input"));
@@ -54,6 +86,16 @@ async function run(commandName: string | undefined, argsList: string[]): Promise
       seed: "validation",
     };
     return validateCartographerGenerationOutput(value, fallbackInput);
+  }
+
+  if (commandName === "validate-assistant") {
+    const options = parseArgs(argsList);
+    const value = readJson<unknown>(required(options, "input"));
+    const fallbackInput: AiAssistantInput = {
+      intent: "answer_question",
+      prompt: "validation",
+    };
+    return validateAssistantOutput(value, fallbackInput);
   }
 
   if (commandName === "build-context") {

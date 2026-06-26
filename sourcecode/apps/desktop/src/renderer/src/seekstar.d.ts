@@ -1,7 +1,22 @@
 import type { ScoutPlan, ScoutRunResult } from "@seekstar/core-schema";
+import type { AiAssistantInput, AiAssistantOutput } from "@seekstar/ai-service";
 import type { WorkspaceChangeEvent } from "@seekstar/storage-service";
 import type { SeekStarSettings } from "../../main/appSettingsStore";
-import type { TabRuntimeSnapshot } from "../../main/tabRuntimeManager";
+import type { AiCartographerPromptPreviewRequest, AiCartographerPromptPreviewResult } from "../../main/aiAssistantBridge";
+import type { AiCostLedgerSnapshot } from "../../main/aiCostLedgerStore";
+import type { AssistantSessionSnapshot } from "../../main/assistantSessionStore";
+import type { CartographerChunkStoreSnapshot } from "../../main/cartographerChunkStore";
+import type {
+  CartographerRuntimeBootstrapRequest,
+  CartographerRuntimeBootstrapResult,
+  CartographerRuntimeCancelRequest,
+  CartographerRuntimeCancelResult,
+  CartographerRuntimeSourceReplacementRequest,
+  CartographerRuntimeSourceReplacementResult,
+  CartographerRuntimeViewportExpansionRequest,
+  CartographerRuntimeViewportExpansionResult,
+} from "../../main/cartographerRuntimeBridge";
+import type { TabRuntimeSnapshot, TabWorkspaceSyncInput } from "../../main/tabRuntimeManager";
 import type { TileSurfaceLinkEvent, TileSurfaceThumbnailEvent } from "../../main/tileSurfaceManager";
 
 export type WindowAction =
@@ -53,6 +68,7 @@ export interface SeekStarTabsApi {
   renameWorkspace: (name: string) => Promise<TabRuntimeSnapshot>;
   reorder: (sourceTabId: string, targetTabId: string) => Promise<TabRuntimeSnapshot>;
   setDockBounds: (bounds?: { x: number; y: number; width: number; height: number }) => Promise<TabRuntimeSnapshot>;
+  syncWorkspaceTabs: (input: TabWorkspaceSyncInput) => Promise<TabRuntimeSnapshot>;
   toggleFavorite: (tabId: string) => Promise<TabRuntimeSnapshot>;
   togglePin: (tabId: string) => Promise<TabRuntimeSnapshot>;
 }
@@ -64,6 +80,30 @@ export interface SeekStarSettingsApi {
 
 export interface SeekStarScoutApi {
   runPlan: (tabId: string, plan: ScoutPlan) => Promise<ScoutRunResult>;
+}
+
+export interface SeekStarCartographerApi {
+  cancelTransaction: (input: CartographerRuntimeCancelRequest) => Promise<CartographerRuntimeCancelResult>;
+  clearChunkRecords: (tabId: string) => Promise<CartographerChunkStoreSnapshot>;
+  subscribeChunkRecords: (tabId: string, callback: (snapshot: CartographerChunkStoreSnapshot) => void) => () => void;
+  runBootstrapTransaction: (input: CartographerRuntimeBootstrapRequest) => Promise<CartographerRuntimeBootstrapResult>;
+  runSourceReplacementTransaction: (
+    input: CartographerRuntimeSourceReplacementRequest,
+  ) => Promise<CartographerRuntimeSourceReplacementResult>;
+  runViewportExpansionTransaction: (
+    input: CartographerRuntimeViewportExpansionRequest,
+  ) => Promise<CartographerRuntimeViewportExpansionResult>;
+}
+
+export interface SeekStarAiApi {
+  assist: (input: AiAssistantInput) => Promise<AiAssistantOutput>;
+  clearCostLedger: () => Promise<AiCostLedgerSnapshot>;
+  clearSession: (tabId: string) => Promise<AssistantSessionSnapshot>;
+  exportCostLedger: () => Promise<string>;
+  loadCostLedger: () => Promise<AiCostLedgerSnapshot>;
+  loadSession: (tabId: string) => Promise<AssistantSessionSnapshot>;
+  previewCartographerPrompt: (input: AiCartographerPromptPreviewRequest) => Promise<AiCartographerPromptPreviewResult>;
+  saveSession: (snapshot: AssistantSessionSnapshot) => Promise<AssistantSessionSnapshot>;
 }
 
 export interface TileSurfaceSyncInput {
@@ -91,7 +131,9 @@ export interface SeekStarTilesApi {
 }
 
 export interface SeekStarBridge {
+  ai: SeekStarAiApi;
   appName: string;
+  cartographer: SeekStarCartographerApi;
   scaffoldVersion: string;
   scout: SeekStarScoutApi;
   settings: SeekStarSettingsApi;

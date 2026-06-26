@@ -76,6 +76,7 @@ export type SourceType =
   | "webpage"
   | "document"
   | "article"
+  | "image"
   | "local_file"
   | "dictionary"
   | "generated_summary"
@@ -93,6 +94,18 @@ export interface SourceSnapshotMedia {
   title?: string;
   alt?: string;
   mime_type?: string;
+  byte_length?: number;
+  height?: number;
+  width?: number;
+}
+
+export interface SourceSnapshotPrimaryResource {
+  kind: "html" | "image" | "pdf" | "unknown";
+  url: string;
+  title?: string;
+  mime_type?: string;
+  byte_length?: number;
+  preview_url?: string;
 }
 
 export interface SourceSnapshot {
@@ -102,6 +115,7 @@ export interface SourceSnapshot {
   content_type?: string;
   visible_text: string;
   excerpt?: string;
+  primary_resource?: SourceSnapshotPrimaryResource;
   outlinks: SourceSnapshotOutlink[];
   media: SourceSnapshotMedia[];
   source_type: SourceType;
@@ -461,6 +475,11 @@ export interface ContentProviderDefinition {
   rate_limit_note?: string;
 }
 
+export interface ContentProviderSecretRef {
+  kind: "env";
+  name: string;
+}
+
 export interface ContentProviderSettings {
   id: string;
   enabled: boolean;
@@ -468,6 +487,11 @@ export interface ContentProviderSettings {
   languages?: string[];
   region?: string;
   base_url?: string;
+  api_key_ref?: ContentProviderSecretRef;
+  /**
+   * @deprecated Use api_key_ref. This remains readable so older settings JSON can migrate
+   * without ever storing plaintext provider keys.
+   */
   api_key_env_var?: string;
   health_status?: ContentProviderHealthStatus;
   health_message?: string;
@@ -576,6 +600,7 @@ export const DEFAULT_CONTENT_PROVIDER_SETTINGS = BUILT_IN_CONTENT_PROVIDER_DEFIN
     enabled: definition.default_enabled,
     priority: definition.default_priority,
     languages: definition.default_languages ? [...definition.default_languages] : undefined,
+    api_key_ref: definition.api_key_env_var ? { kind: "env", name: definition.api_key_env_var } : undefined,
     api_key_env_var: definition.api_key_env_var,
     health_status: definition.default_enabled ? "ready" : "disabled",
   };

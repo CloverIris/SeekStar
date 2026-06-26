@@ -11,6 +11,8 @@ const DEFAULT_TAB_ID = "tab-default-new-seek";
 const DEFAULT_TAB_TITLE = "New Seek";
 const DEFAULT_WORKSPACE_NAME = "SeekStar local workspace";
 const TAB_RUNTIME_SCHEMA_REVISION = 59;
+const DEPRECATED_RUNTIME_TAB_IDS = ["tab-default-seekstar-seed", "tab-unknown-unknowns-deep-zoom"] as const;
+const TAB_RENDERER_LOAD_RETRY_DELAYS_MS = [350, 900, 1800, 3200] as const;
 
 export interface TabRuntimeSnapshot {
   version: 1;
@@ -20,6 +22,16 @@ export interface TabRuntimeSnapshot {
   tabs: TabRecord[];
   folders: WorkspaceFolder[];
   updated_at: string;
+}
+
+export interface TabWorkspaceSyncInput {
+  activeTabId: string;
+  closeDeprecatedDefaultTabs?: boolean;
+  tabs: Array<{
+    seed: string;
+    tabId: string;
+    title: string;
+  }>;
 }
 
 export interface TabSurfaceHost {
@@ -112,6 +124,7 @@ export class TabRuntimeManager {
   registerIpc(): void {
     this.registerHandler("tabs:list", async () => this.getSnapshot());
     this.registerHandler("tabs:create", async (_event, input) => this.createTab(parseTabCreateInput(input)));
+    this.registerHandler("tabs:sync-workspace-tabs", async (_event, input) => this.syncWorkspaceTabs(parseTabWorkspaceSyncInput(input)));
     this.registerHandler("tabs:activate", async (_event, tabId) => this.activateTab(parseTabId(tabId)));
     this.registerHandler("tabs:close", async (_event, tabId) => this.closeTab(parseTabId(tabId)));
     this.registerHandler("tabs:reorder", async (_event, input) => this.reorderTabs(parseTabReorderInput(input)));
@@ -229,6 +242,76 @@ export class TabRuntimeManager {
     return this.getSnapshot();
   }
 
+  async syncWorkspaceTabs(input: TabWorkspaceSyncInput): Promise<TabRuntimeSnapshot> {
+    await this.ensureLoaded();
+
+    if (input.tabs.length === 0) {
+      return this.getSnapshot();
+    }
+
+    const now = new Date().toISOString();
+    const settings = await loadSettings().catch(() => defaultSettings);
+    const syncedTabIds = new Set<string>();
+
+    for (const [index, tab] of input.tabs.entries()) {
+      syncedTabIds.add(tab.tabId);
+      const existing = this.entriesByTabId.get(tab.tabId);
+
+      if (existing) {
+        existing.record = {
+          ...existing.record,
+          title: tab.title,
+          seed: tab.seed,
+          window_state: existing.record.window_state === "hidden" ? "main" : existing.record.window_state,
+          runtime_status: existing.record.runtime_status === "crashed" ? "crashed" : "inactive",
+          updated_at: now,
+        };
+        continue;
+      }
+
+      this.entriesByTabId.set(tab.tabId, {
+        record: createTabRecord({
+          id: tab.tabId,
+          order: this.entriesByTabId.size + index,
+          seed: tab.seed,
+          title: tab.title,
+          timestamp: now,
+          maxBytes: settings.tab_cache_max_bytes,
+          inactiveGraceMs: settings.inactive_grace_ms,
+        }),
+      });
+    }
+
+    if (input.closeDeprecatedDefaultTabs) {
+      for (const tabId of DEPRECATED_RUNTIME_TAB_IDS) {
+        if (syncedTabIds.has(tabId) || this.entriesByTabId.size <= 1) {
+          continue;
+        }
+
+        const deprecatedEntry = this.entriesByTabId.get(tabId);
+        if (!deprecatedEntry) {
+          continue;
+        }
+
+        deprecatedEntry.record.runtime_status = "closing";
+        deprecatedEntry.record.window_state = "hidden";
+        this.removeViewFromOwner(deprecatedEntry);
+        this.closeDetachedWindow(tabId);
+        this.closeEntryWebContents(deprecatedEntry);
+        this.cache.clear(tabId);
+        this.entriesByTabId.delete(tabId);
+      }
+    }
+
+    this.activeTabId = this.entriesByTabId.has(input.activeTabId) ? input.activeTabId : input.tabs[0]?.tabId ?? this.activeTabId;
+    this.normalizeOrder();
+    this.markActive(this.activeTabId);
+    this.dockActiveTabView();
+    await this.save();
+    this.broadcastChange();
+    return this.getSnapshot();
+  }
+
   async activateTab(tabId: string): Promise<TabRuntimeSnapshot> {
     await this.ensureLoaded();
 
@@ -307,13 +390,13 @@ export class TabRuntimeManager {
       return this.getSnapshot();
     }
 
-    const view = this.ensureTabView(tabId, entry.record.window_state === "detached" ? "detached" : "docked");
+    this.ensureTabView(tabId, entry.record.window_state === "detached" ? "detached" : "docked");
     const now = new Date().toISOString();
     entry.record.runtime_status = tabId === this.activeTabId ? "active" : "inactive";
     entry.record.last_accessed_at = now;
     entry.record.updated_at = now;
     entry.record.crash_report = undefined;
-    void view.webContents.loadURL(this.buildTabUrl(tabId, entry.record.window_state === "detached" ? "detached" : "docked")).catch(() => undefined);
+    this.loadTabRenderer(tabId, entry.record.window_state === "detached" ? "detached" : "docked");
 
     await this.save();
     this.broadcastChange();
@@ -651,9 +734,7 @@ export class TabRuntimeManager {
     if (entry.view && !entry.view.webContents.isDestroyed()) {
       if (entry.viewSurface !== surface) {
         entry.viewSurface = surface;
-        void entry.view.webContents.loadURL(this.buildTabUrl(tabId, surface)).catch((error) =>
-          logRuntimeWarning(`Failed to switch tab renderer surface for ${tabId}.`, error),
-        );
+        this.loadTabRenderer(tabId, surface);
       }
       return entry.view;
     }
@@ -705,11 +786,31 @@ export class TabRuntimeManager {
       this.recordStatus(tabId, tabId === this.activeTabId ? "active" : "inactive", "responsive");
     });
 
-    const targetUrl = this.buildTabUrl(tabId, surface);
-    void view.webContents.loadURL(targetUrl).catch((error) => logRuntimeWarning(`Failed to load tab renderer for ${tabId}.`, error));
     entry.view = view;
     entry.viewSurface = surface;
+    this.loadTabRenderer(tabId, surface);
     return view;
+  }
+
+  private loadTabRenderer(tabId: string, surface: TabViewSurface, attempt = 0): void {
+    const entry = this.entriesByTabId.get(tabId);
+    const view = entry?.view;
+
+    if (!entry || !view || view.webContents.isDestroyed() || entry.viewSurface !== surface) {
+      return;
+    }
+
+    const targetUrl = this.buildTabUrl(tabId, surface);
+    void view.webContents.loadURL(targetUrl).catch((error) => {
+      const delay = TAB_RENDERER_LOAD_RETRY_DELAYS_MS[attempt];
+
+      if (delay !== undefined && isRetryableRendererLoadError(error) && this.entriesByTabId.get(tabId)?.view === view && !view.webContents.isDestroyed()) {
+        setTimeout(() => this.loadTabRenderer(tabId, surface, attempt + 1), delay);
+        return;
+      }
+
+      logRuntimeWarning(`Failed to load tab renderer for ${tabId}.`, error);
+    });
   }
 
   private buildTabUrl(tabId: string, surface: TabViewSurface): string {
@@ -1229,6 +1330,40 @@ function parseTabCreateInput(value: unknown): { tabId?: string; title: string; s
   };
 }
 
+function parseTabWorkspaceSyncInput(value: unknown): TabWorkspaceSyncInput {
+  const candidate = typeof value === "object" && value !== null
+    ? (value as { activeTabId?: unknown; closeDeprecatedDefaultTabs?: unknown; tabs?: unknown })
+    : {};
+  const tabs = Array.isArray(candidate.tabs) ? candidate.tabs.map(parseTabWorkspaceSyncItem).filter((tab): tab is TabWorkspaceSyncInput["tabs"][number] => Boolean(tab)) : [];
+  const activeTabId = typeof candidate.activeTabId === "string" && candidate.activeTabId.trim()
+    ? candidate.activeTabId.trim()
+    : tabs[0]?.tabId ?? DEFAULT_TAB_ID;
+
+  return {
+    activeTabId,
+    closeDeprecatedDefaultTabs: candidate.closeDeprecatedDefaultTabs !== false,
+    tabs,
+  };
+}
+
+function parseTabWorkspaceSyncItem(value: unknown): TabWorkspaceSyncInput["tabs"][number] | undefined {
+  const candidate = typeof value === "object" && value !== null ? (value as { seed?: unknown; tabId?: unknown; title?: unknown }) : {};
+  const tabId = typeof candidate.tabId === "string" && candidate.tabId.trim() ? candidate.tabId.trim() : "";
+
+  if (!tabId) {
+    return undefined;
+  }
+
+  const title = typeof candidate.title === "string" && candidate.title.trim() ? candidate.title.trim() : "Untitled exploration";
+  const seed = typeof candidate.seed === "string" && candidate.seed.trim() ? candidate.seed.trim() : title;
+
+  return {
+    seed,
+    tabId,
+    title,
+  };
+}
+
 function parseTabReorderInput(value: unknown): { sourceTabId: string; targetTabId: string } {
   const candidate = typeof value === "object" && value !== null ? (value as { sourceTabId?: unknown; targetTabId?: unknown }) : {};
   return {
@@ -1326,6 +1461,17 @@ async function replaceFile(sourcePath: string, destinationPath: string): Promise
 
 function isReplaceFailure(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && (error.code === "EPERM" || error.code === "EEXIST");
+}
+
+function isRetryableRendererLoadError(error: unknown): boolean {
+  const message = getErrorMessage(error);
+
+  return (
+    message.includes("ERR_FAILED") ||
+    message.includes("ERR_CONNECTION_REFUSED") ||
+    message.includes("ERR_CONNECTION_RESET") ||
+    message.includes("ERR_CONNECTION_ABORTED")
+  );
 }
 
 function isMissingFileError(error: unknown): boolean {

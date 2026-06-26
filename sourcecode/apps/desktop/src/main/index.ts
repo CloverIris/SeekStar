@@ -1,6 +1,11 @@
 import { app, BaseWindow, WebContentsView, shell } from "electron";
 import { join } from "node:path";
 import { defaultSettings, loadSettings, registerAppSettingsStore } from "./appSettingsStore";
+import { registerAiAssistantBridge } from "./aiAssistantBridge";
+import { clearAiCostLedgerData, registerAiCostLedgerStore } from "./aiCostLedgerStore";
+import { clearAssistantSessionData, registerAssistantSessionStore } from "./assistantSessionStore";
+import { clearCartographerChunkData, registerCartographerChunkStore } from "./cartographerChunkStore";
+import { registerCartographerRuntimeBridge } from "./cartographerRuntimeBridge";
 import { registerScoutAdapter } from "./scoutAdapter";
 import { TabRuntimeManager } from "./tabRuntimeManager";
 import { TileSurfaceManager } from "./tileSurfaceManager";
@@ -19,9 +24,17 @@ registerWindowBridge();
 registerWorkspaceStore({
   onClearDevelopmentData: async () => {
     await tabRuntimeManager.resetDevelopmentState();
+    await clearAiCostLedgerData();
+    await clearAssistantSessionData();
+    await clearCartographerChunkData();
   },
 });
 registerScoutAdapter();
+registerCartographerRuntimeBridge();
+registerCartographerChunkStore();
+registerAiCostLedgerStore();
+registerAiAssistantBridge();
+registerAssistantSessionStore();
 registerAppSettingsStore({
   onSave: async (settings) => {
     await tabRuntimeManager.applySettings(settings);

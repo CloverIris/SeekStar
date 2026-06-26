@@ -12,6 +12,22 @@ The core product promise is:
 
 > The user does not need to already know the right question. SeekStar helps the user discover what can be asked.
 
+## 0.5 MVP Development Override
+
+SeekStar is currently in MVP core-development mode.
+
+When the user explicitly says that a path is obsolete, mock-only, or blocking the MVP, the team should prefer a destructive cleanup over compatibility shims. Old renderer paths, old mock layouts, old placeholder UI, and stale product assumptions should be removed rather than preserved behind fallback flags.
+
+Current MVP spine:
+
+* AI Cartographer is the primary L0-L3 and recursive-seed terrain producer.
+* DataService validates, observes, and loads sources; it is not the main map generator.
+* Level Runtime owns per-layer data contracts and layout contracts.
+* Pixi/App Framework render those contracts; they must not resurrect legacy radial, mock, or DOM placeholder layouts.
+* Right sidebar work should move toward AI map chat/control, not old inspector/debug sprawl.
+
+For this phase, "stable" means the main exploration loop is coherent and testable. It does not mean maintaining forward compatibility with earlier mock-stage scenes, cached chunks, or UI experiments.
+
 ## 1. Non-negotiable Product Principles
 
 ### 1.1 Exploration before answer

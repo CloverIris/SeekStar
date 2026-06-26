@@ -2,15 +2,18 @@ import type { AgentJob, CartographerOutput, NodeType, SourceState, SourceType, T
 
 export type AiServiceStatus = "available" | "missing_key" | "disabled" | "error";
 export type AiProviderKind = "openai_compatible" | "mock";
-export type AiModelResponseStatus = "completed" | "missing_key" | "provider_error" | "invalid_json" | "timeout";
+export type AiModelResponseStatus = "completed" | "missing_key" | "provider_error" | "invalid_json" | "timeout" | "cancelled";
 export type CartographerGenerationMode =
   | "bootstrap_seed"
   | "expand_horizontal"
   | "decompose_down"
   | "summarize_up"
   | "replace_failed_source";
-export type CartographerGenerationStatus = "ok" | "missing_key" | "provider_error" | "invalid_output";
+export type CartographerGenerationStatus = "ok" | "missing_key" | "provider_error" | "invalid_output" | "cancelled";
 export type CartographerDiagnosticSeverity = "info" | "warning" | "error";
+export type AiAssistantIntent = "answer_question" | "navigate" | "expand_map" | "summarize_selection" | "explain_source";
+export type AiAssistantStatus = "ok" | "missing_key" | "provider_error" | "invalid_output" | "cancelled";
+export type AiAssistantActionType = "none" | "focus_node" | "request_chunk" | "observe_source" | "create_seed" | "open_settings";
 
 export interface AiKeyEnvelope {
   provider: "openai";
@@ -35,6 +38,8 @@ export interface AiProviderConfig {
   model?: string;
   api_key_ref?: AiApiKeyRef;
   api_key_env?: string;
+  input_cost_per_million_tokens_usd?: number;
+  output_cost_per_million_tokens_usd?: number;
   timeout_ms?: number;
   retry?: AiRetryPolicy;
   headers?: Record<string, string>;
@@ -51,13 +56,27 @@ export interface AiModelRequest {
   temperature?: number;
   max_tokens?: number;
   response_format?: "json_object";
+  signal?: AbortSignal;
   timeout_ms?: number;
+}
+
+export interface AiRequestOptions {
+  signal?: AbortSignal;
 }
 
 export interface AiModelUsage {
   input_tokens?: number;
   output_tokens?: number;
   total_tokens?: number;
+}
+
+export interface AiModelTelemetry {
+  attempts: number;
+  completed_at: string;
+  duration_ms: number;
+  estimated_cost_usd?: number;
+  started_at: string;
+  usage?: AiModelUsage;
 }
 
 export interface CartographerDiagnostic {
@@ -77,6 +96,7 @@ export interface AiModelResponse {
   text?: string;
   json?: unknown;
   diagnostics: CartographerDiagnostic[];
+  telemetry?: AiModelTelemetry;
   usage?: AiModelUsage;
   completed_at: string;
 }
@@ -150,6 +170,47 @@ export interface CartographerGenerationOutput {
   relations: CartographerGeneratedRelation[];
   source_candidates: CartographerGeneratedSourceCandidate[];
   diagnostics: CartographerDiagnostic[];
+  telemetry?: AiModelTelemetry;
+  provider_id?: string;
+  model?: string;
+  generated_at: string;
+}
+
+export interface AiAssistantSelectedNode {
+  id: string;
+  title: string;
+  level_id?: string;
+  summary?: string;
+  source_state?: SourceState;
+}
+
+export interface AiAssistantInput {
+  intent: AiAssistantIntent;
+  prompt: string;
+  seed?: string;
+  current_level?: string;
+  selected_nodes?: AiAssistantSelectedNode[];
+  available_operations?: AiAssistantActionType[];
+  scene_summary?: string;
+  context?: Record<string, unknown>;
+}
+
+export interface AiAssistantAction {
+  type: AiAssistantActionType;
+  label: string;
+  target_id?: string;
+  level_id?: string;
+  seed?: string;
+  arguments?: Record<string, string | number | boolean>;
+}
+
+export interface AiAssistantOutput {
+  status: AiAssistantStatus;
+  intent: AiAssistantIntent;
+  answer: string;
+  actions: AiAssistantAction[];
+  diagnostics: CartographerDiagnostic[];
+  telemetry?: AiModelTelemetry;
   provider_id?: string;
   model?: string;
   generated_at: string;
@@ -199,8 +260,12 @@ export class AiCartographerService implements AiService {
     return buildCartographerContext(scene, selectedNodeIds, userPrompt);
   }
 
-  async generate(input: CartographerGenerationInput): Promise<CartographerGenerationOutput> {
-    return this.provider.generate(input);
+  async generate(input: CartographerGenerationInput, options: AiRequestOptions = {}): Promise<CartographerGenerationOutput> {
+    return this.provider.generate(input, options);
+  }
+
+  async assist(input: AiAssistantInput, options: AiRequestOptions = {}): Promise<AiAssistantOutput> {
+    return this.provider.assist(input, options);
   }
 
   async runCartographer(job: AgentJob, context: CartographerContextPacket): Promise<CartographerOutput> {
@@ -269,7 +334,8 @@ export class UnconfiguredAiService implements AiService {
 }
 
 interface AiModelProvider {
-  generate(input: CartographerGenerationInput): Promise<CartographerGenerationOutput>;
+  generate(input: CartographerGenerationInput, options?: AiRequestOptions): Promise<CartographerGenerationOutput>;
+  assist(input: AiAssistantInput, options?: AiRequestOptions): Promise<AiAssistantOutput>;
 }
 
 export class MockAiModelProvider implements AiModelProvider {
@@ -279,8 +345,20 @@ export class MockAiModelProvider implements AiModelProvider {
     this.config = resolveAiProviderConfig({ ...config, kind: "mock" });
   }
 
-  async generate(input: CartographerGenerationInput): Promise<CartographerGenerationOutput> {
+  async generate(input: CartographerGenerationInput, options: AiRequestOptions = {}): Promise<CartographerGenerationOutput> {
+    if (isAbortSignalCancelled(options.signal)) {
+      return createCancelledGenerationOutput(input, this.config);
+    }
+
     return normalizeCartographerGenerationOutput(createMockCartographerOutput(input), input, this.config);
+  }
+
+  async assist(input: AiAssistantInput, options: AiRequestOptions = {}): Promise<AiAssistantOutput> {
+    if (isAbortSignalCancelled(options.signal)) {
+      return createCancelledAssistantOutput(input, this.config);
+    }
+
+    return normalizeAssistantOutput(createMockAssistantOutput(input, this.config), input, this.config);
   }
 }
 
@@ -291,7 +369,11 @@ export class OpenAiCompatibleProvider implements AiModelProvider {
     this.config = resolveAiProviderConfig({ ...config, kind: "openai_compatible" });
   }
 
-  async generate(input: CartographerGenerationInput): Promise<CartographerGenerationOutput> {
+  async generate(input: CartographerGenerationInput, options: AiRequestOptions = {}): Promise<CartographerGenerationOutput> {
+    if (isAbortSignalCancelled(options.signal)) {
+      return createCancelledGenerationOutput(input, this.config);
+    }
+
     const key = resolveApiKey(this.config);
 
     if (!key.key) {
@@ -310,6 +392,7 @@ export class OpenAiCompatibleProvider implements AiModelProvider {
         provider: this.config,
         messages: buildCartographerMessages(input),
         response_format: "json_object",
+        signal: options.signal,
         temperature: 0.4,
         max_tokens: 1800,
         timeout_ms: this.config.timeout_ms,
@@ -318,21 +401,88 @@ export class OpenAiCompatibleProvider implements AiModelProvider {
     );
 
     if (modelResponse.status !== "completed") {
-      return createFailedGenerationOutput(
-        input,
-        modelResponse.status === "missing_key" ? "missing_key" : "provider_error",
-        modelResponse.diagnostics,
-        this.config,
-      );
+      return {
+        ...createFailedGenerationOutput(
+          input,
+          modelResponse.status === "missing_key" ? "missing_key" : modelResponse.status === "cancelled" ? "cancelled" : "provider_error",
+          modelResponse.diagnostics,
+          this.config,
+        ),
+        telemetry: modelResponse.telemetry,
+      };
     }
 
     const validation = validateCartographerGenerationOutput(modelResponse.json, input, this.config);
 
     if (!validation.valid) {
-      return createFailedGenerationOutput(input, "invalid_output", validation.diagnostics, this.config);
+      return {
+        ...createFailedGenerationOutput(input, "invalid_output", validation.diagnostics, this.config),
+        telemetry: modelResponse.telemetry,
+      };
     }
 
-    return validation.output;
+    return {
+      ...validation.output,
+      telemetry: modelResponse.telemetry,
+    };
+  }
+
+  async assist(input: AiAssistantInput, options: AiRequestOptions = {}): Promise<AiAssistantOutput> {
+    if (isAbortSignalCancelled(options.signal)) {
+      return createCancelledAssistantOutput(input, this.config);
+    }
+
+    const key = resolveApiKey(this.config);
+
+    if (!key.key) {
+      return createFailedAssistantOutput(input, "missing_key", [
+        {
+          severity: "error",
+          code: "ai.missing_key",
+          message: "No AI API key was found. Set SEEKSTAR_AI_API_KEY or OPENAI_API_KEY, or pass an env key reference.",
+          provider_id: this.config.id,
+        },
+      ]);
+    }
+
+    const modelResponse = await requestOpenAiCompatibleModel(
+      {
+        provider: this.config,
+        messages: buildAssistantMessages(input),
+        response_format: "json_object",
+        signal: options.signal,
+        temperature: 0.35,
+        max_tokens: 1200,
+        timeout_ms: this.config.timeout_ms,
+      },
+      key.key,
+    );
+
+    if (modelResponse.status !== "completed") {
+      return {
+        ...createFailedAssistantOutput(
+          input,
+          modelResponse.status === "missing_key" ? "missing_key" : modelResponse.status === "cancelled" ? "cancelled" : "provider_error",
+          modelResponse.diagnostics,
+          this.config,
+        ),
+        telemetry: modelResponse.telemetry,
+      };
+    }
+
+    const validation = validateAssistantOutput(modelResponse.json, input, this.config);
+
+    if (!validation.valid) {
+      return {
+        ...createFailedAssistantOutput(input, "invalid_output", validation.diagnostics, this.config),
+        telemetry: modelResponse.telemetry,
+      };
+    }
+
+    return {
+      ...validation.output,
+      telemetry: modelResponse.telemetry,
+    };
   }
 }
 
@@ -370,10 +520,16 @@ export function resolveAiProviderConfig(config: Partial<AiProviderConfig> = {}):
     model: config.model ?? (kind === "mock" ? "mock-cartographer-v1" : DEFAULT_OPENAI_COMPATIBLE_MODEL),
     api_key_ref: config.api_key_ref,
     api_key_env: config.api_key_env,
+    input_cost_per_million_tokens_usd: normalizeCostRate(config.input_cost_per_million_tokens_usd),
+    output_cost_per_million_tokens_usd: normalizeCostRate(config.output_cost_per_million_tokens_usd),
     timeout_ms: config.timeout_ms ?? 30_000,
     retry: config.retry ?? { attempts: 1, backoff_ms: 250 },
     headers: config.headers,
   };
+}
+
+function normalizeCostRate(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 export function resolveApiKey(config: AiProviderConfig): { key?: string; source?: string } {
@@ -538,6 +694,7 @@ export function validateCartographerGenerationOutput(
       diagnostics,
       provider_id: typeof value.provider_id === "string" ? value.provider_id : providerConfig.id,
       model: typeof value.model === "string" ? value.model : providerConfig.model,
+      telemetry: normalizeAiModelTelemetry(value.telemetry),
       generated_at: typeof value.generated_at === "string" ? value.generated_at : new Date().toISOString(),
     },
   };
@@ -560,8 +717,139 @@ export function createFailedGenerationOutput(
     diagnostics,
     provider_id: providerConfig.id,
     model: providerConfig.model,
+    telemetry: undefined,
     generated_at: new Date().toISOString(),
   };
+}
+
+export function createCancelledGenerationOutput(
+  input: CartographerGenerationInput,
+  providerConfig: Partial<AiProviderConfig> = {},
+): CartographerGenerationOutput {
+  return createFailedGenerationOutput(
+    input,
+    "cancelled",
+    [
+      {
+        severity: "warning",
+        code: "ai.cancelled",
+        message: "AI generation was cancelled before completion.",
+        provider_id: providerConfig.id,
+        retryable: false,
+      },
+    ],
+    providerConfig,
+  );
+}
+
+export function validateAssistantOutput(
+  value: unknown,
+  input: AiAssistantInput,
+  providerConfig: Partial<AiProviderConfig> = {},
+): { valid: true; output: AiAssistantOutput } | { valid: false; diagnostics: CartographerDiagnostic[] } {
+  if (!isRecord(value)) {
+    return {
+      valid: false,
+      diagnostics: [
+        {
+          severity: "error",
+          code: "assistant.invalid_json_shape",
+          message: "Assistant output must be a JSON object.",
+        },
+      ],
+    };
+  }
+
+  const diagnostics: CartographerDiagnostic[] = [];
+  const answer = typeof value.answer === "string" && value.answer.trim() ? value.answer.trim() : "";
+  const rawActions = Array.isArray(value.actions) ? value.actions : [];
+
+  if (!answer) {
+    diagnostics.push({
+      severity: "error",
+      code: "assistant.missing_answer",
+      message: "Assistant output must include a non-empty answer.",
+      path: "answer",
+    });
+  }
+
+  const actions = rawActions.flatMap((action, index): AiAssistantAction[] => {
+    if (!isRecord(action) || !isAssistantActionType(action.type)) {
+      diagnostics.push({
+        severity: "warning",
+        code: "assistant.action_skipped",
+        message: "An assistant action was skipped because it has no valid type.",
+        path: `actions.${index}`,
+      });
+      return [];
+    }
+
+    return [
+      {
+        type: action.type,
+        label: typeof action.label === "string" && action.label.trim() ? action.label.trim() : action.type,
+        target_id: typeof action.target_id === "string" ? action.target_id : undefined,
+        level_id: typeof action.level_id === "string" ? action.level_id : undefined,
+        seed: typeof action.seed === "string" ? action.seed : undefined,
+        arguments: isStringNumberBooleanRecord(action.arguments) ? action.arguments : undefined,
+      },
+    ];
+  });
+
+  if (diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
+    return { valid: false, diagnostics };
+  }
+
+  return {
+    valid: true,
+    output: {
+      status: "ok",
+      intent: isAssistantIntent(value.intent) ? value.intent : input.intent,
+      answer,
+      actions,
+      diagnostics,
+      provider_id: typeof value.provider_id === "string" ? value.provider_id : providerConfig.id,
+      model: typeof value.model === "string" ? value.model : providerConfig.model,
+      telemetry: normalizeAiModelTelemetry(value.telemetry),
+      generated_at: typeof value.generated_at === "string" ? value.generated_at : new Date().toISOString(),
+    },
+  };
+}
+
+export function createFailedAssistantOutput(
+  input: AiAssistantInput,
+  status: Exclude<AiAssistantStatus, "ok">,
+  diagnostics: CartographerDiagnostic[],
+  providerConfig: Partial<AiProviderConfig> = {},
+): AiAssistantOutput {
+  return {
+    status,
+    intent: input.intent,
+    answer: diagnostics[0]?.message ?? "AI assistant could not answer.",
+    actions: [],
+    diagnostics,
+    provider_id: providerConfig.id,
+    model: providerConfig.model,
+    telemetry: undefined,
+    generated_at: new Date().toISOString(),
+  };
+}
+
+export function createCancelledAssistantOutput(input: AiAssistantInput, providerConfig: Partial<AiProviderConfig> = {}): AiAssistantOutput {
+  return createFailedAssistantOutput(
+    input,
+    "cancelled",
+    [
+      {
+        severity: "warning",
+        code: "ai.cancelled",
+        message: "AI assistant request was cancelled before completion.",
+        provider_id: providerConfig.id,
+        retryable: false,
+      },
+    ],
+    providerConfig,
+  );
 }
 
 async function requestOpenAiCompatibleModel(request: AiModelRequest, apiKey: string): Promise<AiModelResponse> {
@@ -569,11 +857,35 @@ async function requestOpenAiCompatibleModel(request: AiModelRequest, apiKey: str
   const endpoint = `${(provider.base_url ?? DEFAULT_OPENAI_COMPATIBLE_BASE_URL).replace(/\/$/, "")}/chat/completions`;
   const attempts = Math.max(1, provider.retry?.attempts ?? 1);
   const backoffMs = Math.max(0, provider.retry?.backoff_ms ?? 0);
+  const startedAt = new Date().toISOString();
+
+  if (isAbortSignalCancelled(request.signal)) {
+    return createCancelledModelResponse(provider, startedAt, startedAt, 1);
+  }
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    let externalAbortListener: (() => void) | undefined;
+
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), request.timeout_ms ?? provider.timeout_ms ?? 30_000);
+      timeout = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, request.timeout_ms ?? provider.timeout_ms ?? 30_000);
+
+      if (request.signal) {
+        if (request.signal.aborted) {
+          clearTimeout(timeout);
+          timeout = undefined;
+          return createCancelledModelResponse(provider, startedAt, new Date().toISOString(), attempt);
+        }
+
+        externalAbortListener = () => controller.abort();
+        request.signal.addEventListener("abort", externalAbortListener, { once: true });
+      }
+
       const response = await fetch(endpoint, {
         method: "POST",
         headers: {
@@ -591,6 +903,11 @@ async function requestOpenAiCompatibleModel(request: AiModelRequest, apiKey: str
         signal: controller.signal,
       });
       clearTimeout(timeout);
+      timeout = undefined;
+      if (externalAbortListener) {
+        request.signal?.removeEventListener("abort", externalAbortListener);
+        externalAbortListener = undefined;
+      }
 
       if (!response.ok) {
         const body = await response.text().catch(() => "");
@@ -602,6 +919,9 @@ async function requestOpenAiCompatibleModel(request: AiModelRequest, apiKey: str
       const parsed = parseJsonObject(text);
 
       if (!parsed.ok) {
+        const completedAt = new Date().toISOString();
+        const usage = extractOpenAiUsage(payload);
+
         return {
           status: "invalid_json",
           provider_id: provider.id,
@@ -615,9 +935,19 @@ async function requestOpenAiCompatibleModel(request: AiModelRequest, apiKey: str
               provider_id: provider.id,
             },
           ],
-          completed_at: new Date().toISOString(),
+          telemetry: createAiModelTelemetry({
+            attempts: attempt,
+            completedAt,
+            provider,
+            startedAt,
+            usage,
+          }),
+          usage,
+          completed_at: completedAt,
         };
       }
+      const completedAt = new Date().toISOString();
+      const usage = extractOpenAiUsage(payload);
 
       return {
         status: "completed",
@@ -626,14 +956,35 @@ async function requestOpenAiCompatibleModel(request: AiModelRequest, apiKey: str
         text,
         json: parsed.value,
         diagnostics: [],
-        usage: extractOpenAiUsage(payload),
-        completed_at: new Date().toISOString(),
+        telemetry: createAiModelTelemetry({
+          attempts: attempt,
+          completedAt,
+          provider,
+          startedAt,
+          usage,
+        }),
+        usage,
+        completed_at: completedAt,
       };
     } catch (error) {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      if (externalAbortListener) {
+        request.signal?.removeEventListener("abort", externalAbortListener);
+      }
+
       const isLastAttempt = attempt === attempts;
       const aborted = error instanceof Error && error.name === "AbortError";
+      const cancelled = aborted && !timedOut && isAbortSignalCancelled(request.signal);
+
+      if (cancelled) {
+        return createCancelledModelResponse(provider, startedAt, new Date().toISOString(), attempt);
+      }
 
       if (isLastAttempt) {
+        const completedAt = new Date().toISOString();
+
         return {
           status: aborted ? "timeout" : "provider_error",
           provider_id: provider.id,
@@ -647,13 +998,24 @@ async function requestOpenAiCompatibleModel(request: AiModelRequest, apiKey: str
               retryable: true,
             },
           ],
-          completed_at: new Date().toISOString(),
+          telemetry: createAiModelTelemetry({
+            attempts: attempt,
+            completedAt,
+            provider,
+            startedAt,
+          }),
+          completed_at: completedAt,
         };
       }
 
-      await sleep(backoffMs * attempt);
+      const slept = await sleep(backoffMs * attempt, request.signal);
+      if (!slept) {
+        return createCancelledModelResponse(provider, startedAt, new Date().toISOString(), attempt);
+      }
     }
   }
+
+  const completedAt = new Date().toISOString();
 
   return {
     status: "provider_error",
@@ -667,17 +1029,107 @@ async function requestOpenAiCompatibleModel(request: AiModelRequest, apiKey: str
         provider_id: provider.id,
       },
     ],
-    completed_at: new Date().toISOString(),
+    telemetry: createAiModelTelemetry({
+      attempts,
+      completedAt,
+      provider,
+      startedAt,
+    }),
+    completed_at: completedAt,
   };
 }
 
-function buildCartographerMessages(input: CartographerGenerationInput): AiModelMessage[] {
+function createCancelledModelResponse(provider: AiProviderConfig, startedAt: string, completedAt: string, attempts: number): AiModelResponse {
+  return {
+    status: "cancelled",
+    provider_id: provider.id,
+    model: provider.model,
+    diagnostics: [
+      {
+        severity: "warning",
+        code: "ai.cancelled",
+        message: "AI provider request was cancelled.",
+        provider_id: provider.id,
+        retryable: false,
+      },
+    ],
+    telemetry: createAiModelTelemetry({
+      attempts,
+      completedAt,
+      provider,
+      startedAt,
+    }),
+    completed_at: completedAt,
+  };
+}
+
+export function estimateAiModelCostUsd(usage: AiModelUsage | undefined, provider: Partial<AiProviderConfig>): number | undefined {
+  if (!usage) {
+    return undefined;
+  }
+
+  const inputRate = normalizeCostRate(provider.input_cost_per_million_tokens_usd);
+  const outputRate = normalizeCostRate(provider.output_cost_per_million_tokens_usd);
+
+  if (inputRate === undefined && outputRate === undefined) {
+    return undefined;
+  }
+
+  const inputCost = ((usage.input_tokens ?? 0) * (inputRate ?? 0)) / 1_000_000;
+  const outputCost = ((usage.output_tokens ?? 0) * (outputRate ?? 0)) / 1_000_000;
+
+  return Number((inputCost + outputCost).toFixed(8));
+}
+
+function createAiModelTelemetry(input: {
+  attempts: number;
+  completedAt: string;
+  provider: Partial<AiProviderConfig>;
+  startedAt: string;
+  usage?: AiModelUsage;
+}): AiModelTelemetry {
+  return {
+    attempts: Math.max(1, input.attempts),
+    completed_at: input.completedAt,
+    duration_ms: Math.max(0, Date.parse(input.completedAt) - Date.parse(input.startedAt)),
+    estimated_cost_usd: estimateAiModelCostUsd(input.usage, input.provider),
+    started_at: input.startedAt,
+    usage: input.usage,
+  };
+}
+
+function normalizeAiModelTelemetry(value: unknown): AiModelTelemetry | undefined {
+  if (!isRecord(value) || typeof value.started_at !== "string" || typeof value.completed_at !== "string") {
+    return undefined;
+  }
+
+  return {
+    attempts: typeof value.attempts === "number" && Number.isFinite(value.attempts) ? Math.max(1, Math.round(value.attempts)) : 1,
+    completed_at: value.completed_at,
+    duration_ms: typeof value.duration_ms === "number" && Number.isFinite(value.duration_ms) ? Math.max(0, Math.round(value.duration_ms)) : 0,
+    estimated_cost_usd:
+      typeof value.estimated_cost_usd === "number" && Number.isFinite(value.estimated_cost_usd) && value.estimated_cost_usd >= 0
+        ? value.estimated_cost_usd
+        : undefined,
+    started_at: value.started_at,
+    usage: isRecord(value.usage)
+      ? {
+          input_tokens: typeof value.usage.input_tokens === "number" ? value.usage.input_tokens : undefined,
+          output_tokens: typeof value.usage.output_tokens === "number" ? value.usage.output_tokens : undefined,
+          total_tokens: typeof value.usage.total_tokens === "number" ? value.usage.total_tokens : undefined,
+        }
+      : undefined,
+  };
+}
+
+export function buildCartographerMessages(input: CartographerGenerationInput): AiModelMessage[] {
   return [
     {
       role: "system",
       content:
         "You are SeekStar AI Cartographer. Return only strict JSON with keys: mode, level_id, seed, nodes, relations, source_candidates. " +
-        "AI terrain is cartographer_primary. URL candidates are unverified and must not be called source-backed.",
+        "AI terrain is cartographer_primary. URL candidates are unverified and must not be called source-backed. " +
+        "When context.level_module is present, follow its role, prompt_brief, prompt_constraints, target count, and source candidate policy.",
     },
     {
       role: "user",
@@ -694,14 +1146,36 @@ function buildCartographerMessages(input: CartographerGenerationInput): AiModelM
   ];
 }
 
+export function buildAssistantMessages(input: AiAssistantInput): AiModelMessage[] {
+  return [
+    {
+      role: "system",
+      content:
+        "You are SeekStar AI Map Assistant. Return only strict JSON with keys: intent, answer, actions. " +
+        "Answer using the current map context. Suggest app actions only from available_operations. Do not claim source-backed evidence unless context says it exists.",
+    },
+    {
+      role: "user",
+      content: JSON.stringify({
+        intent: input.intent,
+        prompt: input.prompt,
+        seed: input.seed,
+        current_level: input.current_level,
+        selected_nodes: input.selected_nodes,
+        available_operations: input.available_operations,
+        scene_summary: input.scene_summary,
+        context: input.context,
+      }),
+    },
+  ];
+}
+
 function createMockCartographerOutput(input: CartographerGenerationInput): CartographerGenerationOutput {
+  const generatedAt = new Date().toISOString();
   const count = getMockCount(input.level_id);
   const seed = input.seed.trim() || "New Seek";
   const baseTitles = createMockTitles(seed, input.level_id, input.mode, count);
-  const nodes = baseTitles.map((title, index): CartographerGeneratedNode => {
-    const angle = (Math.PI * 2 * index) / Math.max(1, baseTitles.length);
-
-    return {
+  const nodes = baseTitles.map((title, index): CartographerGeneratedNode => ({
       id: `mock-${slugify(input.level_id)}-${slugify(seed)}-${index + 1}`,
       title,
       summary: `${title} as ${input.level_id} cartographer terrain for ${seed}.`,
@@ -711,13 +1185,8 @@ function createMockCartographerOutput(input: CartographerGenerationInput): Carto
       importance: index === 0 ? 0.9 : 0.62,
       tags: [input.level_id, input.mode],
       level_id: input.level_id,
-      position_hint: {
-        x: Math.round(Math.cos(angle) * (260 + index * 8)),
-        y: Math.round(Math.sin(angle) * (180 + index * 6)),
-      },
       can_create_seed: true,
-    };
-  });
+  }));
 
   const relations = nodes.slice(1).map((node): CartographerGeneratedRelation => ({
     from: nodes[0]?.id ?? node.id ?? "center",
@@ -728,17 +1197,25 @@ function createMockCartographerOutput(input: CartographerGenerationInput): Carto
   }));
 
   const sourceCandidates =
-    input.level_id === "L3" || input.mode === "decompose_down"
+    input.level_id === "L3" || input.mode === "decompose_down" || input.mode === "replace_failed_source"
       ? [
           {
-            id: `mock-source-${slugify(seed)}-official`,
-            title: `${seed} official documentation`,
-            url: `https://www.google.com/search?q=${encodeURIComponent(`${seed} official documentation`)}`,
-            snippet: `Candidate URL for observing source-backed material about ${seed}.`,
+            id: input.mode === "replace_failed_source" ? `mock-source-${slugify(seed)}-replacement` : `mock-source-${slugify(seed)}-official`,
+            title: input.mode === "replace_failed_source" ? `${seed} replacement source` : `${seed} official documentation`,
+            url: `https://www.google.com/search?q=${encodeURIComponent(
+              input.mode === "replace_failed_source" ? `${seed} replacement source candidate` : `${seed} official documentation`,
+            )}`,
+            snippet:
+              input.mode === "replace_failed_source"
+                ? `Replacement candidate URL for observing source-backed material about ${seed}.`
+                : `Candidate URL for observing source-backed material about ${seed}.`,
             provider_id: "mock-cartographer",
             source_type: "webpage" as SourceType,
-            confidence: 0.42,
-            reason: "Mock provider keeps source URLs unverified for DataService probing.",
+            confidence: input.mode === "replace_failed_source" ? 0.46 : 0.42,
+            reason:
+              input.mode === "replace_failed_source"
+                ? "Mock provider returns a distinct unverified replacement URL after source probing fails."
+                : "Mock provider keeps source URLs unverified for DataService probing.",
           },
         ]
       : [];
@@ -761,7 +1238,68 @@ function createMockCartographerOutput(input: CartographerGenerationInput): Carto
     ],
     provider_id: "mock-cartographer",
     model: "mock-cartographer-v1",
-    generated_at: new Date().toISOString(),
+    telemetry: {
+      attempts: 1,
+      completed_at: generatedAt,
+      duration_ms: 0,
+      estimated_cost_usd: 0,
+      started_at: generatedAt,
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+      },
+    },
+    generated_at: generatedAt,
+  };
+}
+
+function createMockAssistantOutput(input: AiAssistantInput, providerConfig: AiProviderConfig): AiAssistantOutput {
+  const generatedAt = new Date().toISOString();
+  const selectedTitle = input.selected_nodes?.[0]?.title;
+  const focusText = selectedTitle ? ` around "${selectedTitle}"` : input.seed ? ` around "${input.seed}"` : "";
+  const actionType = input.available_operations?.includes("request_chunk")
+    ? "request_chunk"
+    : input.available_operations?.includes("focus_node")
+      ? "focus_node"
+      : "none";
+
+  return {
+    status: "ok",
+    intent: input.intent,
+    answer: `Mock map assistant response for ${input.intent}${focusText}. ${input.prompt}`,
+    actions: [
+      {
+        type: actionType,
+        label: actionType === "none" ? "No app action" : `Suggested ${actionType}`,
+        target_id: input.selected_nodes?.[0]?.id,
+        level_id: input.current_level,
+        seed: input.seed,
+      },
+    ],
+    diagnostics: [
+      {
+        severity: "info",
+        code: "assistant.mock_provider",
+        message: "Deterministic mock assistant output. Use only for tests and CLI debugging.",
+        provider_id: providerConfig.id,
+      },
+    ],
+    provider_id: providerConfig.id,
+    model: providerConfig.model,
+    telemetry: {
+      attempts: 1,
+      completed_at: generatedAt,
+      duration_ms: 0,
+      estimated_cost_usd: 0,
+      started_at: generatedAt,
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+      },
+    },
+    generated_at: generatedAt,
   };
 }
 
@@ -773,6 +1311,12 @@ function normalizeCartographerGenerationOutput(
   const validation = validateCartographerGenerationOutput(output, input, providerConfig);
 
   return validation.valid ? validation.output : createFailedGenerationOutput(input, "invalid_output", validation.diagnostics, providerConfig);
+}
+
+function normalizeAssistantOutput(output: AiAssistantOutput, input: AiAssistantInput, providerConfig: AiProviderConfig): AiAssistantOutput {
+  const validation = validateAssistantOutput(output, input, providerConfig);
+
+  return validation.valid ? validation.output : createFailedAssistantOutput(input, "invalid_output", validation.diagnostics, providerConfig);
 }
 
 function createMockTitles(seed: string, levelId: string, mode: CartographerGenerationMode, count: number): string[] {
@@ -875,6 +1419,27 @@ function isCartographerGenerationMode(value: unknown): value is CartographerGene
   );
 }
 
+function isAssistantIntent(value: unknown): value is AiAssistantIntent {
+  return (
+    value === "answer_question" ||
+    value === "navigate" ||
+    value === "expand_map" ||
+    value === "summarize_selection" ||
+    value === "explain_source"
+  );
+}
+
+function isAssistantActionType(value: unknown): value is AiAssistantActionType {
+  return (
+    value === "none" ||
+    value === "focus_node" ||
+    value === "request_chunk" ||
+    value === "observe_source" ||
+    value === "create_seed" ||
+    value === "open_settings"
+  );
+}
+
 function isNodeType(value: unknown): value is NodeType {
   return (
     value === "domain" ||
@@ -938,6 +1503,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function isStringNumberBooleanRecord(value: unknown): value is Record<string, string | number | boolean> {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return Object.values(value).every((item) => typeof item === "string" || typeof item === "number" || typeof item === "boolean");
+}
+
 function isProbablyUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -959,10 +1532,28 @@ function slugify(value: string): string {
     .slice(0, 48);
 }
 
-async function sleep(ms: number): Promise<void> {
+async function sleep(ms: number, signal?: AbortSignal): Promise<boolean> {
   if (ms <= 0) {
-    return;
+    return !isAbortSignalCancelled(signal);
   }
 
-  await new Promise((resolve) => setTimeout(resolve, ms));
+  if (isAbortSignalCancelled(signal)) {
+    return false;
+  }
+
+  return new Promise((resolve) => {
+    const abortListener = () => {
+      clearTimeout(timeoutId);
+      resolve(false);
+    };
+    const timeoutId = setTimeout(() => {
+      signal?.removeEventListener("abort", abortListener);
+      resolve(true);
+    }, ms);
+    signal?.addEventListener("abort", abortListener, { once: true });
+  });
+}
+
+function isAbortSignalCancelled(signal: AbortSignal | undefined): boolean {
+  return Boolean(signal?.aborted);
 }

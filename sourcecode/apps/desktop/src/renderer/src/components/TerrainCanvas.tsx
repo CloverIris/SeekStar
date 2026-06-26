@@ -31,10 +31,14 @@ import {
   selectNodesInRect,
   zoomViewportAtScreenPoint,
 } from "@seekstar/constellation-engine";
+import type { CartographerChunkRuntimeRecord, CartographerRuntimeStatus } from "../exploration/cartographerRuntimeClient";
 import { MainContentStatusOverlay, useMainContentRuntime } from "./main-content/MainContentRuntime";
 
 interface TerrainCanvasProps {
   activeTool: CanvasTool;
+  chunkBoundaryControls: ChunkBoundaryControls;
+  cartographerChunkRecords: CartographerChunkRuntimeRecord[];
+  cartographerStatus: CartographerRuntimeStatus;
   focusedNodeId?: string;
   highlightedNodeIds: string[];
   onFrontierDiscovery: (viewport: ViewportState) => void;
@@ -52,6 +56,20 @@ interface TerrainCanvasProps {
   tileAbsorptionRequest?: TileAbsorptionRequest;
   tileFieldTargetCount?: number;
   viewport: ViewportState;
+}
+
+export type ChunkBoundaryDirection = "east" | "north" | "south" | "west";
+
+export interface ChunkBoundaryControls {
+  autoDiscoveryEnabled: boolean;
+  autoPreloadRing: number;
+  chunkHeight: number;
+  chunkWidth: number;
+  manualPreloadRange: number;
+  onDirectionExpand: (direction: ChunkBoundaryDirection) => void;
+  onCancelCurrent: () => void;
+  onRefreshCurrent: () => void;
+  onToggleAutoDiscovery: (enabled: boolean) => void;
 }
 
 export interface TileAbsorptionRequest {
@@ -1057,7 +1075,7 @@ function createRelationLine({
   const alpha = isSelected || isHighlighted ? 0.42 : 0.18;
 
   line.moveTo(from.x, from.y).lineTo(to.x, to.y).stroke({
-    color: relation.source_state === "fog" ? 0x8b7aaa : 0x6e9fff,
+    color: relation.source_state === "cartographer_primary" ? 0x46d8c6 : relation.source_state === "fog" ? 0x8b7aaa : 0x6e9fff,
     alpha,
     width: isSelected ? 2 : 1.2,
   });
@@ -1098,14 +1116,18 @@ function createMacroBubble({
   const color = getMacroColor(node);
   const circle = new Graphics();
   const highlight = isSelected || isFocused || isHighlighted;
+  const isCartographer = isCartographerTerrainNode(node);
 
   container.alpha = isGhost ? 0.2 : Math.max(0.32, 1 - distance * 0.52);
   circle.circle(0, 0, radius).fill({ color, alpha: 1 });
-  circle.circle(-radius * 0.24, -radius * 0.28, radius * 0.36).fill({ color: 0xffffff, alpha: 0.14 });
+  circle.circle(-radius * 0.24, -radius * 0.28, radius * 0.36).fill({ color: 0xffffff, alpha: isCartographer ? 0.18 : 0.14 });
+  if (isCartographer) {
+    circle.circle(radius * 0.28, radius * 0.3, Math.max(4, radius * 0.08)).fill({ color: 0x46d8c6, alpha: 0.82 });
+  }
   circle.circle(0, 0, radius).stroke({
-    color: highlight ? 0x9bc0ff : 0x0b1220,
-    alpha: highlight ? 0.75 : 0.38,
-    width: highlight ? 2.4 : 1.3,
+    color: highlight ? 0x9bc0ff : isCartographer ? 0x45d0c2 : 0x0b1220,
+    alpha: highlight ? 0.75 : isCartographer ? 0.46 : 0.38,
+    width: highlight ? 2.4 : isCartographer ? 1.7 : 1.3,
   });
 
   const title = createPixiText(node.title, {
@@ -1114,7 +1136,7 @@ function createMacroBubble({
     wordWrapWidth: radius * 1.45,
   });
   const type = createPixiText(node.type.replace("_", " "), {
-    color: 0xc4d2e5,
+    color: isCartographer ? 0xb8f3ec : 0xc4d2e5,
     fontSize: 8,
     wordWrapWidth: radius * 1.3,
   });
@@ -1156,15 +1178,24 @@ function createDetailCard({
   const height = getDetailCardHeight(node);
   const highlight = isSelected || isFocused || isHighlighted;
   const card = new Graphics();
+  const isCartographer = isCartographerTerrainNode(node);
 
   container.alpha = isGhost ? 0.24 : 1;
   card
     .roundRect(-width / 2, -height / 2, width, height, node.type === "word" || node.type === "phrase" ? height / 2 : 9)
     .fill({ color: getDetailColor(node), alpha: 0.92 })
-    .stroke({ color: highlight ? 0x8db4ff : 0x263247, alpha: highlight ? 0.78 : 0.8, width: highlight ? 2 : 1 });
+    .stroke({
+      color: highlight ? 0x8db4ff : isCartographer ? 0x45d0c2 : 0x263247,
+      alpha: highlight ? 0.78 : isCartographer ? 0.62 : 0.8,
+      width: highlight ? 2 : isCartographer ? 1.5 : 1,
+    });
+
+  if (isCartographer) {
+    card.roundRect(-width / 2 + 10, -height / 2 + 10, 28, 4, 2).fill({ color: 0x46d8c6, alpha: 0.76 });
+  }
 
   const type = createPixiText(node.type.replace("_", " "), {
-    color: 0x9aa7ba,
+    color: isCartographer ? 0xa7efe7 : 0x9aa7ba,
     fontSize: 9,
     wordWrapWidth: width - 26,
   });
@@ -1287,10 +1318,14 @@ function createHoverPreview(
 function getMacroBubbleRadius(node: TerrainNode, viewport: ViewportState): number {
   const distance = getMacroLensDistance(node, viewport);
 
-  return Math.max(42, 76 - distance * 26);
+  return Math.max(34, 62 - distance * 18);
 }
 
 function getMacroColor(node: TerrainNode): number {
+  if (isCartographerTerrainNode(node)) {
+    return node.layer === "L0" ? 0x2d8f93 : node.layer === "L1" ? 0x3376a8 : node.layer === "L2" ? 0x356ba0 : 0x405eb8;
+  }
+
   if (node.source_state === "fog") {
     return 0x7058b8;
   }
@@ -1369,6 +1404,10 @@ function formatCandidateUrl(url: string | undefined): string {
 }
 
 function getDetailColor(node: TerrainNode): number {
+  if (isCartographerTerrainNode(node)) {
+    return node.layer === "L3" ? 0x102734 : 0x122736;
+  }
+
   if (node.source_state === "source_backed") {
     return 0x122b34;
   }
@@ -1378,6 +1417,10 @@ function getDetailColor(node: TerrainNode): number {
   }
 
   return 0x131a26;
+}
+
+function isCartographerTerrainNode(node: TerrainNode): boolean {
+  return node.source_state === "cartographer_primary" || node.tags?.includes("cartographer") === true;
 }
 
 function getDetailCardWidth(node: TerrainNode): number {

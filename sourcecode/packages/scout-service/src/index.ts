@@ -6,6 +6,7 @@ import type {
 } from "playwright";
 import type {
   ContentProviderDefinition,
+  ContentProviderSecretRef,
   ContentProviderSettings,
   DataServiceProviderKind,
   ScoutDiscoveryMode,
@@ -380,6 +381,7 @@ export function resolveActiveContentProviderSettings(
       languages: normalizeProviderLanguages(candidate?.languages, fallback.languages, definition?.supported_languages),
       region: normalizeOptionalString(candidate?.region),
       base_url: normalizeOptionalString(candidate?.base_url),
+      api_key_ref: normalizeContentProviderSecretRef(candidate?.api_key_ref, candidate?.api_key_env_var ?? fallback.api_key_env_var),
       api_key_env_var: normalizeOptionalString(candidate?.api_key_env_var) ?? fallback.api_key_env_var,
       health_status: enabled ? "ready" : "disabled",
       health_message: normalizeOptionalString(candidate?.health_message),
@@ -540,11 +542,12 @@ class GitHubAuthorityProvider implements SearchCandidateProvider {
     url.searchParams.set("sort", "stars");
     url.searchParams.set("order", "desc");
     url.searchParams.set("per_page", String(limit));
-    const token = getEnvValue(this.settings.api_key_env_var ?? "GITHUB_TOKEN");
+    const token = resolveContentProviderApiKey(this.settings);
     const response = await fetchJson<GitHubRepositorySearchResponse>(url.href, {
       headers: {
         ...createApiHeaders("application/vnd.github+json"),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        "X-GitHub-Api-Version": "2022-11-28",
       },
     });
     const items = Array.isArray(response.items) ? response.items.slice(0, limit) : [];
@@ -831,6 +834,12 @@ class PlaywrightPageOutlinksProvider implements SearchCandidateProvider {
 }
 
 async function snapshotWithContext(context: BrowserContext, url: URL, timestamp: string): Promise<SourceSnapshot> {
+  const assetSnapshot = await snapshotPrimaryAssetWithRequest(context, url, timestamp);
+
+  if (assetSnapshot) {
+    return assetSnapshot;
+  }
+
   return withPage(context, async (page) => {
     page.setDefaultTimeout(8_000);
     const response = await page.goto(url.href, {
@@ -846,12 +855,69 @@ async function snapshotWithContext(context: BrowserContext, url: URL, timestamp:
       content_type: response?.headers()["content-type"],
       visible_text: visibleText,
       excerpt: visibleText.slice(0, 6_000),
+      primary_resource: {
+        kind: "html",
+        mime_type: normalizeContentType(response?.headers()["content-type"]),
+        title: normalizeWhitespace(await page.title()),
+        url: page.url(),
+      },
       outlinks: await extractOutlinks(page),
       media: await extractMedia(page),
       source_type: inferSourceType(url, response),
       retrieved_at: timestamp,
     };
   });
+}
+
+async function snapshotPrimaryAssetWithRequest(context: BrowserContext, url: URL, timestamp: string): Promise<SourceSnapshot | undefined> {
+  try {
+    const response = await context.request.get(url.href, {
+      timeout: FETCH_TIMEOUT_MS,
+    });
+    const headers = response.headers();
+    const contentType = normalizeContentType(headers["content-type"]);
+    const kind = inferPrimaryResourceKind(url, contentType);
+
+    if (kind !== "image" && kind !== "pdf") {
+      return undefined;
+    }
+
+    const finalUrl = response.url();
+    const byteLength = parsePositiveInteger(headers["content-length"]);
+    const title = createAssetSnapshotTitle(finalUrl, kind);
+    const media: SourceSnapshotMedia[] = [
+      {
+        kind,
+        url: finalUrl,
+        title,
+        mime_type: contentType,
+        byte_length: byteLength,
+      },
+    ];
+
+    return {
+      url: url.href,
+      final_url: finalUrl,
+      title,
+      content_type: contentType,
+      visible_text: title,
+      excerpt: kind === "pdf" ? `PDF document: ${title}` : `Image resource: ${title}`,
+      primary_resource: {
+        kind,
+        url: finalUrl,
+        title,
+        mime_type: contentType,
+        byte_length: byteLength,
+        preview_url: kind === "image" ? finalUrl : undefined,
+      },
+      outlinks: [],
+      media,
+      source_type: kind === "image" ? "image" : "document",
+      retrieved_at: timestamp,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 async function withPage<T>(context: BrowserContext, usePage: (page: Page) => Promise<T>): Promise<T> {
@@ -1257,13 +1323,58 @@ function parseHttpUrl(value: string | undefined): URL | undefined {
 }
 
 function inferSourceType(url: URL, response: PlaywrightResponse | null): SourceType {
-  const contentType = response?.headers()["content-type"] ?? "";
+  const contentType = normalizeContentType(response?.headers()["content-type"]);
 
   if (contentType.includes("pdf") || url.pathname.toLowerCase().endsWith(".pdf")) {
     return "document";
   }
 
+  if (contentType.startsWith("image/") || isImagePath(url.pathname)) {
+    return "image";
+  }
+
   return "webpage";
+}
+
+function inferPrimaryResourceKind(url: URL, contentType: string): SourceSnapshotMedia["kind"] | "html" {
+  if (contentType.includes("pdf") || url.pathname.toLowerCase().endsWith(".pdf")) {
+    return "pdf";
+  }
+
+  if (contentType.startsWith("image/") || isImagePath(url.pathname)) {
+    return "image";
+  }
+
+  if (contentType.includes("html")) {
+    return "html";
+  }
+
+  return "unknown";
+}
+
+function normalizeContentType(contentType: string | undefined): string {
+  return contentType?.split(";")[0]?.trim().toLowerCase() || "";
+}
+
+function parsePositiveInteger(value: string | undefined): number | undefined {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function createAssetSnapshotTitle(url: string, kind: "image" | "pdf"): string {
+  try {
+    const parsed = new URL(url);
+    const pathname = decodeURIComponent(parsed.pathname);
+    const fileName = pathname.split("/").filter(Boolean).at(-1);
+
+    return fileName || `${kind.toUpperCase()} resource`;
+  } catch {
+    return `${kind.toUpperCase()} resource`;
+  }
+}
+
+function isImagePath(pathname: string): boolean {
+  return /\.(apng|avif|gif|jpe?g|png|svg|webp)$/i.test(pathname);
 }
 
 interface ArxivEntry {
@@ -1446,6 +1557,43 @@ function resolveProviderLanguages(settings: ContentProviderSettings, fallback: r
   return settings.languages && settings.languages.length > 0 ? settings.languages : [...fallback];
 }
 
+export function resolveContentProviderApiKey(
+  settings: Pick<ContentProviderSettings, "api_key_env_var" | "api_key_ref">,
+  env: Record<string, string | undefined> = typeof process !== "undefined" ? process.env : {},
+): string | undefined {
+  const ref = normalizeContentProviderSecretRef(settings.api_key_ref, settings.api_key_env_var);
+  return resolveContentProviderSecretRef(ref, env);
+}
+
+export function resolveContentProviderSecretRef(
+  ref: ContentProviderSecretRef | undefined,
+  env: Record<string, string | undefined> = typeof process !== "undefined" ? process.env : {},
+): string | undefined {
+  if (!ref || ref.kind !== "env") {
+    return undefined;
+  }
+
+  const name = normalizeOptionalString(ref.name);
+  return name ? normalizeOptionalString(env[name]) : undefined;
+}
+
+function normalizeContentProviderSecretRef(
+  value: unknown,
+  legacyEnvVar?: string,
+): ContentProviderSecretRef | undefined {
+  if (typeof value === "object" && value !== null) {
+    const candidate = value as Partial<ContentProviderSecretRef>;
+    const name = normalizeOptionalString(candidate.name);
+
+    if (candidate.kind === "env" && name) {
+      return { kind: "env", name };
+    }
+  }
+
+  const fallbackName = normalizeOptionalString(legacyEnvVar);
+  return fallbackName ? { kind: "env", name: fallbackName } : undefined;
+}
+
 function normalizeProviderLanguages(
   value: unknown,
   fallback: readonly string[] | undefined,
@@ -1481,10 +1629,6 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
   }
 
   return Math.min(max, Math.max(min, Math.round(value)));
-}
-
-function getEnvValue(name: string | undefined): string | undefined {
-  return name && typeof process !== "undefined" ? process.env[name] : undefined;
 }
 
 function normalizeWhitespace(value: string): string {

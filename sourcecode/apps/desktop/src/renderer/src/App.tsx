@@ -1,5 +1,6 @@
 ﻿import type { ExplorationTab, LayerId, ScoutObservation, ScoutPlan, SourceRef, TerrainNode, TerrainScene } from "@seekstar/core-schema";
 import type { TileAbsorptionTrigger } from "@seekstar/core-schema";
+import type { AiAssistantAction } from "@seekstar/ai-service";
 import { isDirectHttpUrl, type CanvasTool, type SourceIngestionInput } from "@seekstar/constellation-engine";
 import type { SeekStarSettings } from "../../main/appSettingsStore";
 import type { TabRuntimeSnapshot } from "../../main/tabRuntimeManager";
@@ -10,7 +11,7 @@ import { ObservatorySidebar } from "./components/ObservatorySidebar";
 import { TerrainCanvas } from "./components/TerrainCanvas";
 import type { TileAbsorptionRequest } from "./components/TerrainCanvas";
 import { CommandComposer, SelectionActionCard, StatusStrip, WorkbenchHeader } from "./components/WorkbenchChrome";
-import { InspectorSidebar } from "./components/inspector/InspectorSidebar";
+import { InspectorSidebar, type AssistantActionExecutionResult, type AssistantOperationUndoContext, type AssistantSceneRollbackPatch } from "./components/inspector/InspectorSidebar";
 import { SettingsPage } from "./components/settings/SettingsPage";
 import {
   getActiveLayer,
@@ -20,7 +21,7 @@ import {
   getRelationNodes,
   getSourceForNode,
 } from "./exploration/types";
-import { useExplorationSession } from "./exploration/useExplorationSession";
+import { type CartographerChunkSchedulingPolicy, useExplorationSession } from "./exploration/useExplorationSession";
 import { type SearchResult, searchScene } from "./search/localSceneSearch";
 import { type SelectionBasketItem, createSelectionBasketItem } from "./selection/selectionBasket";
 
@@ -38,6 +39,8 @@ export function App(): ReactElement {
     scenesByTabId,
     basketByTabId,
     setBasketByTabId,
+    cartographerChunkRecords,
+    cartographerStatus,
     persistenceStatus,
     workspaceHydrated,
     hydratedSelection,
@@ -58,13 +61,19 @@ export function App(): ReactElement {
     handleOpenCandidateAsSeek: openCandidateAsSeek,
     handleTabSelect: selectTab,
     handleCloseTab: closeTab,
+    handleRestoreSceneSnapshot: restoreSceneSnapshot,
     handleReorderTabs: reorderTabs,
     handleBacklinkFocus: focusBacklink,
     handleAddSource: ingestSource,
     handleRunScoutPlan,
     handleScoutSourceLinks,
     handleCanvasFrontierDiscovery,
+    handleAssistantChunkExpansion,
+    handleCartographerChunkDirectionExpand,
+    handleCartographerChunkRefresh,
+    handleCartographerTransactionCancel,
     handleConvertScoutObservation: convertScoutObservation,
+    handleReplaceFailedSourceCandidate: replaceFailedSourceCandidate,
     handleResetWorkspace: resetWorkspace,
     handleUseSelectionAsSeed,
     handleUseNodeAsSeed,
@@ -84,6 +93,7 @@ export function App(): ReactElement {
   const [splashFading, setSplashFading] = useState(false);
   const [activeCanvasTool, setActiveCanvasTool] = useState<CanvasTool>("pointer");
   const [tileAbsorptionRequest, setTileAbsorptionRequest] = useState<TileAbsorptionRequest | undefined>();
+  const [chunkAutoDiscoveryOverride, setChunkAutoDiscoveryOverride] = useState<boolean | undefined>();
   const tileAbsorptionRequestCounterRef = useRef(0);
   const [isSelectionActionCardOpen, setIsSelectionActionCardOpen] = useState(false);
   const [tabRuntimeSnapshot, setTabRuntimeSnapshot] = useState<TabRuntimeSnapshot | undefined>();
@@ -267,6 +277,10 @@ export function App(): ReactElement {
   const activeTab = getActiveTab(scene);
   const activeLayer = getActiveLayer(scene);
   const activeLayerLabel = getActiveLayerLabel(scene);
+  const assistantActionPermissionMode = settings?.assistant_action_permission_mode ?? "ask_each_time";
+  const assistantActionPermissionRules = settings?.assistant_action_permission_rules ?? createDefaultAssistantActionPermissionRules();
+  const cartographerChunkScheduling = settings?.cartographer_chunk_scheduling ?? createDefaultCartographerChunkSchedulingSettings();
+  const chunkAutoDiscoveryEnabled = chunkAutoDiscoveryOverride ?? cartographerChunkScheduling.auto_expand_enabled;
   const commandKind = isDirectHttpUrl(commandValue.trim()) ? "url" : "keyword";
   const shouldShowWorkbenchPrompt =
     selectedNodeIds.length === 0 &&
@@ -700,16 +714,26 @@ export function App(): ReactElement {
     }));
   }
 
-  function handleUseSelectionAsSeedTab(): void {
-    handleUseSelectionAsSeed(selectedNodes);
+  async function handleUseSelectionAsSeedTab(): Promise<void> {
+    const result = await handleUseSelectionAsSeed(selectedNodes);
     resetCommandAndSearch();
     resetSelection();
+
+    if (result) {
+      applySelection(result);
+    }
   }
 
-  function handleUseNodeAsSeedTab(node: TerrainNode): void {
-    handleUseNodeAsSeed(node, getSourceForNode(scene, node));
+  async function handleUseNodeAsSeedTab(node: TerrainNode) {
+    const result = await handleUseNodeAsSeed(node, getSourceForNode(scene, node));
     resetCommandAndSearch();
     resetSelection();
+
+    if (result) {
+      applySelection(result);
+    }
+
+    return result;
   }
 
   function handleAddSource(input: SourceIngestionInput): void {
@@ -789,6 +813,293 @@ export function App(): ReactElement {
     resetSelection();
     applySelection(result);
     setRightSidebarCollapsed(false);
+  }
+
+  async function handleReplaceFailedSourceCandidate(observation: ScoutObservation): Promise<void> {
+    const result = await replaceFailedSourceCandidate(observation.id);
+
+    if (!result) {
+      return;
+    }
+
+    applySelection(result);
+    setSearchQuery("");
+    setSearchResults([]);
+    setIsSelectionActionCardOpen(false);
+    setRightSidebarCollapsed(false);
+  }
+
+  async function handleAssistantAction(action: AiAssistantAction): Promise<AssistantActionExecutionResult | void> {
+    if (resolveAssistantActionPermissionDecision(action, assistantActionPermissionMode, assistantActionPermissionRules) === "block") {
+      throw new Error("Assistant action execution is blocked by settings.");
+    }
+
+    switch (action.type) {
+      case "focus_node": {
+        const undoContext = createViewportSelectionUndoContext(activeTab.id, scene, selectedNodeIds, viewportFocusNodeId);
+        const targetNode = findAssistantTargetNode(action, scene);
+
+        if (!targetNode) {
+          throw new Error("Assistant action target node was not found in this map.");
+        }
+
+        if (targetNode.layer !== scene.viewport.layer) {
+          handleLayerSelect(targetNode.layer, targetNode.id);
+        } else {
+          handleSearchResultSelect(targetNode.id);
+        }
+        setRightSidebarCollapsed(false);
+        return {
+          message: "Focused the requested node.",
+          undo: {
+            context: undoContext,
+            message: "Restore previous viewport and selection.",
+          },
+        };
+      }
+
+      case "request_chunk": {
+        const rollbackChunkScene = structuredClone(scene);
+        const layer = resolveAssistantActionLayer(action, scene.viewport.layer);
+        const viewport = createAssistantChunkViewport(scene.viewport, layer, action, cartographerChunkScheduling);
+        const result = await handleAssistantChunkExpansion(viewport, cartographerChunkScheduling);
+
+        if (!result?.scene) {
+          handleSceneViewport(viewport);
+          setRightSidebarCollapsed(false);
+          return {
+            message: "Moved to the requested chunk.",
+            undo: {
+              context: createViewportSelectionUndoContext(activeTab.id, scene, selectedNodeIds, viewportFocusNodeId),
+              message: "Restore previous viewport and selection.",
+            },
+          };
+        }
+
+        applySelection(result);
+        setRightSidebarCollapsed(false);
+        return {
+          message: "Moved to the requested chunk and applied Cartographer terrain.",
+          undo: {
+            context: createSceneDiffUndoContext(activeTab.id, rollbackChunkScene, result.scene),
+            message: "Restore the map before assistant chunk expansion.",
+          },
+        };
+      }
+
+      case "observe_source": {
+        const rollbackSourceScene = structuredClone(scene);
+        const observation = findAssistantTargetObservation(action, scene);
+
+        if (observation) {
+          if (observation.status === "failed" || observation.failure_reason) {
+            await handleReplaceFailedSourceCandidate(observation);
+            return {
+              message: "Requested replacement candidates for the failed source.",
+            };
+          }
+
+          const result = await observeCandidateIntoCurrentTab(observation.id);
+
+          if (!result) {
+            throw new Error("Source candidate could not be observed.");
+          }
+
+          applySelection(result);
+          setSelectedObservationId(undefined);
+          setSearchQuery("");
+          setSearchResults([]);
+          setIsSelectionActionCardOpen(false);
+          setRightSidebarCollapsed(false);
+          return {
+            message: "Observed the selected source candidate.",
+            undo: {
+              context: createSceneDiffUndoContext(activeTab.id, rollbackSourceScene, result.scene ?? rollbackSourceScene),
+              message: "Restore the map before source observation.",
+            },
+          };
+        }
+
+        const url = getAssistantActionUrl(action);
+
+        if (url && isDirectHttpUrl(url)) {
+          const result = await ingestDirectUrlIntoCurrentTab(url);
+
+          if (result) {
+            applySelection(result);
+            setSelectedObservationId(undefined);
+            setRightSidebarCollapsed(false);
+            return {
+              message: "Observed the direct URL in this Seek.",
+              undo: {
+                context: createSceneDiffUndoContext(activeTab.id, rollbackSourceScene, result.scene ?? rollbackSourceScene),
+                message: "Restore the map before source observation.",
+              },
+            };
+          }
+        }
+
+        throw new Error("Assistant action did not include an observable source candidate or URL.");
+      }
+
+      case "create_seed": {
+        const targetNode = findAssistantTargetNode(action, scene);
+        const undoContextBase = createCloseCreatedTabUndoContext(selectedNodeIds, viewportFocusNodeId);
+
+        if (targetNode) {
+          const result = await handleUseNodeAsSeedTab(targetNode);
+          setRightSidebarCollapsed(false);
+          return result
+            ? {
+              message: "Created a recursive seed tab from the target node.",
+              undo: {
+                context: {
+                  ...undoContextBase,
+                  created_tab_id: result.createdTabId,
+                  origin_tab_id: result.originTabId,
+                },
+                message: "Close created seed tab and return to the origin tab.",
+              },
+            }
+            : {
+              message: "Created a recursive seed tab from the target node.",
+            };
+        }
+
+        const seed = (action.seed || action.arguments?.seed || action.label || "").toString().trim();
+
+        if (!seed) {
+          throw new Error("Assistant action did not include a seed.");
+        }
+
+        const result = await createSeedTab(seed);
+
+        if (result) {
+          applySelection(result);
+          setRightSidebarCollapsed(false);
+        }
+        return result
+          ? {
+            message: "Created a recursive seed tab.",
+            undo: {
+              context: {
+                ...undoContextBase,
+                created_tab_id: result.createdTabId,
+                origin_tab_id: result.originTabId,
+              },
+              message: "Close created seed tab and return to the origin tab.",
+            },
+          }
+          : {
+            message: "Created a recursive seed tab.",
+          };
+      }
+
+      case "open_settings":
+        setSettingsOpen(true);
+        return {
+          message: "Opened settings.",
+        };
+
+      case "none":
+        return;
+
+      default:
+        throw new Error(`Unsupported assistant action: ${action.type}`);
+    }
+  }
+
+  async function handleAssistantUndo(context: AssistantOperationUndoContext): Promise<string> {
+    if (context.kind === "restore_scene_diff") {
+      const currentScene = scenesByTabId[context.tab_id];
+
+      if (!currentScene) {
+        throw new Error("Undo target scene is no longer available.");
+      }
+
+      const result = await restoreSceneSnapshot(context.tab_id, applySceneRollbackPatch(currentScene, context.patch));
+
+      if (!result) {
+        throw new Error("Scene diff could not be restored.");
+      }
+
+      resetCommandAndSearch();
+      applySelection(result);
+      setSelectedNodeIds(result.selectedNodeIds);
+      setSelectedRelationId(undefined);
+      setSelectedObservationId(undefined);
+      setViewportFocusNodeId(result.focusNodeId ?? result.selectedNodeIds[0]);
+      setIsSelectionActionCardOpen(false);
+      setRightSidebarCollapsed(false);
+
+      return "Restored map before assistant operation.";
+    }
+
+    if (context.kind === "restore_scene_snapshot") {
+      const result = await restoreSceneSnapshot(context.tab_id, context.scene_snapshot);
+
+      if (!result) {
+        throw new Error("Scene snapshot could not be restored.");
+      }
+
+      resetCommandAndSearch();
+      applySelection(result);
+      setSelectedNodeIds(result.selectedNodeIds);
+      setSelectedRelationId(undefined);
+      setSelectedObservationId(undefined);
+      setViewportFocusNodeId(result.focusNodeId ?? result.selectedNodeIds[0]);
+      setIsSelectionActionCardOpen(false);
+      setRightSidebarCollapsed(false);
+
+      return "Restored map before assistant operation.";
+    }
+
+    if (context.kind === "close_created_tab") {
+      if (!scenesByTabId[context.created_tab_id]) {
+        throw new Error("Created seed tab is no longer available.");
+      }
+
+      const result = await closeTab(context.created_tab_id);
+
+      if (!result) {
+        throw new Error("Created seed tab could not be closed.");
+      }
+
+      resetCommandAndSearch();
+      applySelection(result);
+      const originSelection = scenesByTabId[context.origin_tab_id] ? selectTab(context.origin_tab_id) : undefined;
+
+      if (originSelection) {
+        applySelection(originSelection);
+      }
+
+      setSelectedNodeIds(context.selected_node_ids);
+      setSelectedRelationId(undefined);
+      setSelectedObservationId(undefined);
+      setViewportFocusNodeId(context.focus_node_id ?? context.selected_node_ids[0]);
+      setIsSelectionActionCardOpen(false);
+      setRightSidebarCollapsed(false);
+
+      return "Closed created seed tab.";
+    }
+
+    if (context.kind !== "restore_viewport_selection") {
+      throw new Error("Unsupported assistant undo operation.");
+    }
+
+    if (context.tab_id !== activeTab.id) {
+      throw new Error("Undo target is not the active tab.");
+    }
+
+    const restoredSelectedNodeIds = syncSceneViewport(context.viewport, context.selected_node_ids);
+    setSelectedNodeIds(restoredSelectedNodeIds);
+    setSelectedRelationId(undefined);
+    setSelectedObservationId(undefined);
+    setViewportFocusNodeId(context.focus_node_id ?? restoredSelectedNodeIds[0]);
+    setIsSelectionActionCardOpen(false);
+    setRightSidebarCollapsed(false);
+
+    return "Restored previous viewport and selection.";
   }
 
   async function handleResetWorkspace(): Promise<void> {
@@ -922,13 +1233,29 @@ export function App(): ReactElement {
             <div className="workbench-canvas-wrap">
               <TerrainCanvas
                 activeTool={activeCanvasTool}
+                chunkBoundaryControls={{
+                  autoDiscoveryEnabled: chunkAutoDiscoveryEnabled,
+                  autoPreloadRing: cartographerChunkScheduling.auto_preload_ring,
+                  chunkHeight: cartographerChunkScheduling.chunk_height,
+                  chunkWidth: cartographerChunkScheduling.chunk_width,
+                  manualPreloadRange: cartographerChunkScheduling.manual_preload_range,
+                  onDirectionExpand: (direction) => handleCartographerChunkDirectionExpand(direction, scene.viewport, cartographerChunkScheduling),
+                  onCancelCurrent: handleCartographerTransactionCancel,
+                  onRefreshCurrent: () => handleCartographerChunkRefresh(scene.viewport, cartographerChunkScheduling),
+                  onToggleAutoDiscovery: (enabled) => setChunkAutoDiscoveryOverride(enabled),
+                }}
+                cartographerChunkRecords={cartographerChunkRecords}
+                cartographerStatus={cartographerStatus}
                 focusedNodeId={scene.runtime.focused_node_id ?? viewportFocusNodeId}
                 highlightedNodeIds={highlightedNodeIds}
                 onBrowserModeExit={() => {
                   applySelection(handleTileAbsorptionExit());
                 }}
                 onFrontierDiscovery={(viewport) => {
-                  handleCanvasFrontierDiscovery(viewport);
+                  if (!chunkAutoDiscoveryEnabled) {
+                    return;
+                  }
+                  handleCanvasFrontierDiscovery(viewport, cartographerChunkScheduling);
                   setRightSidebarCollapsed(false);
                 }}
                 onNodeSelect={handleNodeSelect}
@@ -991,13 +1318,18 @@ export function App(): ReactElement {
         <SidebarRail collapsed={rightSidebarCollapsed} label="Inspector" side="right">
           <InspectorSidebar
             activeTab={activeTab}
+            assistantActionPermissionMode={assistantActionPermissionMode}
+            assistantActionPermissionRules={assistantActionPermissionRules}
             basketItems={activeBasketItems}
             onAddSource={handleAddSource}
+            onAssistantAction={handleAssistantAction}
+            onAssistantUndo={handleAssistantUndo}
             onClearBasket={handleClearBasket}
             onClearSelection={handleClearSelection}
             onConvertScoutObservation={handleConvertScoutObservation}
             onObserveCandidate={handleObserveCandidateSource}
             onOpenCandidateAsSeek={handleOpenCandidateAsSeek}
+            onReplaceFailedSource={handleReplaceFailedSourceCandidate}
             onRemoveBasketItem={handleRemoveBasketItem}
             onRunScoutPlan={handleRunScoutPlanWithUi}
             onScoutSourceLinks={handleScoutSourceLinksWithUi}
@@ -1031,4 +1363,242 @@ function isAbsorbableCanvasTile(node: TerrainNode): boolean {
       node.source_url &&
       (node.type === "webpage" || node.type === "document"),
   );
+}
+
+function findAssistantTargetNode(action: AiAssistantAction, scene: TerrainScene): TerrainNode | undefined {
+  if (!action.target_id) {
+    return undefined;
+  }
+
+  return scene.nodes.find((node) => node.id === action.target_id);
+}
+
+function findAssistantTargetObservation(action: AiAssistantAction, scene: TerrainScene): ScoutObservation | undefined {
+  const observations = scene.scout_observations ?? [];
+
+  if (action.target_id) {
+    const targetObservation = observations.find((observation) => observation.id === action.target_id);
+
+    if (targetObservation) {
+      return targetObservation;
+    }
+  }
+
+  const url = getAssistantActionUrl(action);
+
+  if (url) {
+    return observations.find(
+      (observation) =>
+        observation.url === url ||
+        observation.source_snapshot?.url === url ||
+        observation.source_snapshot?.final_url === url,
+    );
+  }
+
+  return observations.find((observation) => observation.status === "source_candidate");
+}
+
+function getAssistantActionUrl(action: AiAssistantAction): string | undefined {
+  const value = action.arguments?.url ?? action.arguments?.source_url ?? action.seed;
+
+  return typeof value === "string" ? value.trim() : undefined;
+}
+
+function createViewportSelectionUndoContext(
+  tabId: string,
+  scene: TerrainScene,
+  selectedNodeIds: string[],
+  focusNodeId?: string,
+): AssistantOperationUndoContext {
+  return {
+    focus_node_id: focusNodeId,
+    kind: "restore_viewport_selection",
+    selected_node_ids: [...selectedNodeIds],
+    tab_id: tabId,
+    viewport: { ...scene.viewport },
+  };
+}
+
+function createCloseCreatedTabUndoContext(
+  selectedNodeIds: string[],
+  focusNodeId?: string,
+): Omit<Extract<AssistantOperationUndoContext, { kind: "close_created_tab" }>, "created_tab_id" | "origin_tab_id"> {
+  return {
+    focus_node_id: focusNodeId,
+    kind: "close_created_tab",
+    selected_node_ids: [...selectedNodeIds],
+  };
+}
+
+function createSceneDiffUndoContext(tabId: string, beforeScene: TerrainScene, afterScene: TerrainScene): AssistantOperationUndoContext {
+  return {
+    kind: "restore_scene_diff",
+    patch: createSceneRollbackPatch(beforeScene, afterScene),
+    tab_id: tabId,
+  };
+}
+
+function createSceneRollbackPatch(beforeScene: TerrainScene, afterScene: TerrainScene): AssistantSceneRollbackPatch {
+  return {
+    collections: {
+      agent_jobs: createCollectionRollback(beforeScene.agent_jobs, afterScene.agent_jobs),
+      cartographer_outputs: createCollectionRollback(beforeScene.cartographer_outputs, afterScene.cartographer_outputs),
+      nodes: createCollectionRollback(beforeScene.nodes, afterScene.nodes),
+      relations: createCollectionRollback(beforeScene.relations, afterScene.relations),
+      scout_observations: createCollectionRollback(beforeScene.scout_observations ?? [], afterScene.scout_observations ?? []),
+      sources: createCollectionRollback(beforeScene.sources, afterScene.sources),
+    },
+    scene_fields: {
+      active_tab_id: beforeScene.active_tab_id,
+      id: beforeScene.id,
+      layers: structuredClone(beforeScene.layers),
+      metadata: structuredClone(beforeScene.metadata),
+      runtime: structuredClone(beforeScene.runtime),
+      selection: structuredClone(beforeScene.selection),
+      tabs: structuredClone(beforeScene.tabs),
+      viewport: structuredClone(beforeScene.viewport),
+    },
+  };
+}
+
+function createCollectionRollback<TItem extends { id: string }>(
+  beforeItems: readonly TItem[],
+  afterItems: readonly TItem[],
+): { added_ids: string[]; order: string[]; restored_items: TItem[] } {
+  const beforeIds = new Set(beforeItems.map((item) => item.id));
+  const afterById = new Map(afterItems.map((item) => [item.id, item]));
+
+  return {
+    added_ids: afterItems.filter((item) => !beforeIds.has(item.id)).map((item) => item.id),
+    order: beforeItems.map((item) => item.id),
+    restored_items: beforeItems
+      .filter((item) => JSON.stringify(afterById.get(item.id)) !== JSON.stringify(item))
+      .map((item) => structuredClone(item)),
+  };
+}
+
+function applySceneRollbackPatch(scene: TerrainScene, patch: AssistantSceneRollbackPatch): TerrainScene {
+  return {
+    ...scene,
+    ...structuredClone(patch.scene_fields),
+    agent_jobs: applyCollectionRollback(scene.agent_jobs, patch.collections.agent_jobs),
+    cartographer_outputs: applyCollectionRollback(scene.cartographer_outputs, patch.collections.cartographer_outputs),
+    nodes: applyCollectionRollback(scene.nodes, patch.collections.nodes),
+    relations: applyCollectionRollback(scene.relations, patch.collections.relations),
+    scout_observations: applyCollectionRollback(scene.scout_observations ?? [], patch.collections.scout_observations),
+    sources: applyCollectionRollback(scene.sources, patch.collections.sources),
+  };
+}
+
+function applyCollectionRollback<TItem extends { id: string }>(
+  currentItems: readonly TItem[],
+  rollback: { added_ids: string[]; order: string[]; restored_items: TItem[] },
+): TItem[] {
+  const nextById = new Map(currentItems.map((item) => [item.id, structuredClone(item)]));
+
+  for (const id of rollback.added_ids) {
+    nextById.delete(id);
+  }
+
+  for (const item of rollback.restored_items) {
+    nextById.set(item.id, structuredClone(item));
+  }
+
+  const ordered: TItem[] = [];
+
+  for (const id of rollback.order) {
+    const item = nextById.get(id);
+
+    if (item) {
+      ordered.push(item);
+      nextById.delete(id);
+    }
+  }
+
+  return [...ordered, ...nextById.values()];
+}
+
+function createDefaultAssistantActionPermissionRules(): SeekStarSettings["assistant_action_permission_rules"] {
+  return [
+    { action_type: "focus_node", decision: "allow_after_click" },
+    { action_type: "request_chunk", decision: "allow_after_click" },
+    { action_type: "open_settings", decision: "allow_after_click" },
+    { action_type: "observe_source", decision: "ask_each_time" },
+    { action_type: "create_seed", decision: "ask_each_time" },
+  ];
+}
+
+function createDefaultCartographerChunkSchedulingSettings(): CartographerChunkSchedulingPolicy {
+  return {
+    auto_expand_enabled: true,
+    auto_preload_ring: 1,
+    boundary_debounce_ms: 520,
+    chunk_height: 900,
+    chunk_width: 1200,
+    manual_preload_range: 1,
+  };
+}
+
+function resolveAssistantActionPermissionDecision(
+  action: AiAssistantAction,
+  mode: SeekStarSettings["assistant_action_permission_mode"],
+  rules: SeekStarSettings["assistant_action_permission_rules"],
+): SeekStarSettings["assistant_action_permission_rules"][number]["decision"] {
+  if (action.type === "none") {
+    return "allow_after_click";
+  }
+
+  if (mode === "block_all") {
+    return "block";
+  }
+
+  const rule = rules.find((candidate) => candidate.action_type === action.type);
+
+  if (rule?.decision === "block") {
+    return "block";
+  }
+
+  if (mode === "allow_low_risk" && (rule?.decision === "allow_after_click" || (!rule && isLowRiskAssistantAction(action.type)))) {
+    return "allow_after_click";
+  }
+
+  return "ask_each_time";
+}
+
+function isLowRiskAssistantAction(actionType: AiAssistantAction["type"]): boolean {
+  return actionType === "focus_node" || actionType === "request_chunk" || actionType === "open_settings";
+}
+
+function resolveAssistantActionLayer(action: AiAssistantAction, fallback: LayerId): LayerId {
+  const value = action.level_id?.trim();
+
+  return value ? (value as LayerId) : fallback;
+}
+
+function createAssistantChunkViewport(
+  viewport: TerrainScene["viewport"],
+  layer: LayerId,
+  action: AiAssistantAction,
+  scheduling: CartographerChunkSchedulingPolicy = createDefaultCartographerChunkSchedulingSettings(),
+): TerrainScene["viewport"] {
+  const direction = typeof action.arguments?.direction === "string" ? action.arguments.direction : "right";
+  const chunkWidth = typeof action.arguments?.chunk_width === "number" ? action.arguments.chunk_width : scheduling.chunk_width;
+  const chunkHeight = typeof action.arguments?.chunk_height === "number" ? action.arguments.chunk_height : scheduling.chunk_height;
+  const nextViewport = { ...viewport, layer };
+
+  switch (direction) {
+    case "left":
+    case "west":
+      return { ...nextViewport, x: viewport.x - chunkWidth };
+    case "up":
+    case "north":
+      return { ...nextViewport, y: viewport.y - chunkHeight };
+    case "down":
+    case "south":
+      return { ...nextViewport, y: viewport.y + chunkHeight };
+    case "right":
+    case "east":
+    default:
+      return { ...nextViewport, x: viewport.x + chunkWidth };
+  }
 }

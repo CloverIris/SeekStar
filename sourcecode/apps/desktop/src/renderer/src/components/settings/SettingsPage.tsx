@@ -12,10 +12,14 @@ import {
   type ContentProviderSettings,
 } from "@seekstar/core-schema";
 import type { SeekStarSettings } from "../../../../main/appSettingsStore";
+import type { AiCartographerPromptPreviewResult } from "../../../../main/aiAssistantBridge";
+import type { AiCostLedgerSnapshot } from "../../../../main/aiCostLedgerStore";
+import type { AiAssistantActionType, CartographerGenerationMode } from "@seekstar/ai-service";
 import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
 import {
   ArrowLeft,
+  Bot,
   Compass,
   Folder,
   Globe2,
@@ -29,7 +33,22 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-type SettingsSectionId = "general" | "domainLexicon" | "contentProviders" | "runtime" | "scout" | "storage" | "development";
+type SettingsSectionId =
+  | "general"
+  | "domainLexicon"
+  | "contentProviders"
+  | "aiCartographer"
+  | "runtime"
+  | "scout"
+  | "storage"
+  | "development";
+type AiProviderSettingsDraft = SeekStarSettings["ai_providers"][number];
+type AiRouteSettingsDraft = SeekStarSettings["ai_routes"][number];
+type AssistantActionPermissionRuleDraft = SeekStarSettings["assistant_action_permission_rules"][number];
+type CartographerChunkSchedulingDraft = SeekStarSettings["cartographer_chunk_scheduling"];
+type CartographerPromptProfileDraft = SeekStarSettings["cartographer_prompt_profile"];
+type CartographerPromptModuleDraft = CartographerPromptProfileDraft["modules"][number];
+type CartographerPromptProfileRevisionDraft = SeekStarSettings["cartographer_prompt_profile_revisions"][number];
 
 interface SettingsPageProps {
   onApplyDomainLexicon: (settings: SeekStarSettings) => Promise<void> | void;
@@ -52,6 +71,10 @@ const settingsSectionMeta: Record<SettingsSectionId, { title: string; descriptio
   contentProviders: {
     title: "Content providers",
     description: "Configure URL-first authority discovery and browser-assisted source candidates.",
+  },
+  aiCartographer: {
+    title: "AI Cartographer",
+    description: "Choose the model provider that generates chunked L0-L3 map terrain.",
   },
   runtime: {
     title: "Runtime",
@@ -77,6 +100,38 @@ const domainLexiconLanguages = [
   { id: "zh-Hant", label: "ZH-TW" },
 ] as const;
 
+const assistantActionPermissionRuleMeta: Array<{
+  action_type: Exclude<AiAssistantActionType, "none">;
+  label: string;
+  description: string;
+}> = [
+  {
+    action_type: "focus_node",
+    label: "Focus node",
+    description: "Move selection or viewport focus inside the current map.",
+  },
+  {
+    action_type: "request_chunk",
+    label: "Expand map chunk",
+    description: "Ask Cartographer for nearby level-runtime terrain.",
+  },
+  {
+    action_type: "observe_source",
+    label: "Observe source",
+    description: "Run DataService/Scout on a candidate URL before source-backed tiles appear.",
+  },
+  {
+    action_type: "create_seed",
+    label: "Create seed tab",
+    description: "Open a new recursive Seek tab from a suggested term or node.",
+  },
+  {
+    action_type: "open_settings",
+    label: "Open settings",
+    description: "Navigate the shell into settings.",
+  },
+];
+
 export function SettingsPage({
   onApplyDomainLexicon,
   onBack,
@@ -91,12 +146,38 @@ export function SettingsPage({
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("general");
   const [selectedLexiconId, setSelectedLexiconId] = useState(DEFAULT_DOMAIN_LEXICON_ID);
   const [selectedTermId, setSelectedTermId] = useState<string | undefined>();
+  const [costLedger, setCostLedger] = useState<AiCostLedgerSnapshot | undefined>();
 
   useEffect(() => {
     setDraft(settings);
     setSelectedLexiconId(settings?.active_domain_lexicon_id ?? DEFAULT_DOMAIN_LEXICON_ID);
     setSelectedTermId(undefined);
   }, [settings]);
+
+  useEffect(() => {
+    if (activeSection !== "aiCartographer") {
+      return;
+    }
+
+    let isActive = true;
+
+    void window.seekstar.ai
+      .loadCostLedger()
+      .then((snapshot) => {
+        if (isActive) {
+          setCostLedger(snapshot);
+        }
+      })
+      .catch(() => {
+        if (isActive) {
+          setStatusText("Failed to load AI cost ledger");
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [activeSection]);
 
   const cacheMb = Math.round((draft?.tab_cache_max_bytes ?? 0) / 1024 / 1024);
   const inactiveMinutes = Math.round((draft?.inactive_grace_ms ?? 0) / 60_000);
@@ -105,6 +186,14 @@ export function SettingsPage({
   const tileThumbnailPrewarmConcurrency = draft?.tile_thumbnail_prewarm_concurrency ?? 2;
   const domainLexicons = draft?.domain_lexicons ?? cloneDomainLexicons(DEFAULT_DOMAIN_LEXICONS);
   const contentProviders = draft?.content_providers ?? cloneContentProviderSettings(DEFAULT_CONTENT_PROVIDER_SETTINGS);
+  const aiProviders = draft?.ai_providers ?? createDefaultAiProviderSettings();
+  const activeAiProviderId = draft?.active_ai_provider_id ?? aiProviders.find((provider) => provider.enabled)?.id ?? "mock-cartographer";
+  const aiRoutes = draft?.ai_routes ?? createDefaultAiRouteSettings(activeAiProviderId);
+  const assistantActionPermissionMode = draft?.assistant_action_permission_mode ?? "ask_each_time";
+  const assistantActionPermissionRules = draft?.assistant_action_permission_rules ?? createDefaultAssistantActionPermissionRules();
+  const cartographerChunkScheduling = draft?.cartographer_chunk_scheduling ?? createDefaultCartographerChunkSchedulingSettings();
+  const cartographerPromptProfile = draft?.cartographer_prompt_profile ?? createDefaultCartographerPromptProfileSettings();
+  const cartographerPromptProfileRevisions = draft?.cartographer_prompt_profile_revisions ?? [];
   const selectedLexicon =
     domainLexicons.find((lexicon) => lexicon.id === selectedLexiconId) ??
     domainLexicons.find((lexicon) => lexicon.active) ??
@@ -155,6 +244,140 @@ export function SettingsPage({
     updateContentProvider(providerId, {
       health_status: enabled ? "ready" : "disabled",
       health_message: enabled ? "Ready for the next Scout registry rebuild." : "Disabled by settings.",
+    });
+  }
+
+  function updateAiProvider(providerId: string, patch: Partial<AiProviderSettingsDraft>): void {
+    const nextProviders = aiProviders.map((provider) => {
+      if (provider.id !== providerId) {
+        return provider;
+      }
+
+      const nextProvider = { ...provider, ...patch };
+      const enabled = nextProvider.enabled;
+
+      return {
+        ...nextProvider,
+        health_status: enabled
+          ? nextProvider.kind === "openai_compatible" && !nextProvider.api_key_env_var?.trim()
+            ? "missing_key"
+            : nextProvider.health_status === "error"
+              ? "error"
+              : "ready"
+          : "disabled",
+      } satisfies AiProviderSettingsDraft;
+    });
+
+    updateDraft({
+      ai_providers: nextProviders,
+      active_ai_provider_id: nextProviders.some((provider) => provider.id === activeAiProviderId) ? activeAiProviderId : nextProviders[0]?.id,
+    });
+  }
+
+  function updateAiRoute(routeId: string, patch: Partial<AiRouteSettingsDraft>): void {
+    updateDraft({
+      ai_routes: aiRoutes.map((route) => (route.id === routeId ? { ...route, ...patch } : route)),
+    });
+  }
+
+  function updateAssistantActionPermissionRule(actionType: AssistantActionPermissionRuleDraft["action_type"], patch: Partial<AssistantActionPermissionRuleDraft>): void {
+    const rulesByType = new Map(assistantActionPermissionRules.map((rule) => [rule.action_type, rule]));
+
+    updateDraft({
+      assistant_action_permission_rules: assistantActionPermissionRuleMeta.map((meta) => ({
+        action_type: meta.action_type,
+        decision:
+          meta.action_type === actionType
+            ? (patch.decision ?? rulesByType.get(meta.action_type)?.decision ?? "ask_each_time")
+            : (rulesByType.get(meta.action_type)?.decision ?? "ask_each_time"),
+      })),
+    });
+  }
+
+  function updateCartographerChunkScheduling(patch: Partial<CartographerChunkSchedulingDraft>): void {
+    updateDraft({
+      cartographer_chunk_scheduling: {
+        ...cartographerChunkScheduling,
+        ...patch,
+      },
+    });
+  }
+
+  function updateCartographerPromptProfile(patch: Partial<CartographerPromptProfileDraft>): void {
+    updateDraft({
+      cartographer_prompt_profile: {
+        ...cartographerPromptProfile,
+        ...patch,
+      },
+    });
+  }
+
+  function updateCartographerPromptModule(levelId: CartographerPromptModuleDraft["level_id"], patch: Partial<CartographerPromptModuleDraft>): void {
+    updateDraft({
+      cartographer_prompt_profile: {
+        ...cartographerPromptProfile,
+        modules: cartographerPromptProfile.modules.map((module) => (module.level_id === levelId ? { ...module, ...patch } : module)),
+      },
+    });
+  }
+
+  function handleCartographerPromptProfileRevisionSave(): void {
+    const now = new Date().toISOString();
+    const revision = createPromptProfileRevisionHash(cartographerPromptProfile);
+    const nextRevision: CartographerPromptProfileRevisionDraft = {
+      created_at: now,
+      id: createUiId("prompt-revision"),
+      label: `${cartographerPromptProfile.label} / ${revision}`,
+      profile: clonePromptProfile(cartographerPromptProfile),
+      revision,
+    };
+
+    updateDraft({
+      cartographer_prompt_profile_revisions: [nextRevision, ...cartographerPromptProfileRevisions].slice(0, 20),
+    });
+  }
+
+  function handleCartographerPromptProfileRevisionRestore(revisionId: string): void {
+    const revision = cartographerPromptProfileRevisions.find((candidate) => candidate.id === revisionId);
+
+    if (!revision) {
+      return;
+    }
+
+    updateDraft({
+      cartographer_prompt_profile: clonePromptProfile(revision.profile),
+    });
+  }
+
+  function handleCartographerPromptProfileRevisionDelete(revisionId: string): void {
+    updateDraft({
+      cartographer_prompt_profile_revisions: cartographerPromptProfileRevisions.filter((revision) => revision.id !== revisionId),
+    });
+  }
+
+  function handleAiProviderActivate(providerId: string): void {
+    updateDraft({
+      active_ai_provider_id: providerId,
+      ai_providers: aiProviders.map((provider) => ({
+        ...provider,
+        enabled: provider.id === providerId ? true : provider.enabled,
+        health_status: provider.id === providerId ? "ready" : provider.health_status,
+      })),
+      ai_routes: aiRoutes.map((route) => ({
+        ...route,
+        provider_id: providerId,
+      })),
+    });
+  }
+
+  function handleAiProvidersReset(): void {
+    const defaults = createDefaultAiProviderSettings();
+    const activeId = defaults.find((provider) => provider.enabled)?.id ?? defaults[0]?.id ?? "mock-cartographer";
+
+    updateDraft({
+      active_ai_provider_id: activeId,
+      ai_providers: defaults,
+      ai_routes: createDefaultAiRouteSettings(activeId),
     });
   }
 
@@ -294,10 +517,47 @@ export function SettingsPage({
     setStatusText("Domain lexicon applied to New Seek");
   }
 
+  async function handleRefreshCostLedger(): Promise<void> {
+    setStatusText("Loading AI cost ledger...");
+    const snapshot = await window.seekstar.ai.loadCostLedger();
+    setCostLedger(snapshot);
+    setStatusText("AI cost ledger refreshed");
+  }
+
+  async function handleClearCostLedger(): Promise<void> {
+    const confirmed = window.confirm("Clear local AI cost ledger records? This does not change settings or cached map data.");
+
+    if (!confirmed) {
+      return;
+    }
+
+    setStatusText("Clearing AI cost ledger...");
+    const snapshot = await window.seekstar.ai.clearCostLedger();
+    setCostLedger(snapshot);
+    setStatusText("AI cost ledger cleared");
+  }
+
+  async function handleExportCostLedger(): Promise<void> {
+    setStatusText("Exporting AI cost ledger...");
+    const json = await window.seekstar.ai.exportCostLedger();
+    const blob = new Blob([json], { type: "application/json" });
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+
+    anchor.href = objectUrl;
+    anchor.download = `seekstar-ai-cost-ledger-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(objectUrl);
+    setStatusText("AI cost ledger exported");
+  }
+
   const settingsNavItems: Array<{ id: SettingsSectionId; label: string; icon: LucideIcon }> = [
     { id: "general", label: "General", icon: Settings },
     { id: "domainLexicon", label: "Domain lexicon", icon: Star },
     { id: "contentProviders", label: "Content providers", icon: Globe2 },
+    { id: "aiCartographer", label: "AI Cartographer", icon: Bot },
     { id: "runtime", label: "Runtime", icon: Compass },
     { id: "scout", label: "Scout service", icon: Sparkles },
     { id: "storage", label: "Storage", icon: Folder },
@@ -401,6 +661,35 @@ export function SettingsPage({
                 onReset={handleContentProvidersReset}
                 onValidate={handleContentProviderValidate}
                 providers={contentProviders}
+              />
+            ) : null}
+
+            {resolvedActiveSection === "aiCartographer" ? (
+              <AiProviderEditor
+                activeProviderId={activeAiProviderId}
+                assistantActionPermissionMode={assistantActionPermissionMode}
+                assistantActionPermissionRules={assistantActionPermissionRules}
+                onActivate={handleAiProviderActivate}
+                onAssistantActionPermissionModeChange={(mode) => updateDraft({ assistant_action_permission_mode: mode })}
+                onAssistantActionPermissionRuleChange={updateAssistantActionPermissionRule}
+                onChunkSchedulingUpdate={updateCartographerChunkScheduling}
+                onPromptModuleUpdate={updateCartographerPromptModule}
+                onPromptProfileUpdate={updateCartographerPromptProfile}
+                onPromptRevisionDelete={handleCartographerPromptProfileRevisionDelete}
+                onPromptRevisionRestore={handleCartographerPromptProfileRevisionRestore}
+                onPromptRevisionSave={handleCartographerPromptProfileRevisionSave}
+                onProviderUpdate={updateAiProvider}
+                onRouteUpdate={updateAiRoute}
+                onReset={handleAiProvidersReset}
+                chunkScheduling={cartographerChunkScheduling}
+                costLedger={costLedger}
+                onClearCostLedger={handleClearCostLedger}
+                onExportCostLedger={handleExportCostLedger}
+                onRefreshCostLedger={handleRefreshCostLedger}
+                promptProfile={cartographerPromptProfile}
+                promptProfileRevisions={cartographerPromptProfileRevisions}
+                providers={aiProviders}
+                routes={aiRoutes}
               />
             ) : null}
 
@@ -581,6 +870,8 @@ function ContentProviderEditor({
               {group.items.map((definition) => {
                 const setting = providersById.get(definition.id) ?? createDefaultContentProviderSetting(definition);
                 const languages = setting.languages ?? definition.default_languages ?? [];
+                const supportsKeyRef = Boolean(definition.requires_api_key || definition.api_key_env_var);
+                const keyRefName = setting.api_key_ref?.kind === "env" ? setting.api_key_ref.name : (setting.api_key_env_var ?? "");
 
                 return (
                   <article className="content-provider-card" data-provider-enabled={setting.enabled} key={definition.id}>
@@ -630,14 +921,16 @@ function ContentProviderEditor({
                           value={languages.join(", ")}
                         />
                       </label>
-                      <label>
-                        <span>Key ref</span>
-                        <input
-                          onChange={(event) => onProviderUpdate(definition.id, { api_key_env_var: event.target.value })}
-                          placeholder={definition.api_key_env_var ?? "ENV_VAR"}
-                          value={setting.api_key_env_var ?? ""}
-                        />
-                      </label>
+                      {supportsKeyRef ? (
+                        <label>
+                          <span>Env key ref</span>
+                          <input
+                            onChange={(event) => onProviderUpdate(definition.id, createContentProviderKeyRefPatch(event.target.value))}
+                            placeholder={definition.api_key_env_var ?? "ENV_VAR"}
+                            value={keyRefName}
+                          />
+                        </label>
+                      ) : null}
                       <button onClick={() => onValidate(definition.id)} type="button">
                         Validate
                       </button>
@@ -645,6 +938,7 @@ function ContentProviderEditor({
 
                     <div className="content-provider-meta">
                       <span>{definition.provider_kind}</span>
+                      {supportsKeyRef ? <small>Stores an environment-variable reference only; provider keys are never saved here.</small> : null}
                       {definition.rate_limit_note ? <small>{definition.rate_limit_note}</small> : null}
                     </div>
                   </article>
@@ -653,6 +947,705 @@ function ContentProviderEditor({
             </div>
           </section>
         ))}
+      </div>
+    </section>
+  );
+}
+
+function AiProviderEditor({
+  activeProviderId,
+  assistantActionPermissionMode,
+  assistantActionPermissionRules,
+  chunkScheduling,
+  costLedger,
+  onActivate,
+  onAssistantActionPermissionModeChange,
+  onAssistantActionPermissionRuleChange,
+  onClearCostLedger,
+  onChunkSchedulingUpdate,
+  onExportCostLedger,
+  onPromptModuleUpdate,
+  onPromptProfileUpdate,
+  onPromptRevisionDelete,
+  onPromptRevisionRestore,
+  onPromptRevisionSave,
+  onProviderUpdate,
+  onRefreshCostLedger,
+  onRouteUpdate,
+  onReset,
+  promptProfile,
+  promptProfileRevisions,
+  providers,
+  routes,
+}: {
+  activeProviderId: string;
+  assistantActionPermissionMode: SeekStarSettings["assistant_action_permission_mode"];
+  assistantActionPermissionRules: SeekStarSettings["assistant_action_permission_rules"];
+  chunkScheduling: CartographerChunkSchedulingDraft;
+  costLedger?: AiCostLedgerSnapshot;
+  onActivate: (providerId: string) => void;
+  onAssistantActionPermissionModeChange: (mode: SeekStarSettings["assistant_action_permission_mode"]) => void;
+  onAssistantActionPermissionRuleChange: (
+    actionType: AssistantActionPermissionRuleDraft["action_type"],
+    patch: Partial<AssistantActionPermissionRuleDraft>,
+  ) => void;
+  onClearCostLedger: () => Promise<void> | void;
+  onChunkSchedulingUpdate: (patch: Partial<CartographerChunkSchedulingDraft>) => void;
+  onExportCostLedger: () => Promise<void> | void;
+  onPromptModuleUpdate: (levelId: CartographerPromptModuleDraft["level_id"], patch: Partial<CartographerPromptModuleDraft>) => void;
+  onPromptProfileUpdate: (patch: Partial<CartographerPromptProfileDraft>) => void;
+  onPromptRevisionDelete: (revisionId: string) => void;
+  onPromptRevisionRestore: (revisionId: string) => void;
+  onPromptRevisionSave: () => void;
+  onProviderUpdate: (providerId: string, patch: Partial<AiProviderSettingsDraft>) => void;
+  onRefreshCostLedger: () => Promise<void> | void;
+  onRouteUpdate: (routeId: string, patch: Partial<AiRouteSettingsDraft>) => void;
+  onReset: () => void;
+  promptProfile: CartographerPromptProfileDraft;
+  promptProfileRevisions: CartographerPromptProfileRevisionDraft[];
+  providers: AiProviderSettingsDraft[];
+  routes: AiRouteSettingsDraft[];
+}): ReactElement {
+  const enabledCount = providers.filter((provider) => provider.enabled).length;
+  const providerOptions = providers.map((provider) => ({ id: provider.id, label: provider.label }));
+  const recentCostLedgerRecords = costLedger?.records.slice(0, 8) ?? [];
+  const [promptPreviewLevelId, setPromptPreviewLevelId] = useState<CartographerPromptModuleDraft["level_id"]>("L0");
+  const [promptPreviewMode, setPromptPreviewMode] = useState<CartographerGenerationMode>("bootstrap_seed");
+  const [promptPreviewSeed, setPromptPreviewSeed] = useState("CPU");
+  const [promptPreviewStatus, setPromptPreviewStatus] = useState("Ready");
+  const [promptPreview, setPromptPreview] = useState<AiCartographerPromptPreviewResult | undefined>();
+
+  async function handlePromptPreview(): Promise<void> {
+    setPromptPreviewStatus("Building preview...");
+
+    try {
+      const preview = await window.seekstar.ai.previewCartographerPrompt({
+        level_id: promptPreviewLevelId,
+        mode: promptPreviewMode,
+        seed: promptPreviewSeed,
+      });
+
+      setPromptPreview(preview);
+      setPromptPreviewStatus(`Revision ${preview.prompt_revision}`);
+    } catch {
+      setPromptPreviewStatus("Preview failed");
+    }
+  }
+
+  return (
+    <section className="settings-section content-provider-section">
+      <div className="content-provider-toolbar">
+        <div>
+          <strong>Cartographer model routing</strong>
+          <span>
+            {enabledCount} enabled · active {activeProviderId}
+          </span>
+        </div>
+        <button onClick={onReset} type="button">
+          <RefreshCw aria-hidden="true" size={14} strokeWidth={1.8} />
+          Reset defaults
+        </button>
+      </div>
+
+      <div className="content-provider-groups">
+        <section className="content-provider-group">
+          <header>
+            <span>Assistant control policy</span>
+            <small>App Framework permission boundary</small>
+          </header>
+          <div className="settings-card ai-permission-policy-card">
+            <label className="settings-row">
+              <span>
+                <strong>Action permission mode</strong>
+                <small>Controls how right-sidebar AI suggestions become app operations.</small>
+              </span>
+              <select
+                onChange={(event) =>
+                  onAssistantActionPermissionModeChange(event.target.value as SeekStarSettings["assistant_action_permission_mode"])
+                }
+                value={assistantActionPermissionMode}
+              >
+                <option value="ask_each_time">Ask each time</option>
+                <option value="allow_low_risk">Allow low-risk clicks</option>
+                <option value="block_all">Block all assistant actions</option>
+              </select>
+            </label>
+            <p>
+              {assistantActionPermissionMode === "block_all"
+                ? "Assistant suggestions remain visible, but execution is blocked by settings."
+                : assistantActionPermissionMode === "allow_low_risk"
+                  ? "Per-action rules decide which clicked operations are low-risk, require approval audit, or stay blocked."
+                  : "Per-action rules still apply, but ask-each-time treats allowed operations as explicit user-approved operations."}
+            </p>
+            <div className="ai-permission-matrix" role="table" aria-label="Assistant action permission matrix">
+              <div className="ai-permission-matrix-row ai-permission-matrix-head" role="row">
+                <span>Action</span>
+                <span>Decision</span>
+              </div>
+              {assistantActionPermissionRuleMeta.map((meta) => {
+                const rule = assistantActionPermissionRules.find((candidate) => candidate.action_type === meta.action_type);
+
+                return (
+                  <label className="ai-permission-matrix-row" key={meta.action_type} role="row">
+                    <span>
+                      <strong>{meta.label}</strong>
+                      <small>{meta.description}</small>
+                    </span>
+                    <select
+                      onChange={(event) =>
+                        onAssistantActionPermissionRuleChange(meta.action_type, {
+                          decision: event.target.value as AssistantActionPermissionRuleDraft["decision"],
+                        })
+                      }
+                      value={rule?.decision ?? "ask_each_time"}
+                    >
+                      <option value="allow_after_click">Allow after click</option>
+                      <option value="ask_each_time">Require approval audit</option>
+                      <option value="block">Block</option>
+                    </select>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+
+        <section className="content-provider-group">
+          <header>
+            <span>Chunk scheduling</span>
+            <small>Viewport boundary policy</small>
+          </header>
+          <div className="settings-card ai-permission-policy-card">
+            <label className="settings-row">
+              <span>
+                <strong>Automatic boundary expansion</strong>
+                <small>Preload Cartographer chunks when the lens approaches the active chunk boundary.</small>
+              </span>
+              <input
+                checked={chunkScheduling.auto_expand_enabled}
+                onChange={(event) => onChunkSchedulingUpdate({ auto_expand_enabled: event.target.checked })}
+                type="checkbox"
+              />
+            </label>
+            <label className="settings-row">
+              <span>
+                <strong>Auto preload ring</strong>
+                <small>Visible policy radius around the current macro chunk. Use 0 to keep auto expansion dormant.</small>
+              </span>
+              <input
+                min={0}
+                max={2}
+                onChange={(event) => onChunkSchedulingUpdate({ auto_preload_ring: Number(event.target.value) })}
+                type="number"
+                value={chunkScheduling.auto_preload_ring}
+              />
+            </label>
+            <label className="settings-row">
+              <span>
+                <strong>Manual preload range</strong>
+                <small>Directional N/W/E/S controls queue this many chunks ahead.</small>
+              </span>
+              <input
+                min={1}
+                max={3}
+                onChange={(event) => onChunkSchedulingUpdate({ manual_preload_range: Number(event.target.value) })}
+                type="number"
+                value={chunkScheduling.manual_preload_range}
+              />
+            </label>
+            <label className="settings-row">
+              <span>
+                <strong>Boundary debounce</strong>
+                <small>Milliseconds to wait before firing a viewport-boundary Cartographer request.</small>
+              </span>
+              <input
+                min={120}
+                max={5000}
+                onChange={(event) => onChunkSchedulingUpdate({ boundary_debounce_ms: Number(event.target.value) })}
+                type="number"
+                value={chunkScheduling.boundary_debounce_ms}
+              />
+            </label>
+            <label className="settings-row">
+              <span>
+                <strong>Chunk width</strong>
+                <small>Horizontal world-space size used for macro chunk keys and directional stepping.</small>
+              </span>
+              <input
+                min={480}
+                max={3200}
+                onChange={(event) => onChunkSchedulingUpdate({ chunk_width: Number(event.target.value) })}
+                type="number"
+                value={chunkScheduling.chunk_width}
+              />
+            </label>
+            <label className="settings-row">
+              <span>
+                <strong>Chunk height</strong>
+                <small>Vertical world-space size used for macro chunk keys and directional stepping.</small>
+              </span>
+              <input
+                min={480}
+                max={3200}
+                onChange={(event) => onChunkSchedulingUpdate({ chunk_height: Number(event.target.value) })}
+                type="number"
+                value={chunkScheduling.chunk_height}
+              />
+            </label>
+          </div>
+        </section>
+
+        <section className="content-provider-group">
+          <header>
+            <span>Prompt profile</span>
+            <small>Per-band Cartographer templates</small>
+          </header>
+          <div className="settings-card ai-permission-policy-card">
+            <label className="settings-row">
+              <span>
+                <strong>Profile label</strong>
+                <small>Visible name for this local prompt profile.</small>
+              </span>
+              <input onChange={(event) => onPromptProfileUpdate({ label: event.target.value })} value={promptProfile.label} />
+            </label>
+            <label className="settings-row">
+              <span>
+                <strong>Language</strong>
+                <small>Default language hint sent to the Cartographer provider.</small>
+              </span>
+              <input onChange={(event) => onPromptProfileUpdate({ language: event.target.value })} value={promptProfile.language} />
+            </label>
+            <label className="settings-row">
+              <span>
+                <strong>Density</strong>
+                <small>Coarse generation density hint for all bands unless a target count overrides it.</small>
+              </span>
+              <select
+                onChange={(event) => onPromptProfileUpdate({ density: event.target.value as CartographerPromptProfileDraft["density"] })}
+                value={promptProfile.density}
+              >
+                <option value="compact">Compact</option>
+                <option value="normal">Normal</option>
+                <option value="rich">Rich</option>
+              </select>
+            </label>
+            <div className="ai-prompt-revision-toolbar">
+              <span>
+                <strong>Revision history</strong>
+                <small>{promptProfileRevisions.length} saved revisions</small>
+              </span>
+              <button onClick={onPromptRevisionSave} type="button">
+                Save current revision
+              </button>
+            </div>
+          </div>
+
+          {promptProfileRevisions.length > 0 ? (
+            <div className="settings-card ai-prompt-revision-list">
+              {promptProfileRevisions.map((revision) => (
+                <article key={revision.id}>
+                  <span>
+                    <strong>{revision.label}</strong>
+                    <small>
+                      {revision.revision} / {formatTimestamp(revision.created_at)}
+                    </small>
+                  </span>
+                  <div>
+                    <button onClick={() => onPromptRevisionRestore(revision.id)} type="button">
+                      Restore
+                    </button>
+                    <button onClick={() => onPromptRevisionDelete(revision.id)} type="button">
+                      Delete
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="settings-card ai-prompt-preview-card">
+            <div className="ai-prompt-preview-header">
+              <span>
+                <strong>Prompt preview</strong>
+                <small>{promptPreviewStatus}</small>
+              </span>
+              <button onClick={handlePromptPreview} type="button">
+                Preview prompt
+              </button>
+            </div>
+
+            <div className="content-provider-controls ai-prompt-preview-controls">
+              <label>
+                <span>Level</span>
+                <select
+                  onChange={(event) => {
+                    const nextLevel = event.target.value as CartographerPromptModuleDraft["level_id"];
+                    setPromptPreviewLevelId(nextLevel);
+                    setPromptPreviewMode(nextLevel === "L0" ? "bootstrap_seed" : "decompose_down");
+                  }}
+                  value={promptPreviewLevelId}
+                >
+                  {promptProfile.modules.map((module) => (
+                    <option key={module.level_id} value={module.level_id}>
+                      {module.level_id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Mode</span>
+                <select onChange={(event) => setPromptPreviewMode(event.target.value as CartographerGenerationMode)} value={promptPreviewMode}>
+                  {["bootstrap_seed", "expand_horizontal", "decompose_down", "summarize_up", "replace_failed_source"].map((mode) => (
+                    <option key={mode} value={mode}>
+                      {mode}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Seed</span>
+                <input onChange={(event) => setPromptPreviewSeed(event.target.value)} value={promptPreviewSeed} />
+              </label>
+            </div>
+
+            {promptPreview ? (
+              <div className="ai-prompt-preview-output">
+                <div className="ai-prompt-preview-meta">
+                  <span>{promptPreview.provider_id}</span>
+                  <span>{promptPreview.model ?? "provider default"}</span>
+                  <span>{promptPreview.level_id}</span>
+                  <span>{promptPreview.mode}</span>
+                </div>
+                {promptPreview.messages.map((message, index) => (
+                  <article key={`${message.role}-${index}`}>
+                    <strong>{message.role}</strong>
+                    <pre>{message.content}</pre>
+                  </article>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="content-provider-list">
+            {promptProfile.modules.map((module) => (
+              <article className="content-provider-card" data-provider-enabled={true} key={module.level_id}>
+                <div className="content-provider-card-main">
+                  <div className="content-provider-identity">
+                    <strong>
+                      {module.level_id} 路 {module.label}
+                    </strong>
+                    <small>Prompt brief, constraints, and target terrain count</small>
+                  </div>
+                  <span className="content-provider-status">{module.target_count} nodes</span>
+                </div>
+
+                <div className="content-provider-controls prompt-profile-controls">
+                  <label>
+                    <span>Target count</span>
+                    <input
+                      min={1}
+                      max={80}
+                      onChange={(event) => onPromptModuleUpdate(module.level_id, { target_count: Number(event.target.value) })}
+                      type="number"
+                      value={module.target_count}
+                    />
+                  </label>
+                  <label>
+                    <span>Prompt brief</span>
+                    <textarea
+                      onChange={(event) => onPromptModuleUpdate(module.level_id, { prompt_brief: event.target.value })}
+                      rows={3}
+                      value={module.prompt_brief}
+                    />
+                  </label>
+                  <label>
+                    <span>Constraints</span>
+                    <textarea
+                      onChange={(event) =>
+                        onPromptModuleUpdate(module.level_id, {
+                          prompt_constraints: event.target.value
+                            .split("\n")
+                            .map((constraint) => constraint.trim())
+                            .filter(Boolean),
+                        })
+                      }
+                      rows={4}
+                      value={module.prompt_constraints.join("\n")}
+                    />
+                  </label>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="content-provider-group">
+          <header>
+            <span>AIServiceProvider</span>
+            <small>OpenAI-compatible boundary</small>
+          </header>
+          <div className="content-provider-list">
+            {providers.map((provider) => (
+              <article className="content-provider-card" data-provider-enabled={provider.enabled} key={provider.id}>
+                <div className="content-provider-card-main">
+                  <label className="content-provider-enable">
+                    <input
+                      checked={provider.enabled}
+                      onChange={(event) => onProviderUpdate(provider.id, { enabled: event.target.checked })}
+                      type="checkbox"
+                    />
+                  </label>
+                  <div className="content-provider-identity">
+                    <strong>{provider.label}</strong>
+                    <small>{provider.kind === "mock" ? "local deterministic generation" : (provider.base_url ?? "OpenAI-compatible API")}</small>
+                  </div>
+                  <span className="content-provider-status">{provider.health_status}</span>
+                </div>
+
+                <div className="content-provider-controls ai-provider-controls">
+                  <label>
+                    <span>Model</span>
+                    <input
+                      disabled={provider.kind === "mock"}
+                      onChange={(event) => onProviderUpdate(provider.id, { model: event.target.value })}
+                      placeholder="gpt-4o-mini"
+                      value={provider.model ?? ""}
+                    />
+                  </label>
+                  <label>
+                    <span>Base URL</span>
+                    <input
+                      disabled={provider.kind === "mock"}
+                      onChange={(event) => onProviderUpdate(provider.id, { base_url: event.target.value })}
+                      placeholder="https://api.openai.com/v1"
+                      value={provider.base_url ?? ""}
+                    />
+                  </label>
+                  <label>
+                    <span>Key env</span>
+                    <input
+                      disabled={provider.kind === "mock"}
+                      onChange={(event) => onProviderUpdate(provider.id, { api_key_env_var: event.target.value })}
+                      placeholder="SEEKSTAR_AI_API_KEY"
+                      value={provider.api_key_env_var ?? ""}
+                    />
+                  </label>
+                  <label>
+                    <span>Timeout ms</span>
+                    <input
+                      min={5000}
+                      max={180000}
+                      onChange={(event) => onProviderUpdate(provider.id, { timeout_ms: Number(event.target.value) })}
+                      type="number"
+                      value={provider.timeout_ms}
+                    />
+                  </label>
+                  <label>
+                    <span>Input $ / 1M</span>
+                    <input
+                      disabled={provider.kind === "mock"}
+                      min={0}
+                      onChange={(event) =>
+                        onProviderUpdate(provider.id, {
+                          input_cost_per_million_tokens_usd: event.target.value === "" ? undefined : Number(event.target.value),
+                        })
+                      }
+                      placeholder="optional"
+                      step="0.000001"
+                      type="number"
+                      value={provider.input_cost_per_million_tokens_usd ?? ""}
+                    />
+                  </label>
+                  <label>
+                    <span>Output $ / 1M</span>
+                    <input
+                      disabled={provider.kind === "mock"}
+                      min={0}
+                      onChange={(event) =>
+                        onProviderUpdate(provider.id, {
+                          output_cost_per_million_tokens_usd: event.target.value === "" ? undefined : Number(event.target.value),
+                        })
+                      }
+                      placeholder="optional"
+                      step="0.000001"
+                      type="number"
+                      value={provider.output_cost_per_million_tokens_usd ?? ""}
+                    />
+                  </label>
+                  <label>
+                    <span>Retries</span>
+                    <input
+                      min={0}
+                      max={5}
+                      onChange={(event) => onProviderUpdate(provider.id, { retry_attempts: Number(event.target.value) })}
+                      type="number"
+                      value={provider.retry_attempts}
+                    />
+                  </label>
+                  <button disabled={activeProviderId === provider.id} onClick={() => onActivate(provider.id)} type="button">
+                    {activeProviderId === provider.id ? "Active" : "Activate"}
+                  </button>
+                </div>
+
+                <div className="content-provider-meta">
+                  <span>{provider.kind}</span>
+                  {provider.health_message ? <small>{provider.health_message}</small> : null}
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="content-provider-group">
+          <header>
+            <span>Cost ledger</span>
+            <small>{costLedger ? `${costLedger.summary.records} records` : "Not loaded"}</small>
+          </header>
+          <div className="settings-card ai-cost-ledger-card">
+            <div className="ai-cost-ledger-summary">
+              <div>
+                <span>Total cost</span>
+                <strong>{formatCostUsd(costLedger?.summary.estimated_cost_usd)}</strong>
+              </div>
+              <div>
+                <span>Total tokens</span>
+                <strong>{formatInteger(costLedger?.summary.total_tokens)}</strong>
+              </div>
+              <div>
+                <span>Assistant</span>
+                <strong>{formatCostUsd(costLedger?.summary.by_source.assistant.estimated_cost_usd)}</strong>
+              </div>
+              <div>
+                <span>Cartographer</span>
+                <strong>{formatCostUsd(costLedger?.summary.by_source.cartographer.estimated_cost_usd)}</strong>
+              </div>
+            </div>
+
+            <div className="ai-cost-ledger-actions">
+              <button onClick={onRefreshCostLedger} type="button">
+                <RefreshCw aria-hidden="true" size={14} strokeWidth={1.8} />
+                Refresh
+              </button>
+              <button disabled={!costLedger?.records.length} onClick={onExportCostLedger} type="button">
+                Export JSON
+              </button>
+              <button disabled={!costLedger?.records.length} onClick={onClearCostLedger} type="button">
+                Clear ledger
+              </button>
+            </div>
+
+            <div className="ai-cost-ledger-table" role="table" aria-label="Recent AI cost ledger records">
+              <div className="ai-cost-ledger-row ai-cost-ledger-head" role="row">
+                <span>Source</span>
+                <span>Provider</span>
+                <span>Status</span>
+                <span>Tokens</span>
+                <span>Cost</span>
+              </div>
+              {recentCostLedgerRecords.length > 0 ? (
+                recentCostLedgerRecords.map((record) => (
+                  <div className="ai-cost-ledger-row" key={record.id} role="row">
+                    <span>{record.source}</span>
+                    <span title={record.model ? `${record.provider_id} / ${record.model}` : record.provider_id}>
+                      {record.provider_id}
+                    </span>
+                    <span>{record.status}</span>
+                    <span>{formatInteger(record.total_tokens)}</span>
+                    <span>{formatCostUsd(record.estimated_cost_usd)}</span>
+                  </div>
+                ))
+              ) : (
+                <p className="content-provider-empty">No AI calls have been recorded yet.</p>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="content-provider-group">
+          <header>
+            <span>Band routes</span>
+            <small>{routes.filter((route) => route.enabled).length} active</small>
+          </header>
+          <div className="content-provider-list">
+            {routes.map((route) => (
+              <article className="content-provider-card" data-provider-enabled={route.enabled} key={route.id}>
+                <div className="content-provider-card-main">
+                  <label className="content-provider-enable">
+                    <input
+                      checked={route.enabled}
+                      onChange={(event) => onRouteUpdate(route.id, { enabled: event.target.checked })}
+                      type="checkbox"
+                    />
+                  </label>
+                  <div className="content-provider-identity">
+                    <strong>{route.label}</strong>
+                    <small>
+                      {route.level_id} / {route.modes?.join(", ") ?? "all modes"}
+                    </small>
+                  </div>
+                  <span className="content-provider-status">{route.provider_id}</span>
+                </div>
+
+                <div className="content-provider-controls ai-route-controls">
+                  <label>
+                    <span>Level</span>
+                    <select
+                      onChange={(event) => onRouteUpdate(route.id, { level_id: event.target.value as AiRouteSettingsDraft["level_id"] })}
+                      value={route.level_id}
+                    >
+                      {["default", "supra_macro", "L0", "L1", "L2", "L3", "deep_lens", "recursive_seed"].map((levelId) => (
+                        <option key={levelId} value={levelId}>
+                          {levelId}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Provider</span>
+                    <select onChange={(event) => onRouteUpdate(route.id, { provider_id: event.target.value })} value={route.provider_id}>
+                      {providerOptions.map((provider) => (
+                        <option key={provider.id} value={provider.id}>
+                          {provider.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Modes</span>
+                    <input
+                      onChange={(event) => onRouteUpdate(route.id, { modes: parseRouteModesInput(event.target.value) })}
+                      placeholder="all modes"
+                      value={route.modes?.join(", ") ?? ""}
+                    />
+                  </label>
+                  <label>
+                    <span>Model override</span>
+                    <input
+                      onChange={(event) => onRouteUpdate(route.id, { model_override: event.target.value })}
+                      placeholder="Use provider model"
+                      value={route.model_override ?? ""}
+                    />
+                  </label>
+                  <label>
+                    <span>Priority</span>
+                    <input
+                      min={1}
+                      max={999}
+                      onChange={(event) => onRouteUpdate(route.id, { priority: Number(event.target.value) })}
+                      type="number"
+                      value={route.priority}
+                    />
+                  </label>
+                </div>
+
+                <div className="content-provider-meta">
+                  <span>{route.id}</span>
+                  <small>First enabled route matching level and mode wins.</small>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
       </div>
     </section>
   );
@@ -815,7 +1808,14 @@ function DomainLexiconEditor({
 }
 
 function createSettingsDraft(settings?: SeekStarSettings): SeekStarSettings {
+  const activeAiProviderId = settings?.active_ai_provider_id ?? "mock-cartographer";
+
   return {
+    assistant_action_permission_mode: settings?.assistant_action_permission_mode ?? "ask_each_time",
+    assistant_action_permission_rules: settings?.assistant_action_permission_rules ?? createDefaultAssistantActionPermissionRules(),
+    cartographer_chunk_scheduling: settings?.cartographer_chunk_scheduling ?? createDefaultCartographerChunkSchedulingSettings(),
+    cartographer_prompt_profile: settings?.cartographer_prompt_profile ?? createDefaultCartographerPromptProfileSettings(),
+    cartographer_prompt_profile_revisions: settings?.cartographer_prompt_profile_revisions ?? [],
     tab_cache_max_bytes: settings?.tab_cache_max_bytes ?? 256 * 1024 * 1024,
     inactive_grace_ms: settings?.inactive_grace_ms ?? 30 * 60 * 1000,
     scout_concurrency: settings?.scout_concurrency ?? 2,
@@ -825,14 +1825,266 @@ function createSettingsDraft(settings?: SeekStarSettings): SeekStarSettings {
     active_domain_lexicon_id: settings?.active_domain_lexicon_id ?? DEFAULT_DOMAIN_LEXICON_ID,
     domain_lexicons: settings?.domain_lexicons ?? cloneDomainLexicons(DEFAULT_DOMAIN_LEXICONS),
     content_providers: settings?.content_providers ?? cloneContentProviderSettings(DEFAULT_CONTENT_PROVIDER_SETTINGS),
+    active_ai_provider_id: activeAiProviderId,
+    ai_providers: settings?.ai_providers ?? createDefaultAiProviderSettings(),
+    ai_routes: settings?.ai_routes ?? createDefaultAiRouteSettings(activeAiProviderId),
   };
+}
+
+function createDefaultAssistantActionPermissionRules(): SeekStarSettings["assistant_action_permission_rules"] {
+  return assistantActionPermissionRuleMeta.map((meta) => ({
+    action_type: meta.action_type,
+    decision: meta.action_type === "observe_source" || meta.action_type === "create_seed" ? "ask_each_time" : "allow_after_click",
+  }));
+}
+
+function createDefaultCartographerChunkSchedulingSettings(): SeekStarSettings["cartographer_chunk_scheduling"] {
+  return {
+    auto_expand_enabled: true,
+    auto_preload_ring: 1,
+    boundary_debounce_ms: 520,
+    chunk_height: 900,
+    chunk_width: 1200,
+    manual_preload_range: 1,
+  };
+}
+
+function createDefaultCartographerPromptProfileSettings(): SeekStarSettings["cartographer_prompt_profile"] {
+  return {
+    density: "normal",
+    id: "seekstar-default-p6-gallery-v3",
+    label: "SeekStar P6 Cartographer default",
+    language: "zh-Hans",
+    modules: [
+      {
+        level_id: "supra_macro",
+        label: "Supra Macro",
+        prompt_brief: "Infer broader systems, parent domains, and adjacent macro contexts for the seed.",
+        prompt_constraints: [
+          "Do not repeat the seed as every title.",
+          "Prefer broad human-knowledge frames over narrow implementation details.",
+          "Return cartographer_primary nodes only.",
+        ],
+        target_count: 12,
+      },
+      {
+        level_id: "L0",
+        label: "L0 Star Gallery",
+        prompt_brief: "Generate broad, explorable domains around the seed as an Apple-Watch-like Star Gallery.",
+        prompt_constraints: [
+          "Nodes should be domains or durable knowledge areas, not web pages.",
+          "No source candidates at L0.",
+          "Keep titles short enough for bubble labels.",
+        ],
+        target_count: 24,
+      },
+      {
+        level_id: "L1",
+        label: "L1 Topic Field",
+        prompt_brief: "Decompose the focused domain into topic neighborhoods and same-level adjacent branches.",
+        prompt_constraints: [
+          "Nodes should be topic-level, not article-level.",
+          "Use relations to show semantic neighborhoods.",
+          "Source candidates are optional and must remain unverified.",
+        ],
+        target_count: 18,
+      },
+      {
+        level_id: "L2",
+        label: "L2 Source Orientation",
+        prompt_brief: "Orient the user toward classes of trustworthy material and likely source families.",
+        prompt_constraints: [
+          "Nodes should describe source directions or source families.",
+          "Candidate URLs may be proposed, but only as cartographer_unverified_source.",
+          "Prefer canonical, durable, or educational sources when proposing URLs.",
+        ],
+        target_count: 12,
+      },
+      {
+        level_id: "L3",
+        label: "L3 Tile Field",
+        prompt_brief: "Return concrete source candidates and tile-level concepts for the focused source direction.",
+        prompt_constraints: [
+          "Do not call any URL source-backed.",
+          "Prefer URLs likely to load in a normal browser.",
+          "If uncertain, provide fewer but more durable candidate URLs.",
+        ],
+        target_count: 8,
+      },
+      {
+        level_id: "deep_lens",
+        label: "Deep Lens",
+        prompt_brief: "Prepare structured close-reading grains for a focused source or selected text.",
+        prompt_constraints: [
+          "Do not split into separate visible L4-L10 product levels.",
+          "Every grain should be seedable when useful.",
+          "No source candidates from text decomposition.",
+        ],
+        target_count: 16,
+      },
+      {
+        level_id: "recursive_seed",
+        label: "Recursive Seed",
+        prompt_brief: "Bootstrap parent, sibling, and child contexts for an orphan seed.",
+        prompt_constraints: [
+          "Generate upward context and adjacent same-band context.",
+          "Prepare at least one downward branch when possible.",
+          "Keep provenance in context rather than pretending source evidence exists.",
+        ],
+        target_count: 8,
+      },
+    ],
+  };
+}
+
+function createDefaultAiProviderSettings(): SeekStarSettings["ai_providers"] {
+  return [
+    {
+      id: "mock-cartographer",
+      label: "Built-in Cartographer test provider",
+      kind: "mock",
+      enabled: true,
+      model: "mock-cartographer-v1",
+      timeout_ms: 10000,
+      retry_attempts: 1,
+      retry_backoff_ms: 100,
+      health_status: "ready",
+      health_message: "Deterministic local terrain generator for development and module smoke tests.",
+    },
+    {
+      id: "deepseek-openai-compatible",
+      label: "DeepSeek API",
+      kind: "openai_compatible",
+      enabled: false,
+      base_url: "https://api.deepseek.com",
+      model: "deepseek-v4-flash",
+      api_key_env_var: "DEEPSEEK_API_KEY",
+      input_cost_per_million_tokens_usd: 0.14,
+      output_cost_per_million_tokens_usd: 0.28,
+      timeout_ms: 60000,
+      retry_attempts: 1,
+      retry_backoff_ms: 500,
+      health_status: "disabled",
+      health_message: "OpenAI-compatible DeepSeek adapter. Set DEEPSEEK_API_KEY and activate this provider for real Cartographer terrain.",
+    },
+    {
+      id: "openai-compatible-env",
+      label: "OpenAI-compatible API",
+      kind: "openai_compatible",
+      enabled: false,
+      base_url: "https://api.openai.com/v1",
+      model: "gpt-4o-mini",
+      api_key_env_var: "SEEKSTAR_AI_API_KEY",
+      timeout_ms: 30000,
+      retry_attempts: 1,
+      retry_backoff_ms: 250,
+      health_status: "disabled",
+      health_message: "Enable and set an env key reference when a real Cartographer model is available.",
+    },
+  ];
+}
+
+function createDefaultAiRouteSettings(providerId = "mock-cartographer"): SeekStarSettings["ai_routes"] {
+  return [
+    {
+      id: "cartographer-route-default",
+      label: "Default Cartographer route",
+      enabled: true,
+      priority: 100,
+      level_id: "default",
+      provider_id: providerId,
+    },
+    {
+      id: "cartographer-route-l3",
+      label: "L3 source candidate route",
+      enabled: true,
+      priority: 80,
+      level_id: "L3",
+      modes: ["decompose_down", "expand_horizontal", "replace_failed_source"],
+      provider_id: providerId,
+    },
+    {
+      id: "cartographer-route-deep-lens",
+      label: "Deep Lens route",
+      enabled: true,
+      priority: 90,
+      level_id: "deep_lens",
+      modes: ["decompose_down", "summarize_up"],
+      provider_id: providerId,
+    },
+  ];
+}
+
+function parseRouteModesInput(value: string): CartographerGenerationMode[] | undefined {
+  const modes = value
+    .split(",")
+    .map((mode) => mode.trim())
+    .filter((mode): mode is CartographerGenerationMode =>
+      mode === "bootstrap_seed" ||
+      mode === "expand_horizontal" ||
+      mode === "decompose_down" ||
+      mode === "summarize_up" ||
+      mode === "replace_failed_source",
+    );
+
+  return modes.length > 0 ? Array.from(new Set(modes)) : undefined;
 }
 
 function cloneContentProviderSettings(settings: readonly ContentProviderSettings[]): ContentProviderSettings[] {
   return settings.map((provider) => ({
     ...provider,
     languages: provider.languages ? [...provider.languages] : undefined,
+    api_key_ref: provider.api_key_ref ? { ...provider.api_key_ref } : undefined,
   }));
+}
+
+function formatCostUsd(value: number | undefined): string {
+  return `$${(value ?? 0).toFixed(6)}`;
+}
+
+function formatInteger(value: number | undefined): string {
+  return new Intl.NumberFormat().format(value ?? 0);
+}
+
+function formatTimestamp(value: string): string {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString();
+}
+
+function clonePromptProfile(profile: CartographerPromptProfileDraft): CartographerPromptProfileDraft {
+  return {
+    ...profile,
+    modules: profile.modules.map((module) => ({
+      ...module,
+      prompt_constraints: [...module.prompt_constraints],
+    })),
+  };
+}
+
+function createPromptProfileRevisionHash(profile: CartographerPromptProfileDraft): string {
+  const text = JSON.stringify({
+    density: profile.density,
+    id: profile.id,
+    language: profile.language,
+    modules: profile.modules.map((module) => ({
+      level_id: module.level_id,
+      prompt_brief: module.prompt_brief,
+      prompt_constraints: module.prompt_constraints,
+      target_count: module.target_count,
+    })),
+  });
+  let hash = 0;
+
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
+  }
+
+  return hash.toString(36);
 }
 
 function createDefaultContentProviderSetting(definition: ContentProviderDefinition): ContentProviderSettings {
@@ -841,8 +2093,18 @@ function createDefaultContentProviderSetting(definition: ContentProviderDefiniti
     enabled: definition.default_enabled,
     priority: definition.default_priority,
     languages: definition.default_languages ? [...definition.default_languages] : undefined,
+    api_key_ref: definition.api_key_env_var ? { kind: "env", name: definition.api_key_env_var } : undefined,
     api_key_env_var: definition.api_key_env_var,
     health_status: definition.default_enabled ? "ready" : "disabled",
+  };
+}
+
+function createContentProviderKeyRefPatch(value: string): Partial<ContentProviderSettings> {
+  const name = value.trim();
+
+  return {
+    api_key_ref: name ? { kind: "env", name } : undefined,
+    api_key_env_var: name || undefined,
   };
 }
 

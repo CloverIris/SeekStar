@@ -141,11 +141,29 @@ export function MainContentStatusOverlay({
 }
 
 function filterRenderableMainContentNodes(nodes: TerrainNode[], mode: MainContentProjection["mode"]): TerrainNode[] {
+  if (mode === "cartographer_chunk_field" || mode === "source_candidate_field") {
+    const hasCartographerTerrain = nodes.some(isCartographerTerrainNode);
+
+    if (hasCartographerTerrain) {
+      return nodes.filter((node) => isCartographerTerrainNode(node) || node.source_state === "source_backed" || node.source_state === "user_seed");
+    }
+  }
+
   if (mode === "domain_gallery") {
+    const hasCartographerTerrain = nodes.some(isCartographerTerrainNode);
+
+    if (hasCartographerTerrain) {
+      return nodes.filter((node) => isCartographerTerrainNode(node) || node.source_state === "user_seed");
+    }
+
     return nodes;
   }
 
   return nodes.filter((node) => !isMainContentScaffoldPlaceholder(node));
+}
+
+function isCartographerTerrainNode(node: TerrainNode): boolean {
+  return node.source_state === "cartographer_primary" || node.tags?.includes("cartographer") === true;
 }
 
 function isMainContentScaffoldPlaceholder(node: TerrainNode): boolean {

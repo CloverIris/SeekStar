@@ -18,6 +18,7 @@ export type TileSurfaceLoadPriority = "none" | "low" | "medium" | "high";
 export type TileSurfaceLoadState = "metadata_only" | "thumbnail_ready" | "renderer_visible" | "renderer_focused";
 export type MainContentMode =
   | "domain_gallery"
+  | "cartographer_chunk_field"
   | "source_candidate_field"
   | "source_intake_pending"
   | "source_intake_failed"
@@ -111,7 +112,7 @@ export function createTerrainPixiProjection(
   const parentLayerId = currentLayer?.parent_layer_id;
   const childLayerIds = currentLayer?.child_layer_ids ?? [];
   const visibleNodes = scene.nodes.filter((node) => node.layer === viewport.layer);
-  const layerNodes = visibleNodes.length > 0 ? visibleNodes : scene.nodes;
+  const layerNodes = applyMvpLayerLayout(visibleNodes.length > 0 ? visibleNodes : scene.nodes, viewport.layer);
   const layerNodeIds = new Set(layerNodes.map((node) => node.id));
   const ghostNodes = scene.nodes.filter(
     (node) =>
@@ -130,6 +131,7 @@ export function createTerrainPixiProjection(
   );
   const tileSurfaces = createTileSurfaces(layerNodes, viewport, options);
   const candidateTileSurfaces = createCandidateTileSurfaces(candidateObservations, viewport, options);
+  const nodesById = new Map(renderedNodes.map((node) => [node.id, node]));
 
   return {
     candidateTileSurfaces,
@@ -139,7 +141,11 @@ export function createTerrainPixiProjection(
     tileSurfaces,
     visibleNodes: layerNodes,
     visibleNodeIds: layerNodeIds,
-    visibleRelations: scene.relations.filter((relation) => renderedNodeIds.has(relation.from) && renderedNodeIds.has(relation.to)),
+    visibleRelations: isMacroGalleryLayer(viewport.layer)
+      ? []
+      : scene.relations.filter(
+          (relation) => renderedNodeIds.has(relation.from) && renderedNodeIds.has(relation.to) && isRenderableRelation(relation, nodesById, viewport),
+        ),
   };
 }
 
@@ -176,6 +182,7 @@ function createMainContentProjection(
 ): MainContentProjection {
   const directUrlObservation = getLatestDirectUrlObservation(scene);
   const candidateObservations = getCandidateObservationsForLayer(scene, viewport.layer);
+  const cartographerNodes = getCartographerNodesForLayer(scene, viewport.layer);
 
   if (scene.runtime.browser_absorption.status === "absorbed") {
     return {
@@ -250,6 +257,16 @@ function createMainContentProjection(
     };
   }
 
+  if (cartographerNodes.length > 0) {
+    return {
+      intakeStatus: "ready",
+      mode: "cartographer_chunk_field",
+      candidateTileSurfaces,
+      sourceTileSurfaces,
+      statusText: `${cartographerNodes.length} AI Cartographer terrain node${cartographerNodes.length === 1 ? "" : "s"} loaded for this chunk.`,
+    };
+  }
+
   if (isMacroLayer(viewport.layer)) {
     return {
       intakeStatus: "idle",
@@ -285,6 +302,108 @@ function createMainContentProjection(
     candidateTileSurfaces,
     sourceTileSurfaces,
   };
+}
+
+function isRenderableRelation(relation: TerrainRelation, nodesById: Map<string, TerrainNode>, viewport: ViewportState): boolean {
+  const from = nodesById.get(relation.from);
+  const to = nodesById.get(relation.to);
+
+  if (!from?.position_hint || !to?.position_hint) {
+    return false;
+  }
+
+  if (isMacroLayer(viewport.layer)) {
+    const dx = from.position_hint.x - to.position_hint.x;
+    const dy = from.position_hint.y - to.position_hint.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+
+    return distance <= 360;
+  }
+
+  return true;
+}
+
+function applyMvpLayerLayout(nodes: TerrainNode[], layer: LayerId): TerrainNode[] {
+  if (nodes.length === 0) {
+    return nodes;
+  }
+
+  if (isMacroGalleryLayer(layer)) {
+    return createMvpGalleryNodes(nodes);
+  }
+
+  return nodes;
+}
+
+function isMacroGalleryLayer(layer: LayerId): boolean {
+  return layer === "L0" || layer === "L1";
+}
+
+function createMvpGalleryNodes(nodes: TerrainNode[]): TerrainNode[] {
+  const sortedNodes = [...nodes].sort(compareGalleryNodes);
+  const total = sortedNodes.length;
+
+  return sortedNodes.map((node, index) => ({
+    ...node,
+    position_hint: createMvpGalleryPosition(index, total),
+  }));
+}
+
+function compareGalleryNodes(left: TerrainNode, right: TerrainNode): number {
+  const leftChunk = parseNodeChunkKey(left);
+  const rightChunk = parseNodeChunkKey(right);
+  const leftChunkRank = leftChunk ? leftChunk.x * 10_000 + leftChunk.y : 0;
+  const rightChunkRank = rightChunk ? rightChunk.x * 10_000 + rightChunk.y : 0;
+
+  if (leftChunkRank !== rightChunkRank) {
+    return leftChunkRank - rightChunkRank;
+  }
+
+  const leftCreatedAt = left.created_at ?? "";
+  const rightCreatedAt = right.created_at ?? "";
+
+  if (leftCreatedAt !== rightCreatedAt) {
+    return leftCreatedAt.localeCompare(rightCreatedAt);
+  }
+
+  return left.id.localeCompare(right.id);
+}
+
+function parseNodeChunkKey(node: TerrainNode): { x: number; y: number } | undefined {
+  const label = node.created_from?.label ?? "";
+  const match = /\/\s*(-?\d+):(-?\d+):/u.exec(label);
+
+  if (!match) {
+    return undefined;
+  }
+
+  return {
+    x: Number.parseInt(match[1] ?? "0", 10),
+    y: Number.parseInt(match[2] ?? "0", 10),
+  };
+}
+
+function createMvpGalleryPosition(index: number, total: number): { x: number; y: number } {
+  const spacingX = 138;
+  const spacingY = 120;
+  const columns = Math.max(5, Math.ceil(Math.sqrt(Math.max(1, total) * 1.45)));
+  const row = Math.floor(index / columns);
+  const column = index % columns;
+  const rows = Math.max(1, Math.ceil(total / columns));
+  const centerColumn = (columns - 1) / 2;
+  const centerRow = (rows - 1) / 2;
+  const stagger = row % 2 === 0 ? 0 : spacingX / 2;
+  const deterministicJitterX = ((index * 17) % 13) - 6;
+  const deterministicJitterY = ((index * 29) % 11) - 5;
+
+  return {
+    x: Math.round((column - centerColumn) * spacingX + stagger + deterministicJitterX),
+    y: Math.round((row - centerRow) * spacingY + deterministicJitterY),
+  };
+}
+
+function getCartographerNodesForLayer(scene: TerrainScene, layer: LayerId): TerrainNode[] {
+  return scene.nodes.filter((node) => node.layer === layer && (node.source_state === "cartographer_primary" || node.tags?.includes("cartographer")));
 }
 
 function getCandidateObservationsForLayer(scene: TerrainScene, layer: LayerId): ScoutObservation[] {

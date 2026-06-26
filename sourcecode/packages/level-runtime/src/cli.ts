@@ -1,6 +1,14 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
-import { runLevelRuntime, validateLevelRuntimeOutput, type LevelRuntimeInput } from "./index.js";
+import {
+  listLevelRuntimeProfiles,
+  resolveLevelModuleDefinition,
+  resolveLevelRuntimeProfile,
+  runLevelRuntime,
+  validateLevelRuntimeOutput,
+  type LevelBandId,
+  type LevelRuntimeInput,
+} from "./index.js";
 
 const [command, ...args] = process.argv.slice(2);
 
@@ -15,11 +23,35 @@ try {
 async function run(commandName: string | undefined, argsList: string[]): Promise<unknown> {
   if (!commandName || commandName === "help" || commandName === "--help") {
     return {
-      commands: ["run --input input.json|-", "validate --input output.json|-"],
+      commands: [
+        "run --input input.json|-",
+        "validate --input output.json|-",
+        "profiles",
+        "profile --id seekstar-default-p6-gallery-v3",
+        "module --level L0 [--profile seekstar-default-p6-gallery-v3]",
+      ],
     };
   }
 
   const options = parseArgs(argsList);
+
+  if (commandName === "profiles") {
+    return listLevelRuntimeProfiles().map((profile) => ({
+      id: profile.id,
+      label: profile.label,
+      language: profile.language,
+      density: profile.density,
+      levels: Object.keys(profile.modules),
+    }));
+  }
+
+  if (commandName === "profile") {
+    return resolveLevelRuntimeProfile(options.id);
+  }
+
+  if (commandName === "module") {
+    return resolveLevelModuleDefinition(parseLevelId(required(options, "level")), options.profile);
+  }
 
   if (commandName === "run") {
     const input = readJson<LevelRuntimeInput>(required(options, "input"));
@@ -38,6 +70,22 @@ async function run(commandName: string | undefined, argsList: string[]): Promise
   }
 
   throw new Error(`Unknown seekstar-level-runtime command: ${commandName}`);
+}
+
+function parseLevelId(value: string): LevelBandId {
+  if (
+    value === "supra_macro" ||
+    value === "L0" ||
+    value === "L1" ||
+    value === "L2" ||
+    value === "L3" ||
+    value === "deep_lens" ||
+    value === "recursive_seed"
+  ) {
+    return value;
+  }
+
+  throw new Error(`Unknown level id: ${value}`);
 }
 
 function parseArgs(argsList: string[]): Record<string, string> {

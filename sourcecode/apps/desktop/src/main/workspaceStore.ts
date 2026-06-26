@@ -1,13 +1,18 @@
 import { app, ipcMain, webContents } from "electron";
-import { mkdir, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
-import { dirname, join, resolve, sep } from "node:path";
-import type { WorkspaceChangeEvent, WorkspaceChangeKind } from "@seekstar/storage-service";
+import { readdir, rm, unlink } from "node:fs/promises";
+import { join, resolve, sep } from "node:path";
+import { isWorkspaceSnapshot, type WorkspaceSnapshot } from "@seekstar/constellation-engine";
+import { JsonWorkspaceStorage, type WorkspaceChangeEvent, type WorkspaceChangeKind } from "@seekstar/storage-service";
+import { getAssistantSessionStorePath } from "./assistantSessionStore";
+import { getCartographerChunkStorePath } from "./cartographerChunkStore";
 
 const STORE_FILE_NAME = "seekstar-workspace-snapshot.json";
 const TAB_RUNTIME_FILE_NAME = "seekstar-tab-runtime.json";
 const SETTINGS_FILE_NAME = "seekstar-settings.json";
 
 export interface WorkspaceStorePaths {
+  assistant_sessions: string;
+  cartographer_chunks: string;
   workspace_snapshot: string;
   tab_runtime: string;
   settings: string;
@@ -27,50 +32,32 @@ export interface RegisterWorkspaceStoreOptions {
 }
 
 export class JsonWorkspaceStore implements WorkspaceStore {
-  private saveChain: Promise<void> = Promise.resolve();
+  private readonly storage = new JsonWorkspaceStorage(getStorePath(), {
+    quarantineInvalidJson: true,
+    quarantineInvalidSchema: false,
+  });
 
-  async loadSnapshot(): Promise<unknown | undefined> {
-    const storePath = getStorePath();
+  async loadSnapshot(): Promise<WorkspaceSnapshot<unknown> | undefined> {
+    const inspection = await this.storage.inspectWorkspaceSnapshot();
 
-    try {
-      const content = await readFile(storePath, "utf8");
-
-      try {
-        return JSON.parse(content) as unknown;
-      } catch (error) {
-        if (isJsonParseError(error)) {
-          await quarantineCorruptJson(storePath, "workspace snapshot", error);
-          return undefined;
-        }
-
-        throw error;
-      }
-    } catch (error) {
-      if (isMissingFileError(error)) {
-        return undefined;
-      }
-
-      throw error;
+    if (inspection.status === "invalid_json" || inspection.status === "invalid_schema") {
+      const quarantineNote = inspection.quarantine_path ? ` moved to ${inspection.quarantine_path}` : "";
+      console.warn(`[SeekStar] Ignored ${inspection.status.replace(/_/g, " ")} workspace snapshot at ${inspection.path}${quarantineNote}: ${inspection.error_message ?? "unknown error"}`);
     }
+
+    return this.storage.loadWorkspaceSnapshot();
   }
 
   saveSnapshot(snapshot: unknown): Promise<void> {
-    const nextSave = this.saveChain.catch(() => undefined).then(() => this.writeSnapshot(snapshot));
-    this.saveChain = nextSave;
-    return nextSave;
-  }
+    if (!isWorkspaceSnapshot(snapshot)) {
+      throw new Error("Refusing to save invalid SeekStar workspace snapshot.");
+    }
 
-  private async writeSnapshot(snapshot: unknown): Promise<void> {
-    const storePath = getStorePath();
-    const tmpPath = createTempJsonPath(storePath);
-
-    await mkdir(dirname(storePath), { recursive: true });
-    await writeFile(tmpPath, JSON.stringify(snapshot, null, 2), "utf8");
-    await replaceFile(tmpPath, storePath);
+    return this.storage.saveWorkspaceSnapshot(snapshot);
   }
 
   async clearSnapshot(): Promise<void> {
-    await unlinkIfPresent(getStorePath());
+    await this.storage.clearWorkspaceSnapshot();
   }
 
   async clearDevelopmentData(): Promise<void> {
@@ -84,6 +71,8 @@ export class JsonWorkspaceStore implements WorkspaceStore {
 
   getStorePaths(): WorkspaceStorePaths {
     return {
+      assistant_sessions: getAssistantSessionStorePath(),
+      cartographer_chunks: getCartographerChunkStorePath(),
       workspace_snapshot: getStorePath(),
       tab_runtime: getUserDataPath(TAB_RUNTIME_FILE_NAME),
       settings: getUserDataPath(SETTINGS_FILE_NAME),
@@ -147,10 +136,6 @@ function getUserDataPath(fileName: string): string {
   return join(app.getPath("userData"), fileName);
 }
 
-function createTempJsonPath(path: string): string {
-  return `${path}.${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`;
-}
-
 async function unlinkIfPresent(path: string): Promise<void> {
   try {
     await unlink(path);
@@ -159,23 +144,6 @@ async function unlinkIfPresent(path: string): Promise<void> {
       throw error;
     }
   }
-}
-
-async function replaceFile(sourcePath: string, destinationPath: string): Promise<void> {
-  try {
-    await rename(sourcePath, destinationPath);
-  } catch (error) {
-    if (!isReplaceFailure(error)) {
-      throw error;
-    }
-
-    await rm(destinationPath, { force: true });
-    await rename(sourcePath, destinationPath);
-  }
-}
-
-function isReplaceFailure(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && (error.code === "EPERM" || error.code === "EEXIST");
 }
 
 async function clearSeekStarTabPartitions(): Promise<void> {
@@ -211,23 +179,4 @@ async function clearSeekStarTabPartitions(): Promise<void> {
 
 function isMissingFileError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
-}
-
-function isJsonParseError(error: unknown): boolean {
-  return error instanceof SyntaxError;
-}
-
-async function quarantineCorruptJson(path: string, label: string, error: unknown): Promise<void> {
-  const quarantinePath = `${path}.corrupt-${Date.now()}`;
-
-  try {
-    await rename(path, quarantinePath);
-    console.warn(`[SeekStar] Ignored corrupt ${label} JSON and moved it to ${quarantinePath}: ${getErrorMessage(error)}`);
-  } catch (renameError) {
-    console.warn(`[SeekStar] Failed to quarantine corrupt ${label} JSON at ${path}: ${getErrorMessage(renameError)}`);
-  }
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
