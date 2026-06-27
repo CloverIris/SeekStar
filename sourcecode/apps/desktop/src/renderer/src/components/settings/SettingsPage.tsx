@@ -12,7 +12,7 @@ import {
   type ContentProviderSettings,
 } from "@seekstar/core-schema";
 import type { SeekStarSettings } from "../../../../main/appSettingsStore";
-import type { AiCartographerPromptPreviewResult } from "../../../../main/aiAssistantBridge";
+import type { AiAdapterTestResult, AiCartographerPromptPreviewResult } from "../../../../main/aiAssistantBridge";
 import type { AiCostLedgerSnapshot } from "../../../../main/aiCostLedgerStore";
 import type { AiAssistantActionType, CartographerGenerationMode } from "@seekstar/ai-service";
 import type { ReactElement } from "react";
@@ -23,6 +23,7 @@ import {
   Compass,
   Folder,
   Globe2,
+  KeyRound,
   Plus,
   RefreshCw,
   Search,
@@ -37,6 +38,7 @@ type SettingsSectionId =
   | "general"
   | "domainLexicon"
   | "contentProviders"
+  | "apiAdapter"
   | "aiCartographer"
   | "runtime"
   | "scout"
@@ -72,9 +74,13 @@ const settingsSectionMeta: Record<SettingsSectionId, { title: string; descriptio
     title: "Content providers",
     description: "Configure URL-first authority discovery and browser-assisted source candidates.",
   },
+  apiAdapter: {
+    title: "API Adapter",
+    description: "Configure and test the real OpenAI-compatible adapter used by the telescope runtime.",
+  },
   aiCartographer: {
     title: "AI Cartographer",
-    description: "Choose the model provider that generates chunked L0-L3 map terrain.",
+    description: "Tune prompt profiles, chunk scheduling, action policy, and cost visibility.",
   },
   runtime: {
     title: "Runtime",
@@ -99,6 +105,8 @@ const domainLexiconLanguages = [
   { id: "zh-Hans", label: "ZH-CN" },
   { id: "zh-Hant", label: "ZH-TW" },
 ] as const;
+
+const DEEPSEEK_AI_PROVIDER_ID = "deepseek-openai-compatible";
 
 const assistantActionPermissionRuleMeta: Array<{
   action_type: Exclude<AiAssistantActionType, "none">;
@@ -147,6 +155,8 @@ export function SettingsPage({
   const [selectedLexiconId, setSelectedLexiconId] = useState(DEFAULT_DOMAIN_LEXICON_ID);
   const [selectedTermId, setSelectedTermId] = useState<string | undefined>();
   const [costLedger, setCostLedger] = useState<AiCostLedgerSnapshot | undefined>();
+  const [adapterTest, setAdapterTest] = useState<AiAdapterTestResult | undefined>();
+  const [adapterTestStatus, setAdapterTestStatus] = useState("Ready");
 
   useEffect(() => {
     setDraft(settings);
@@ -187,7 +197,7 @@ export function SettingsPage({
   const domainLexicons = draft?.domain_lexicons ?? cloneDomainLexicons(DEFAULT_DOMAIN_LEXICONS);
   const contentProviders = draft?.content_providers ?? cloneContentProviderSettings(DEFAULT_CONTENT_PROVIDER_SETTINGS);
   const aiProviders = draft?.ai_providers ?? createDefaultAiProviderSettings();
-  const activeAiProviderId = draft?.active_ai_provider_id ?? aiProviders.find((provider) => provider.enabled)?.id ?? "mock-cartographer";
+  const activeAiProviderId = draft?.active_ai_provider_id ?? aiProviders.find((provider) => provider.enabled)?.id ?? DEEPSEEK_AI_PROVIDER_ID;
   const aiRoutes = draft?.ai_routes ?? createDefaultAiRouteSettings(activeAiProviderId);
   const assistantActionPermissionMode = draft?.assistant_action_permission_mode ?? "ask_each_time";
   const assistantActionPermissionRules = draft?.assistant_action_permission_rules ?? createDefaultAssistantActionPermissionRules();
@@ -259,7 +269,7 @@ export function SettingsPage({
       return {
         ...nextProvider,
         health_status: enabled
-          ? nextProvider.kind === "openai_compatible" && !nextProvider.api_key_env_var?.trim()
+          ? nextProvider.kind === "openai_compatible" && !nextProvider.api_key_value?.trim() && !nextProvider.api_key_env_var?.trim()
             ? "missing_key"
             : nextProvider.health_status === "error"
               ? "error"
@@ -372,13 +382,43 @@ export function SettingsPage({
 
   function handleAiProvidersReset(): void {
     const defaults = createDefaultAiProviderSettings();
-    const activeId = defaults.find((provider) => provider.enabled)?.id ?? defaults[0]?.id ?? "mock-cartographer";
+    const activeId = defaults.find((provider) => provider.enabled)?.id ?? defaults[0]?.id ?? DEEPSEEK_AI_PROVIDER_ID;
 
     updateDraft({
       active_ai_provider_id: activeId,
       ai_providers: defaults,
       ai_routes: createDefaultAiRouteSettings(activeId),
     });
+  }
+
+  async function handleAiAdapterTest(providerId?: string): Promise<void> {
+    if (!draft) {
+      return;
+    }
+
+    setAdapterTestStatus("Calling adapter...");
+    setStatusText("Testing API Adapter...");
+
+    try {
+      const result = await window.seekstar.ai.testAdapter({
+        provider_id: providerId,
+        seed: "SeekStar adapter connectivity test",
+        settings: draft,
+      });
+
+      setAdapterTest(result);
+      setAdapterTestStatus(
+        result.status === "ok"
+          ? `OK: ${result.node_count} nodes / ${result.elapsed_ms}ms`
+          : `${result.status}: ${result.diagnostics[0]?.message ?? "No diagnostic message"}`,
+      );
+      setStatusText(result.status === "ok" ? "API Adapter responded" : "API Adapter test failed");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAdapterTest(undefined);
+      setAdapterTestStatus(`Failed: ${message}`);
+      setStatusText("API Adapter test failed");
+    }
   }
 
   function updateSelectedLexicon(patch: Partial<DomainLexicon>): void {
@@ -557,6 +597,7 @@ export function SettingsPage({
     { id: "general", label: "General", icon: Settings },
     { id: "domainLexicon", label: "Domain lexicon", icon: Star },
     { id: "contentProviders", label: "Content providers", icon: Globe2 },
+    { id: "apiAdapter", label: "API Adapter", icon: KeyRound },
     { id: "aiCartographer", label: "AI Cartographer", icon: Bot },
     { id: "runtime", label: "Runtime", icon: Compass },
     { id: "scout", label: "Scout service", icon: Sparkles },
@@ -633,6 +674,7 @@ export function SettingsPage({
 
             {resolvedActiveSection === "domainLexicon" ? (
               <DomainLexiconEditor
+                domainHintMode={draft?.domain_hint_mode ?? "guided"}
                 domainLexicons={domainLexicons}
                 draft={draft}
                 onActivate={handleLexiconActivate}
@@ -646,6 +688,7 @@ export function SettingsPage({
                   setSelectedTermId(undefined);
                 }}
                 onSelectTerm={setSelectedTermId}
+                onDomainHintModeChange={(mode) => updateDraft({ domain_hint_mode: mode })}
                 onTermLabelChange={updateTermLabel}
                 onTermUpdate={updateSelectedTerm}
                 onLexiconUpdate={updateSelectedLexicon}
@@ -664,12 +707,25 @@ export function SettingsPage({
               />
             ) : null}
 
+            {resolvedActiveSection === "apiAdapter" ? (
+              <ApiAdapterEditor
+                activeProviderId={activeAiProviderId}
+                adapterTest={adapterTest}
+                adapterTestStatus={adapterTestStatus}
+                onActivate={handleAiProviderActivate}
+                onProviderUpdate={updateAiProvider}
+                onReset={handleAiProvidersReset}
+                onRouteUpdate={updateAiRoute}
+                onTest={handleAiAdapterTest}
+                providers={aiProviders}
+                routes={aiRoutes}
+              />
+            ) : null}
+
             {resolvedActiveSection === "aiCartographer" ? (
               <AiProviderEditor
-                activeProviderId={activeAiProviderId}
                 assistantActionPermissionMode={assistantActionPermissionMode}
                 assistantActionPermissionRules={assistantActionPermissionRules}
-                onActivate={handleAiProviderActivate}
                 onAssistantActionPermissionModeChange={(mode) => updateDraft({ assistant_action_permission_mode: mode })}
                 onAssistantActionPermissionRuleChange={updateAssistantActionPermissionRule}
                 onChunkSchedulingUpdate={updateCartographerChunkScheduling}
@@ -678,9 +734,6 @@ export function SettingsPage({
                 onPromptRevisionDelete={handleCartographerPromptProfileRevisionDelete}
                 onPromptRevisionRestore={handleCartographerPromptProfileRevisionRestore}
                 onPromptRevisionSave={handleCartographerPromptProfileRevisionSave}
-                onProviderUpdate={updateAiProvider}
-                onRouteUpdate={updateAiRoute}
-                onReset={handleAiProvidersReset}
                 chunkScheduling={cartographerChunkScheduling}
                 costLedger={costLedger}
                 onClearCostLedger={handleClearCostLedger}
@@ -688,8 +741,6 @@ export function SettingsPage({
                 onRefreshCostLedger={handleRefreshCostLedger}
                 promptProfile={cartographerPromptProfile}
                 promptProfileRevisions={cartographerPromptProfileRevisions}
-                providers={aiProviders}
-                routes={aiRoutes}
               />
             ) : null}
 
@@ -952,13 +1003,331 @@ function ContentProviderEditor({
   );
 }
 
-function AiProviderEditor({
+function ApiAdapterEditor({
   activeProviderId,
+  adapterTest,
+  adapterTestStatus,
+  onActivate,
+  onProviderUpdate,
+  onReset,
+  onRouteUpdate,
+  onTest,
+  providers,
+  routes,
+}: {
+  activeProviderId: string;
+  adapterTest?: AiAdapterTestResult;
+  adapterTestStatus: string;
+  onActivate: (providerId: string) => void;
+  onProviderUpdate: (providerId: string, patch: Partial<AiProviderSettingsDraft>) => void;
+  onReset: () => void;
+  onRouteUpdate: (routeId: string, patch: Partial<AiRouteSettingsDraft>) => void;
+  onTest: (providerId?: string) => Promise<void> | void;
+  providers: AiProviderSettingsDraft[];
+  routes: AiRouteSettingsDraft[];
+}): ReactElement {
+  const enabledCount = providers.filter((provider) => provider.enabled).length;
+  const providerOptions = providers.map((provider) => ({ id: provider.id, label: provider.label }));
+
+  return (
+    <section className="settings-section content-provider-section">
+      <div className="content-provider-toolbar">
+        <div>
+          <strong>API Adapter</strong>
+          <span>
+            {enabledCount} enabled / active {activeProviderId}
+          </span>
+        </div>
+        <div>
+          <button onClick={() => onTest()} type="button">
+            <RefreshCw aria-hidden="true" size={14} strokeWidth={1.8} />
+            Test active adapter
+          </button>
+          <button onClick={onReset} type="button">
+            Reset defaults
+          </button>
+        </div>
+      </div>
+
+      <div className="content-provider-groups">
+        <section className="content-provider-group">
+          <header>
+            <span>Adapter health test</span>
+            <small>{adapterTestStatus}</small>
+          </header>
+          <div className="settings-card ai-adapter-test-card">
+            <div className="ai-cost-ledger-summary">
+              <div>
+                <span>Status</span>
+                <strong>{adapterTest?.status ?? "not tested"}</strong>
+              </div>
+              <div>
+                <span>Provider</span>
+                <strong>{adapterTest?.provider_id ?? activeProviderId}</strong>
+              </div>
+              <div>
+                <span>Model</span>
+                <strong>{adapterTest?.model ?? "provider default"}</strong>
+              </div>
+              <div>
+                <span>Output</span>
+                <strong>
+                  {adapterTest ? `${adapterTest.node_count}N/${adapterTest.relation_count}R/${adapterTest.source_candidate_count}C` : "pending"}
+                </strong>
+              </div>
+            </div>
+
+            {adapterTest?.diagnostics.length ? (
+              <div className="ai-adapter-diagnostics">
+                {adapterTest.diagnostics.slice(0, 6).map((diagnostic) => (
+                  <p key={`${diagnostic.code}-${diagnostic.message}`}>
+                    <strong>{diagnostic.code}</strong>
+                    <span>{diagnostic.message}</span>
+                  </p>
+                ))}
+              </div>
+            ) : null}
+
+            {adapterTest ? (
+              <div className="ai-prompt-preview-output">
+                <div className="ai-prompt-preview-meta">
+                  <span>{adapterTest.level_id}</span>
+                  <span>{adapterTest.elapsed_ms}ms</span>
+                  <span>{adapterTest.generated_at}</span>
+                </div>
+                <article>
+                  <strong>Request preview</strong>
+                  <pre>{adapterTest.request_preview}</pre>
+                </article>
+                <article>
+                  <strong>Response preview</strong>
+                  <pre>{adapterTest.response_preview}</pre>
+                </article>
+              </div>
+            ) : null}
+          </div>
+        </section>
+
+        <section className="content-provider-group">
+          <header>
+            <span>AIServiceProvider</span>
+            <small>OpenAI-compatible boundary</small>
+          </header>
+          <div className="content-provider-list">
+            {providers.map((provider) => (
+              <article className="content-provider-card" data-provider-enabled={provider.enabled} key={provider.id}>
+                <div className="content-provider-card-main">
+                  <label className="content-provider-enable">
+                    <input
+                      checked={provider.enabled}
+                      onChange={(event) => onProviderUpdate(provider.id, { enabled: event.target.checked })}
+                      type="checkbox"
+                    />
+                  </label>
+                  <div className="content-provider-identity">
+                    <strong>{provider.label}</strong>
+                    <small>{provider.base_url ?? "OpenAI-compatible API"}</small>
+                  </div>
+                  <span className="content-provider-status">{provider.health_status}</span>
+                </div>
+
+                <div className="content-provider-controls ai-provider-controls">
+                  <label>
+                    <span>Model</span>
+                    <input
+                      onChange={(event) => onProviderUpdate(provider.id, { model: event.target.value })}
+                      placeholder="gpt-4o-mini"
+                      value={provider.model ?? ""}
+                    />
+                  </label>
+                  <label>
+                    <span>Base URL</span>
+                    <input
+                      onChange={(event) => onProviderUpdate(provider.id, { base_url: event.target.value })}
+                      placeholder="https://api.openai.com/v1"
+                      value={provider.base_url ?? ""}
+                    />
+                  </label>
+                  <label>
+                    <span>API Key</span>
+                    <input
+                      autoComplete="off"
+                      onChange={(event) => onProviderUpdate(provider.id, { api_key_value: event.target.value })}
+                      placeholder="Paste provider API key"
+                      type="password"
+                      value={provider.api_key_value ?? ""}
+                    />
+                  </label>
+                  <label>
+                    <span>Fallback env</span>
+                    <input
+                      onChange={(event) => onProviderUpdate(provider.id, { api_key_env_var: event.target.value })}
+                      placeholder="DEEPSEEK_API_KEY"
+                      value={provider.api_key_env_var ?? ""}
+                    />
+                  </label>
+                  <label>
+                    <span>Timeout ms</span>
+                    <input
+                      min={5000}
+                      max={180000}
+                      onChange={(event) => onProviderUpdate(provider.id, { timeout_ms: Number(event.target.value) })}
+                      type="number"
+                      value={provider.timeout_ms}
+                    />
+                  </label>
+                  <label>
+                    <span>Input $ / 1M</span>
+                    <input
+                      min={0}
+                      onChange={(event) =>
+                        onProviderUpdate(provider.id, {
+                          input_cost_per_million_tokens_usd: event.target.value === "" ? undefined : Number(event.target.value),
+                        })
+                      }
+                      placeholder="optional"
+                      step="0.000001"
+                      type="number"
+                      value={provider.input_cost_per_million_tokens_usd ?? ""}
+                    />
+                  </label>
+                  <label>
+                    <span>Output $ / 1M</span>
+                    <input
+                      min={0}
+                      onChange={(event) =>
+                        onProviderUpdate(provider.id, {
+                          output_cost_per_million_tokens_usd: event.target.value === "" ? undefined : Number(event.target.value),
+                        })
+                      }
+                      placeholder="optional"
+                      step="0.000001"
+                      type="number"
+                      value={provider.output_cost_per_million_tokens_usd ?? ""}
+                    />
+                  </label>
+                  <label>
+                    <span>Retries</span>
+                    <input
+                      min={0}
+                      max={5}
+                      onChange={(event) => onProviderUpdate(provider.id, { retry_attempts: Number(event.target.value) })}
+                      type="number"
+                      value={provider.retry_attempts}
+                    />
+                  </label>
+                  <button disabled={activeProviderId === provider.id} onClick={() => onActivate(provider.id)} type="button">
+                    {activeProviderId === provider.id ? "Active" : "Activate"}
+                  </button>
+                  <button onClick={() => onTest(provider.id)} type="button">
+                    Test
+                  </button>
+                </div>
+
+                <div className="content-provider-meta">
+                  <span>{provider.kind}</span>
+                  {provider.health_message ? <small>{provider.health_message}</small> : null}
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="content-provider-group">
+          <header>
+            <span>Band routes</span>
+            <small>{routes.filter((route) => route.enabled).length} active</small>
+          </header>
+          <div className="content-provider-list">
+            {routes.map((route) => (
+              <article className="content-provider-card" data-provider-enabled={route.enabled} key={route.id}>
+                <div className="content-provider-card-main">
+                  <label className="content-provider-enable">
+                    <input
+                      checked={route.enabled}
+                      onChange={(event) => onRouteUpdate(route.id, { enabled: event.target.checked })}
+                      type="checkbox"
+                    />
+                  </label>
+                  <div className="content-provider-identity">
+                    <strong>{route.label}</strong>
+                    <small>
+                      {route.level_id} / {route.modes?.join(", ") ?? "all modes"}
+                    </small>
+                  </div>
+                  <span className="content-provider-status">{route.provider_id}</span>
+                </div>
+
+                <div className="content-provider-controls ai-route-controls">
+                  <label>
+                    <span>Level</span>
+                    <select
+                      onChange={(event) => onRouteUpdate(route.id, { level_id: event.target.value as AiRouteSettingsDraft["level_id"] })}
+                      value={route.level_id}
+                    >
+                      {["default", "supra_macro", "L0", "L1", "L2", "L3", "deep_lens", "recursive_seed"].map((levelId) => (
+                        <option key={levelId} value={levelId}>
+                          {levelId}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Provider</span>
+                    <select onChange={(event) => onRouteUpdate(route.id, { provider_id: event.target.value })} value={route.provider_id}>
+                      {providerOptions.map((provider) => (
+                        <option key={provider.id} value={provider.id}>
+                          {provider.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Modes</span>
+                    <input
+                      onChange={(event) => onRouteUpdate(route.id, { modes: parseRouteModesInput(event.target.value) })}
+                      placeholder="all modes"
+                      value={route.modes?.join(", ") ?? ""}
+                    />
+                  </label>
+                  <label>
+                    <span>Model override</span>
+                    <input
+                      onChange={(event) => onRouteUpdate(route.id, { model_override: event.target.value })}
+                      placeholder="Use provider model"
+                      value={route.model_override ?? ""}
+                    />
+                  </label>
+                  <label>
+                    <span>Priority</span>
+                    <input
+                      min={1}
+                      max={999}
+                      onChange={(event) => onRouteUpdate(route.id, { priority: Number(event.target.value) })}
+                      type="number"
+                      value={route.priority}
+                    />
+                  </label>
+                </div>
+
+                <div className="content-provider-meta">
+                  <span>{route.id}</span>
+                  <small>First enabled route matching level and mode wins.</small>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function AiProviderEditor({
   assistantActionPermissionMode,
   assistantActionPermissionRules,
   chunkScheduling,
   costLedger,
-  onActivate,
   onAssistantActionPermissionModeChange,
   onAssistantActionPermissionRuleChange,
   onClearCostLedger,
@@ -969,21 +1338,14 @@ function AiProviderEditor({
   onPromptRevisionDelete,
   onPromptRevisionRestore,
   onPromptRevisionSave,
-  onProviderUpdate,
   onRefreshCostLedger,
-  onRouteUpdate,
-  onReset,
   promptProfile,
   promptProfileRevisions,
-  providers,
-  routes,
 }: {
-  activeProviderId: string;
   assistantActionPermissionMode: SeekStarSettings["assistant_action_permission_mode"];
   assistantActionPermissionRules: SeekStarSettings["assistant_action_permission_rules"];
   chunkScheduling: CartographerChunkSchedulingDraft;
   costLedger?: AiCostLedgerSnapshot;
-  onActivate: (providerId: string) => void;
   onAssistantActionPermissionModeChange: (mode: SeekStarSettings["assistant_action_permission_mode"]) => void;
   onAssistantActionPermissionRuleChange: (
     actionType: AssistantActionPermissionRuleDraft["action_type"],
@@ -997,17 +1359,10 @@ function AiProviderEditor({
   onPromptRevisionDelete: (revisionId: string) => void;
   onPromptRevisionRestore: (revisionId: string) => void;
   onPromptRevisionSave: () => void;
-  onProviderUpdate: (providerId: string, patch: Partial<AiProviderSettingsDraft>) => void;
   onRefreshCostLedger: () => Promise<void> | void;
-  onRouteUpdate: (routeId: string, patch: Partial<AiRouteSettingsDraft>) => void;
-  onReset: () => void;
   promptProfile: CartographerPromptProfileDraft;
   promptProfileRevisions: CartographerPromptProfileRevisionDraft[];
-  providers: AiProviderSettingsDraft[];
-  routes: AiRouteSettingsDraft[];
 }): ReactElement {
-  const enabledCount = providers.filter((provider) => provider.enabled).length;
-  const providerOptions = providers.map((provider) => ({ id: provider.id, label: provider.label }));
   const recentCostLedgerRecords = costLedger?.records.slice(0, 8) ?? [];
   const [promptPreviewLevelId, setPromptPreviewLevelId] = useState<CartographerPromptModuleDraft["level_id"]>("L0");
   const [promptPreviewMode, setPromptPreviewMode] = useState<CartographerGenerationMode>("bootstrap_seed");
@@ -1036,15 +1391,9 @@ function AiProviderEditor({
     <section className="settings-section content-provider-section">
       <div className="content-provider-toolbar">
         <div>
-          <strong>Cartographer model routing</strong>
-          <span>
-            {enabledCount} enabled · active {activeProviderId}
-          </span>
+          <strong>Cartographer behavior</strong>
+          <span>Prompt profile, chunk scheduling, assistant policy, and cost visibility</span>
         </div>
-        <button onClick={onReset} type="button">
-          <RefreshCw aria-hidden="true" size={14} strokeWidth={1.8} />
-          Reset defaults
-        </button>
       </div>
 
       <div className="content-provider-groups">
@@ -1332,7 +1681,7 @@ function AiProviderEditor({
                 <div className="content-provider-card-main">
                   <div className="content-provider-identity">
                     <strong>
-                      {module.level_id} 路 {module.label}
+                      {module.level_id} - {module.label}
                     </strong>
                     <small>Prompt brief, constraints, and target terrain count</small>
                   </div>
@@ -1373,123 +1722,6 @@ function AiProviderEditor({
                       value={module.prompt_constraints.join("\n")}
                     />
                   </label>
-                </div>
-              </article>
-            ))}
-          </div>
-        </section>
-
-        <section className="content-provider-group">
-          <header>
-            <span>AIServiceProvider</span>
-            <small>OpenAI-compatible boundary</small>
-          </header>
-          <div className="content-provider-list">
-            {providers.map((provider) => (
-              <article className="content-provider-card" data-provider-enabled={provider.enabled} key={provider.id}>
-                <div className="content-provider-card-main">
-                  <label className="content-provider-enable">
-                    <input
-                      checked={provider.enabled}
-                      onChange={(event) => onProviderUpdate(provider.id, { enabled: event.target.checked })}
-                      type="checkbox"
-                    />
-                  </label>
-                  <div className="content-provider-identity">
-                    <strong>{provider.label}</strong>
-                    <small>{provider.kind === "mock" ? "local deterministic generation" : (provider.base_url ?? "OpenAI-compatible API")}</small>
-                  </div>
-                  <span className="content-provider-status">{provider.health_status}</span>
-                </div>
-
-                <div className="content-provider-controls ai-provider-controls">
-                  <label>
-                    <span>Model</span>
-                    <input
-                      disabled={provider.kind === "mock"}
-                      onChange={(event) => onProviderUpdate(provider.id, { model: event.target.value })}
-                      placeholder="gpt-4o-mini"
-                      value={provider.model ?? ""}
-                    />
-                  </label>
-                  <label>
-                    <span>Base URL</span>
-                    <input
-                      disabled={provider.kind === "mock"}
-                      onChange={(event) => onProviderUpdate(provider.id, { base_url: event.target.value })}
-                      placeholder="https://api.openai.com/v1"
-                      value={provider.base_url ?? ""}
-                    />
-                  </label>
-                  <label>
-                    <span>Key env</span>
-                    <input
-                      disabled={provider.kind === "mock"}
-                      onChange={(event) => onProviderUpdate(provider.id, { api_key_env_var: event.target.value })}
-                      placeholder="SEEKSTAR_AI_API_KEY"
-                      value={provider.api_key_env_var ?? ""}
-                    />
-                  </label>
-                  <label>
-                    <span>Timeout ms</span>
-                    <input
-                      min={5000}
-                      max={180000}
-                      onChange={(event) => onProviderUpdate(provider.id, { timeout_ms: Number(event.target.value) })}
-                      type="number"
-                      value={provider.timeout_ms}
-                    />
-                  </label>
-                  <label>
-                    <span>Input $ / 1M</span>
-                    <input
-                      disabled={provider.kind === "mock"}
-                      min={0}
-                      onChange={(event) =>
-                        onProviderUpdate(provider.id, {
-                          input_cost_per_million_tokens_usd: event.target.value === "" ? undefined : Number(event.target.value),
-                        })
-                      }
-                      placeholder="optional"
-                      step="0.000001"
-                      type="number"
-                      value={provider.input_cost_per_million_tokens_usd ?? ""}
-                    />
-                  </label>
-                  <label>
-                    <span>Output $ / 1M</span>
-                    <input
-                      disabled={provider.kind === "mock"}
-                      min={0}
-                      onChange={(event) =>
-                        onProviderUpdate(provider.id, {
-                          output_cost_per_million_tokens_usd: event.target.value === "" ? undefined : Number(event.target.value),
-                        })
-                      }
-                      placeholder="optional"
-                      step="0.000001"
-                      type="number"
-                      value={provider.output_cost_per_million_tokens_usd ?? ""}
-                    />
-                  </label>
-                  <label>
-                    <span>Retries</span>
-                    <input
-                      min={0}
-                      max={5}
-                      onChange={(event) => onProviderUpdate(provider.id, { retry_attempts: Number(event.target.value) })}
-                      type="number"
-                      value={provider.retry_attempts}
-                    />
-                  </label>
-                  <button disabled={activeProviderId === provider.id} onClick={() => onActivate(provider.id)} type="button">
-                    {activeProviderId === provider.id ? "Active" : "Activate"}
-                  </button>
-                </div>
-
-                <div className="content-provider-meta">
-                  <span>{provider.kind}</span>
-                  {provider.health_message ? <small>{provider.health_message}</small> : null}
                 </div>
               </article>
             ))}
@@ -1561,97 +1793,13 @@ function AiProviderEditor({
           </div>
         </section>
 
-        <section className="content-provider-group">
-          <header>
-            <span>Band routes</span>
-            <small>{routes.filter((route) => route.enabled).length} active</small>
-          </header>
-          <div className="content-provider-list">
-            {routes.map((route) => (
-              <article className="content-provider-card" data-provider-enabled={route.enabled} key={route.id}>
-                <div className="content-provider-card-main">
-                  <label className="content-provider-enable">
-                    <input
-                      checked={route.enabled}
-                      onChange={(event) => onRouteUpdate(route.id, { enabled: event.target.checked })}
-                      type="checkbox"
-                    />
-                  </label>
-                  <div className="content-provider-identity">
-                    <strong>{route.label}</strong>
-                    <small>
-                      {route.level_id} / {route.modes?.join(", ") ?? "all modes"}
-                    </small>
-                  </div>
-                  <span className="content-provider-status">{route.provider_id}</span>
-                </div>
-
-                <div className="content-provider-controls ai-route-controls">
-                  <label>
-                    <span>Level</span>
-                    <select
-                      onChange={(event) => onRouteUpdate(route.id, { level_id: event.target.value as AiRouteSettingsDraft["level_id"] })}
-                      value={route.level_id}
-                    >
-                      {["default", "supra_macro", "L0", "L1", "L2", "L3", "deep_lens", "recursive_seed"].map((levelId) => (
-                        <option key={levelId} value={levelId}>
-                          {levelId}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>Provider</span>
-                    <select onChange={(event) => onRouteUpdate(route.id, { provider_id: event.target.value })} value={route.provider_id}>
-                      {providerOptions.map((provider) => (
-                        <option key={provider.id} value={provider.id}>
-                          {provider.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>Modes</span>
-                    <input
-                      onChange={(event) => onRouteUpdate(route.id, { modes: parseRouteModesInput(event.target.value) })}
-                      placeholder="all modes"
-                      value={route.modes?.join(", ") ?? ""}
-                    />
-                  </label>
-                  <label>
-                    <span>Model override</span>
-                    <input
-                      onChange={(event) => onRouteUpdate(route.id, { model_override: event.target.value })}
-                      placeholder="Use provider model"
-                      value={route.model_override ?? ""}
-                    />
-                  </label>
-                  <label>
-                    <span>Priority</span>
-                    <input
-                      min={1}
-                      max={999}
-                      onChange={(event) => onRouteUpdate(route.id, { priority: Number(event.target.value) })}
-                      type="number"
-                      value={route.priority}
-                    />
-                  </label>
-                </div>
-
-                <div className="content-provider-meta">
-                  <span>{route.id}</span>
-                  <small>First enabled route matching level and mode wins.</small>
-                </div>
-              </article>
-            ))}
-          </div>
-        </section>
       </div>
     </section>
   );
 }
 
 function DomainLexiconEditor({
+  domainHintMode,
   domainLexicons,
   draft,
   onActivate,
@@ -1663,11 +1811,13 @@ function DomainLexiconEditor({
   onLexiconUpdate,
   onSelectLexicon,
   onSelectTerm,
+  onDomainHintModeChange,
   onTermLabelChange,
   onTermUpdate,
   selectedLexicon,
   selectedTerm,
 }: {
+  domainHintMode: SeekStarSettings["domain_hint_mode"];
   domainLexicons: DomainLexicon[];
   draft?: SeekStarSettings;
   onActivate: (lexiconId: string) => void;
@@ -1679,6 +1829,7 @@ function DomainLexiconEditor({
   onLexiconUpdate: (patch: Partial<DomainLexicon>) => void;
   onSelectLexicon: (lexiconId: string) => void;
   onSelectTerm: (termId: string) => void;
+  onDomainHintModeChange: (mode: SeekStarSettings["domain_hint_mode"]) => void;
   onTermLabelChange: (term: DomainLexiconTerm, language: string, value: string) => void;
   onTermUpdate: (termId: string, patch: Partial<DomainLexiconTerm>) => void;
   selectedLexicon?: DomainLexicon;
@@ -1700,6 +1851,19 @@ function DomainLexiconEditor({
             <RefreshCw aria-hidden="true" size={14} strokeWidth={1.8} />
             Apply to New Seek
           </button>
+        </div>
+      </div>
+
+      <div className="settings-card">
+        <div className="settings-row">
+          <span>
+            <strong>Opening sky mode</strong>
+            <small>Guided uses enabled domain terms as prompt hints; pure AI lets the model choose tonight's starting field freely.</small>
+          </span>
+          <select onChange={(event) => onDomainHintModeChange(event.target.value === "pure_ai" ? "pure_ai" : "guided")} value={domainHintMode}>
+            <option value="guided">Guided domain hints</option>
+            <option value="pure_ai">Pure AI sky</option>
+          </select>
         </div>
       </div>
 
@@ -1808,7 +1972,7 @@ function DomainLexiconEditor({
 }
 
 function createSettingsDraft(settings?: SeekStarSettings): SeekStarSettings {
-  const activeAiProviderId = settings?.active_ai_provider_id ?? "mock-cartographer";
+  const activeAiProviderId = settings?.active_ai_provider_id ?? DEEPSEEK_AI_PROVIDER_ID;
 
   return {
     assistant_action_permission_mode: settings?.assistant_action_permission_mode ?? "ask_each_time",
@@ -1823,6 +1987,7 @@ function createSettingsDraft(settings?: SeekStarSettings): SeekStarSettings {
     tile_field_target_count: settings?.tile_field_target_count ?? 25,
     tile_thumbnail_prewarm_concurrency: settings?.tile_thumbnail_prewarm_concurrency ?? 2,
     active_domain_lexicon_id: settings?.active_domain_lexicon_id ?? DEFAULT_DOMAIN_LEXICON_ID,
+    domain_hint_mode: settings?.domain_hint_mode ?? "guided",
     domain_lexicons: settings?.domain_lexicons ?? cloneDomainLexicons(DEFAULT_DOMAIN_LEXICONS),
     content_providers: settings?.content_providers ?? cloneContentProviderSettings(DEFAULT_CONTENT_PROVIDER_SETTINGS),
     active_ai_provider_id: activeAiProviderId,
@@ -1903,8 +2068,11 @@ function createDefaultCartographerPromptProfileSettings(): SeekStarSettings["car
       {
         level_id: "L3",
         label: "L3 Tile Field",
-        prompt_brief: "Return concrete source candidates and tile-level concepts for the focused source direction.",
+        prompt_brief: "Return concrete URL source candidates for the focused source direction. Do not create webpage/document nodes for the main canvas.",
         prompt_constraints: [
+          "Put every usable URL in source_candidates, not nodes.",
+          "Return nodes as an empty array unless a fog/status marker is essential.",
+          "Do not return cartographer_primary webpage or document nodes.",
           "Do not call any URL source-backed.",
           "Prefer URLs likely to load in a normal browser.",
           "If uncertain, provide fewer but more durable candidate URLs.",
@@ -1940,22 +2108,10 @@ function createDefaultCartographerPromptProfileSettings(): SeekStarSettings["car
 function createDefaultAiProviderSettings(): SeekStarSettings["ai_providers"] {
   return [
     {
-      id: "mock-cartographer",
-      label: "Built-in Cartographer test provider",
-      kind: "mock",
-      enabled: true,
-      model: "mock-cartographer-v1",
-      timeout_ms: 10000,
-      retry_attempts: 1,
-      retry_backoff_ms: 100,
-      health_status: "ready",
-      health_message: "Deterministic local terrain generator for development and module smoke tests.",
-    },
-    {
-      id: "deepseek-openai-compatible",
+      id: DEEPSEEK_AI_PROVIDER_ID,
       label: "DeepSeek API",
       kind: "openai_compatible",
-      enabled: false,
+      enabled: true,
       base_url: "https://api.deepseek.com",
       model: "deepseek-v4-flash",
       api_key_env_var: "DEEPSEEK_API_KEY",
@@ -1964,8 +2120,8 @@ function createDefaultAiProviderSettings(): SeekStarSettings["ai_providers"] {
       timeout_ms: 60000,
       retry_attempts: 1,
       retry_backoff_ms: 500,
-      health_status: "disabled",
-      health_message: "OpenAI-compatible DeepSeek adapter. Set DEEPSEEK_API_KEY and activate this provider for real Cartographer terrain.",
+      health_status: "missing_key",
+      health_message: "Paste a DeepSeek API key or set DEEPSEEK_API_KEY.",
     },
     {
       id: "openai-compatible-env",
@@ -1984,7 +2140,7 @@ function createDefaultAiProviderSettings(): SeekStarSettings["ai_providers"] {
   ];
 }
 
-function createDefaultAiRouteSettings(providerId = "mock-cartographer"): SeekStarSettings["ai_routes"] {
+function createDefaultAiRouteSettings(providerId = DEEPSEEK_AI_PROVIDER_ID): SeekStarSettings["ai_routes"] {
   return [
     {
       id: "cartographer-route-default",

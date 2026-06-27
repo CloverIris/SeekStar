@@ -44,7 +44,34 @@ export function getActiveLayer(scene: TerrainScene): TerrainScene["layers"][numb
 }
 
 export function getActiveLayerLabel(scene: TerrainScene): string {
-  return getLayerDefinition(scene.viewport.layer)?.label ?? scene.layers.find((layer) => layer.id === scene.viewport.layer)?.label ?? scene.viewport.layer;
+  return getVisibleLayerLabel(scene.viewport.layer);
+}
+
+export function getActiveLayerBreadcrumb(scene: TerrainScene): string[] {
+  const activeTab = getActiveTab(scene);
+  const label = getActiveLayerLabel(scene);
+
+  if (isDeepLensAddressLayer(scene.viewport.layer) || scene.viewport.layer === "L11") {
+    return [activeTab.seed, label];
+  }
+
+  return scene.layers.find((layer) => layer.id === scene.viewport.layer)?.breadcrumb ?? [activeTab.seed, label];
+}
+
+export function getVisibleLayerLabel(layer: TerrainScene["viewport"]["layer"]): string {
+  if (isDeepLensAddressLayer(layer)) {
+    return "Deep Lens";
+  }
+
+  if (layer === "L11") {
+    return "Recursive Seed";
+  }
+
+  return getLayerDefinition(layer)?.label ?? layer;
+}
+
+function isDeepLensAddressLayer(layer: TerrainScene["viewport"]["layer"]): boolean {
+  return layer === "L4" || layer === "L5" || layer === "L6" || layer === "L7" || layer === "L8" || layer === "L9" || layer === "L10";
 }
 
 export function getRelationNodes(scene: TerrainScene, relation: TerrainRelation): { from?: TerrainNode; to?: TerrainNode } {

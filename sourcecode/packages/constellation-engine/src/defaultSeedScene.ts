@@ -12,7 +12,7 @@ export function createDefaultNewSeekScene(options: { domainLexicon?: DomainLexic
   return createSeedScene(NEW_SEEK_TITLE, {
     domainLexicon: options.domainLexicon ?? DEFAULT_DOMAIN_LEXICONS[0],
     sceneId: DEFAULT_NEW_SEEK_SCENE_ID,
-    sourceMode: "new_seed",
+    sourceMode: "opening_sky",
     tabId: DEFAULT_NEW_SEEK_TAB_ID,
     timestamp: options.timestamp ?? createdAt,
   });

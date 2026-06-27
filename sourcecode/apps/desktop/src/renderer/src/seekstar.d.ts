@@ -2,7 +2,12 @@ import type { ScoutPlan, ScoutRunResult } from "@seekstar/core-schema";
 import type { AiAssistantInput, AiAssistantOutput } from "@seekstar/ai-service";
 import type { WorkspaceChangeEvent } from "@seekstar/storage-service";
 import type { SeekStarSettings } from "../../main/appSettingsStore";
-import type { AiCartographerPromptPreviewRequest, AiCartographerPromptPreviewResult } from "../../main/aiAssistantBridge";
+import type {
+  AiAdapterTestRequest,
+  AiAdapterTestResult,
+  AiCartographerPromptPreviewRequest,
+  AiCartographerPromptPreviewResult,
+} from "../../main/aiAssistantBridge";
 import type { AiCostLedgerSnapshot } from "../../main/aiCostLedgerStore";
 import type { AssistantSessionSnapshot } from "../../main/assistantSessionStore";
 import type { CartographerChunkStoreSnapshot } from "../../main/cartographerChunkStore";
@@ -104,6 +109,7 @@ export interface SeekStarAiApi {
   loadSession: (tabId: string) => Promise<AssistantSessionSnapshot>;
   previewCartographerPrompt: (input: AiCartographerPromptPreviewRequest) => Promise<AiCartographerPromptPreviewResult>;
   saveSession: (snapshot: AssistantSessionSnapshot) => Promise<AssistantSessionSnapshot>;
+  testAdapter: (input: AiAdapterTestRequest) => Promise<AiAdapterTestResult>;
 }
 
 export interface TileSurfaceSyncInput {

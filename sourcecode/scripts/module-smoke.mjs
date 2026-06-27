@@ -10,6 +10,7 @@ import { PlaywrightScoutService, resolveContentProviderApiKey, resolveContentPro
 import {
   buildWorkspaceSnapshot,
   applyLevelRuntimeOutputToScene,
+  applyLayerSelect,
   CartographerChunkCoordinator,
   createDirectUrlScoutPlan,
   createSeedScene,
@@ -297,13 +298,13 @@ async function runAiLevelRuntimeSmoke() {
 
   assert(missingKeyOutput.status === "missing_key", `AI missing-key status mismatch: ${missingKeyOutput.status}`);
 
-  const mockService = new aiModule.AiCartographerService({ kind: "mock" });
-  const mockOutput = await mockService.generate({
+  const fixtureGenerator = createFixtureCartographerGenerator();
+  const fixtureOutput = await fixtureGenerator({
     mode: "bootstrap_seed",
     level_id: "L0",
     seed: "CPU",
   });
-  const mockAssistantOutput = await mockService.assist({
+  const fixtureAssistantOutput = createFixtureAssistantOutput({
     intent: "navigate",
     prompt: "Take me toward source candidates.",
     seed: "CPU",
@@ -311,9 +312,22 @@ async function runAiLevelRuntimeSmoke() {
     selected_nodes: [{ id: "node-cpu-docs", title: "CPU documentation", level_id: "L2" }],
     available_operations: ["focus_node", "request_chunk", "observe_source"],
   });
+  const fixtureGenerationValidation = aiModule.validateCartographerGenerationOutput(fixtureOutput, {
+    mode: "bootstrap_seed",
+    level_id: "L0",
+    seed: "CPU",
+  });
+  const fixtureAssistantValidation = aiModule.validateAssistantOutput(fixtureAssistantOutput, {
+    intent: "navigate",
+    prompt: "Take me toward source candidates.",
+  });
   const cancelledController = new AbortController();
   cancelledController.abort();
-  const cancelledGenerationOutput = await mockService.generate(
+  const cancellableService = new aiModule.AiCartographerService({
+    kind: "openai_compatible",
+    api_key_value: "module-smoke-cancel-only",
+  });
+  const cancelledGenerationOutput = await cancellableService.generate(
     {
       mode: "bootstrap_seed",
       level_id: "L0",
@@ -321,7 +335,7 @@ async function runAiLevelRuntimeSmoke() {
     },
     { signal: cancelledController.signal },
   );
-  const cancelledAssistantOutput = await mockService.assist(
+  const cancelledAssistantOutput = await cancellableService.assist(
     {
       intent: "answer_question",
       prompt: "Will this run?",
@@ -332,13 +346,15 @@ async function runAiLevelRuntimeSmoke() {
     { signal: cancelledController.signal },
   );
 
-  assert(mockOutput.status === "ok", `AI mock generation status: ${mockOutput.status}`);
-  assert(mockOutput.nodes.length > 0, "AI mock generation returned no nodes");
-  assert(mockOutput.telemetry?.attempts === 1, "AI mock generation telemetry missing attempts");
-  assert(mockOutput.telemetry?.estimated_cost_usd === 0, "AI mock generation telemetry should be zero cost");
-  assert(mockAssistantOutput.status === "ok", `AI mock assistant status: ${mockAssistantOutput.status}`);
-  assert(mockAssistantOutput.actions.length > 0, "AI mock assistant returned no actions");
-  assert(mockAssistantOutput.telemetry?.attempts === 1, "AI mock assistant telemetry missing attempts");
+  assert(fixtureGenerationValidation.valid, `AI fixture generation invalid: ${JSON.stringify(fixtureGenerationValidation.diagnostics)}`);
+  assert(fixtureOutput.status === "ok", `AI fixture generation status: ${fixtureOutput.status}`);
+  assert(fixtureOutput.nodes.length > 0, "AI fixture generation returned no nodes");
+  assert(fixtureOutput.telemetry?.attempts === 1, "AI fixture generation telemetry missing attempts");
+  assert(fixtureOutput.telemetry?.estimated_cost_usd === 0, "AI fixture generation telemetry should be zero cost");
+  assert(fixtureAssistantValidation.valid, `AI fixture assistant invalid: ${JSON.stringify(fixtureAssistantValidation.diagnostics)}`);
+  assert(fixtureAssistantOutput.status === "ok", `AI fixture assistant status: ${fixtureAssistantOutput.status}`);
+  assert(fixtureAssistantOutput.actions.length > 0, "AI fixture assistant returned no actions");
+  assert(fixtureAssistantOutput.telemetry?.attempts === 1, "AI fixture assistant telemetry missing attempts");
   assert(cancelledGenerationOutput.status === "cancelled", `AI cancelled generation status: ${cancelledGenerationOutput.status}`);
   assert(cancelledGenerationOutput.diagnostics[0]?.code === "ai.cancelled", "AI cancelled generation diagnostic mismatch");
   assert(cancelledAssistantOutput.status === "cancelled", `AI cancelled assistant status: ${cancelledAssistantOutput.status}`);
@@ -369,7 +385,7 @@ async function runAiLevelRuntimeSmoke() {
       chunk: baseChunk,
     },
     {
-      generate: (generationInput, options) => new aiModule.MockAiModelProvider({ kind: "mock" }).generate(generationInput, options),
+      generate: fixtureGenerator,
       signal: cancelledController.signal,
     },
   );
@@ -438,17 +454,26 @@ async function runAiLevelRuntimeSmoke() {
   let l3RuntimeOutput;
 
   for (const levelId of levels) {
-    const output = await levelRuntimeModule.runLevelRuntime({
-      mode: levelId === "L0" ? "bootstrap_seed" : "decompose_down",
-      level_id: levelId,
-      seed: "CPU",
-      chunk: baseChunk,
-    });
+    const output = await levelRuntimeModule.runLevelRuntime(
+      {
+        mode: levelId === "L0" ? "bootstrap_seed" : "decompose_down",
+        level_id: levelId,
+        seed: "CPU",
+        chunk: baseChunk,
+      },
+      {
+        generate: fixtureGenerator,
+      },
+    );
     const validation = levelRuntimeModule.validateLevelRuntimeOutput(output);
 
     assert(output.status === "ok", `Level Runtime ${levelId} status: ${output.status}`);
     assert(validation.valid, `Level Runtime ${levelId} invalid: ${JSON.stringify(validation.diagnostics)}`);
-    assert(output.nodes.length > 0, `Level Runtime ${levelId} returned no nodes`);
+    if (levelId === "L3") {
+      assert(output.nodes.length === 0, "Level Runtime L3 must not return main-canvas webpage/document nodes");
+    } else {
+      assert(output.nodes.length > 0, `Level Runtime ${levelId} returned no nodes`);
+    }
     assert(output.nodes.length <= levelRuntimeModule.DEFAULT_LEVEL_RUNTIME_SETTINGS.target_counts[levelId], `Level Runtime ${levelId} exceeded density`);
     assert(output.nodes.every((node) => node.source_state !== "source_backed"), `Level Runtime ${levelId} produced source-backed nodes`);
     assert(
@@ -475,8 +500,11 @@ async function runAiLevelRuntimeSmoke() {
   }
 
   const l3 = levelOutputs.find((output) => output.levelId === "L3");
+  const l2 = levelOutputs.find((output) => output.levelId === "L2");
   const l0 = levelOutputs.find((output) => output.levelId === "L0");
   assert(l0?.sourceCandidates === 0, `Level Runtime L0 should not expose source candidates: ${l0?.sourceCandidates}`);
+  assert(l2?.preloadChunks === 0, `Level Runtime L2 should not expose preload chunks: ${l2?.preloadChunks}`);
+  assert(l3?.preloadChunks === 0, `Level Runtime L3 should not expose preload chunks: ${l3?.preloadChunks}`);
   assert(l3?.sourceCandidates > 0, "Level Runtime L3 should expose unverified source candidates");
   assert(l0RuntimeOutput, "Level Runtime L0 output missing");
   assert(l1RuntimeOutput, "Level Runtime L1 output missing");
@@ -484,32 +512,66 @@ async function runAiLevelRuntimeSmoke() {
   assertGalleryAdjacency(l0RuntimeOutput, "L0");
   assertGalleryAdjacency(l1RuntimeOutput, "L1");
 
-  const replacementRuntimeOutput = await levelRuntimeModule.runLevelRuntime({
-    mode: "replace_failed_source",
-    level_id: "L3",
+  const missingGeneratorRuntimeOutput = await levelRuntimeModule.runLevelRuntime({
+    mode: "bootstrap_seed",
+    level_id: "L0",
     seed: "CPU",
     chunk: baseChunk,
-    focus: {
-      id: "failed-observation-smoke",
-      title: "Failed CPU source",
+  });
+  assert(missingGeneratorRuntimeOutput.status === "provider_error", `Level Runtime missing generator status: ${missingGeneratorRuntimeOutput.status}`);
+  assert(
+    missingGeneratorRuntimeOutput.diagnostics.some((diagnostic) => diagnostic.code === "level_runtime.missing_generator"),
+    "Level Runtime missing generator diagnostic absent",
+  );
+
+  const invalidL3RuntimeOutput = await levelRuntimeModule.runLevelRuntime(
+    {
+      mode: "decompose_down",
       level_id: "L3",
-      excerpt: "The original candidate could not be observed.",
+      seed: "CPU",
+      chunk: baseChunk,
     },
-    context: {
-      failed_observation: {
+    {
+      generate: async (generationInput) => createInvalidL3NodeOnlyOutput(generationInput),
+    },
+  );
+  assert(invalidL3RuntimeOutput.status === "invalid_output", `Level Runtime invalid L3 status: ${invalidL3RuntimeOutput.status}`);
+  assert(invalidL3RuntimeOutput.nodes.length === 0, "Level Runtime invalid L3 output must not retain webpage nodes");
+  assert(invalidL3RuntimeOutput.source_candidates.length === 0, "Level Runtime invalid L3 output must not invent source candidates");
+  assert(invalidL3RuntimeOutput.chunk_hints.preload.length === 0, "Level Runtime invalid L3 output must not preload");
+
+  const replacementRuntimeOutput = await levelRuntimeModule.runLevelRuntime(
+    {
+      mode: "replace_failed_source",
+      level_id: "L3",
+      seed: "CPU",
+      chunk: baseChunk,
+      focus: {
         id: "failed-observation-smoke",
         title: "Failed CPU source",
-        url: "https://example.invalid/cpu",
-        failure_reason: "Smoke-test replacement context.",
+        level_id: "L3",
+        excerpt: "The original candidate could not be observed.",
       },
-      replacement_reason: "failed_source_candidate",
+      context: {
+        failed_observation: {
+          id: "failed-observation-smoke",
+          title: "Failed CPU source",
+          url: "https://example.invalid/cpu",
+          failure_reason: "Smoke-test replacement context.",
+        },
+        replacement_reason: "failed_source_candidate",
+      },
     },
-  });
+    {
+      generate: fixtureGenerator,
+    },
+  );
   const replacementValidation = levelRuntimeModule.validateLevelRuntimeOutput(replacementRuntimeOutput);
 
   assert(replacementRuntimeOutput.status === "ok", `Level Runtime replacement status: ${replacementRuntimeOutput.status}`);
   assert(replacementValidation.valid, `Level Runtime replacement invalid: ${JSON.stringify(replacementValidation.diagnostics)}`);
   assert(replacementRuntimeOutput.source_candidates.length > 0, "Level Runtime replacement should expose replacement candidates");
+  assert(replacementRuntimeOutput.chunk_hints.preload.length === 0, "Level Runtime replacement should not preload L3 chunks");
   assert(
     replacementRuntimeOutput.source_candidates.every((candidate) => candidate.source_state === "cartographer_unverified_source"),
     "Level Runtime replacement produced non-unverified source candidates",
@@ -541,7 +603,7 @@ async function runAiLevelRuntimeSmoke() {
     {
       generate: async (generationInput) => {
         promptOverrideGenerationInput = generationInput;
-        return new aiModule.MockAiModelProvider({ kind: "mock" }).generate(generationInput);
+        return fixtureGenerator(generationInput);
       },
     },
   );
@@ -558,8 +620,12 @@ async function runAiLevelRuntimeSmoke() {
     "Level Runtime prompt override constraints did not reach AI input",
   );
   assert(promptOverrideGenerationInput?.settings?.language === "en", "Level Runtime prompt override language did not reach AI input");
+  assert(!promptOverrideGenerationInput?.settings?.prompt_profile, "Level Runtime AI payload must not include full prompt_profile");
+  assert(!promptOverrideGenerationInput?.settings?.modules, "Level Runtime AI payload must not include full prompt modules");
+  assert(promptOverrideGenerationInput?.settings?.level_module?.target_count === 3, "Level Runtime compact level module target did not reach AI input");
 
   const host = new levelRuntimeModule.ChunkedLevelRuntimeHost({
+    generate: fixtureGenerator,
     maxCacheEntries: 4,
     maxPreloadChunks: 2,
     now: createDeterministicClock(),
@@ -677,7 +743,7 @@ async function runAiLevelRuntimeSmoke() {
   const coordinatorCachePath = resolve(`.module-smoke-cartographer-coordinator-${Date.now()}.json`);
   const coordinatorStorage = new storageModule.JsonLevelChunkStorage(coordinatorCachePath);
   const coordinator = new CartographerChunkCoordinator({
-    generate: (input) => levelRuntimeModule.runLevelRuntime(input),
+    generate: (input, options) => levelRuntimeModule.runLevelRuntime(input, { ...options, generate: fixtureGenerator }),
     maxPreloadChunks: 2,
     maxStoredChunks: 6,
     now: createDeterministicClock(),
@@ -771,6 +837,28 @@ async function runAiLevelRuntimeSmoke() {
     scene: rendererBootstrappedScene,
     seed: "GPU",
   });
+  const invalidCoordinatorStoragePath = resolve(`.module-smoke-cartographer-invalid-l3-${Date.now()}.json`);
+  const invalidCoordinatorStorage = new storageModule.JsonLevelChunkStorage(invalidCoordinatorStoragePath);
+  const invalidCoordinator = new CartographerChunkCoordinator({
+    generate: (input, options) =>
+      levelRuntimeModule.runLevelRuntime(input, {
+        ...options,
+        generate: async (generationInput) => createInvalidL3NodeOnlyOutput(generationInput),
+      }),
+    storage: invalidCoordinatorStorage,
+  });
+  const invalidCoordinatorResult = await invalidCoordinator.request({
+    applyToScene: true,
+    chunk: levelRuntimeModule.createLevelChunkKey(3, 0, 3),
+    level_id: "L3",
+    mode: "decompose_down",
+    preload: true,
+    scene: rendererBootstrappedScene,
+    seed: "GPU",
+  });
+  const invalidCoordinatorStoredChunks = await invalidCoordinatorStorage.listChunks();
+  await invalidCoordinatorStorage.clearChunks();
+  await rm(invalidCoordinatorStoragePath, { force: true });
   const rendererExpandedScene = rendererChunkExpansion.sceneApply?.scene ?? rendererBootstrappedScene;
   const rendererExpansionProjection = createTerrainPixiProjection(
     rendererExpandedScene,
@@ -785,7 +873,7 @@ async function runAiLevelRuntimeSmoke() {
   const coordinatorCancelController = new AbortController();
   coordinatorCancelController.abort();
   const cancelledCoordinator = new CartographerChunkCoordinator({
-    generate: (input, options) => levelRuntimeModule.runLevelRuntime(input, options),
+    generate: (input, options) => levelRuntimeModule.runLevelRuntime(input, { ...options, generate: fixtureGenerator }),
     storage: cancelledCoordinatorStorage,
   });
   const coordinatorCancelled = await cancelledCoordinator.request({
@@ -806,15 +894,15 @@ async function runAiLevelRuntimeSmoke() {
 
   assert(coordinatorMiss.cacheStatus === "miss", `Cartographer coordinator first request should miss: ${coordinatorMiss.cacheStatus}`);
   assert(coordinatorMiss.sceneApply?.addedObservationIds.length > 0, "Cartographer coordinator did not apply L3 candidates to scene");
-  assert(coordinatorMiss.preloaded.length === 2, `Cartographer coordinator preload count: ${coordinatorMiss.preloaded.length}`);
-  assert(coordinatorMiss.chunkRecords.length === 3, `Cartographer coordinator lifecycle record count: ${coordinatorMiss.chunkRecords.length}`);
+  assert(coordinatorMiss.preloaded.length === 0, `Cartographer coordinator L3 preload count: ${coordinatorMiss.preloaded.length}`);
+  assert(coordinatorMiss.chunkRecords.length === 1, `Cartographer coordinator L3 lifecycle record count: ${coordinatorMiss.chunkRecords.length}`);
   assert(
     coordinatorMiss.chunkRecords.some((record) => record.role === "active" && record.cacheStatus === "miss" && record.phase === "applied"),
     "Cartographer coordinator did not return an active miss lifecycle record",
   );
   assert(
-    coordinatorMiss.chunkRecords.filter((record) => record.role === "preload" && record.phase === "applied").length === 2,
-    "Cartographer coordinator did not return preload lifecycle records",
+    coordinatorMiss.chunkRecords.filter((record) => record.role === "preload").length === 0,
+    "Cartographer coordinator must not return preload lifecycle records for L3",
   );
   assert(coordinatorHit.cacheStatus === "hit", `Cartographer coordinator second request should hit: ${coordinatorHit.cacheStatus}`);
   assert(
@@ -838,8 +926,12 @@ async function runAiLevelRuntimeSmoke() {
     `Renderer-style Cartographer bootstrap projection mode: ${rendererBootstrapProjection.mainContent.mode}`,
   );
   assert(
-    rendererBootstrapProjection.candidateTileSurfaces.length > 0,
-    "Renderer-style Cartographer bootstrap did not create L3 candidate tile surfaces",
+    rendererBootstrapProjection.candidateObservations.length > 0,
+    "Renderer-style Cartographer bootstrap did not retain L3 candidate observations",
+  );
+  assert(
+    rendererBootstrapProjection.candidateTileSurfaces.length === 0,
+    "Renderer-style Cartographer bootstrap must not render unverified candidates as tile surfaces",
   );
   assert(
     rendererBootstrapProjection.tileSurfaces.length === 0,
@@ -857,6 +949,10 @@ async function runAiLevelRuntimeSmoke() {
     (coordinatorReplacement.sceneApply?.addedObservationIds.length ?? 0) > 0,
     "Cartographer coordinator source replacement did not add replacement candidates",
   );
+  assert(coordinatorReplacement.preloaded.length === 0, `Cartographer coordinator replacement preload count: ${coordinatorReplacement.preloaded.length}`);
+  assert(invalidCoordinatorResult.output.status === "invalid_output", `Cartographer coordinator invalid L3 status: ${invalidCoordinatorResult.output.status}`);
+  assert(!invalidCoordinatorResult.sceneApply, "Cartographer coordinator invalid L3 output must not apply to scene");
+  assert(invalidCoordinatorStoredChunks.length === 0, "Cartographer coordinator invalid L3 output must not be cached");
 
   const l0Apply = applyLevelRuntimeOutputToScene(cartographerScene, l0RuntimeOutput, { focusFirstNode: false });
   const l1Apply = applyLevelRuntimeOutputToScene(l0Apply.scene, l1RuntimeOutput, { focusFirstNode: false });
@@ -870,24 +966,44 @@ async function runAiLevelRuntimeSmoke() {
 
   assert(l0Apply.addedNodeIds.length > 0, "Cartographer runtime bridge added no L0 nodes");
   assert(l1Projection.mainContent.mode === "cartographer_chunk_field", `Cartographer runtime L1 projection mode: ${l1Projection.mainContent.mode}`);
+  const l1Nodes = l1Apply.scene.nodes.filter((node) => node.layer === "L1");
+  const zoomOutTargetNode = l1Nodes[l1Nodes.length - 1];
+  assert(zoomOutTargetNode, "Continuous zoom-out smoke target missing");
+  const zoomOutSelection = applyLayerSelect(
+    {
+      ...l1Apply.scene,
+      viewport: {
+        ...l1Apply.scene.viewport,
+        layer: "L2",
+        x: zoomOutTargetNode.position_hint?.x ?? 0,
+        y: zoomOutTargetNode.position_hint?.y ?? 0,
+        zoom: 1.42,
+      },
+    },
+    "L1",
+  );
+  assert(zoomOutSelection.focusNodeId === zoomOutTargetNode.id, "Continuous zoom-out should select the nearest upper-layer anchor");
   assert(l3Apply.addedObservationIds.length > 0, "Cartographer runtime bridge added no L3 source candidates");
   assert(l3Projection.mainContent.mode === "source_candidate_field", `Cartographer runtime projection mode: ${l3Projection.mainContent.mode}`);
-  assert(l3Projection.candidateTileSurfaces.length > 0, "Cartographer runtime projection candidate tile missing");
+  assert(l3Projection.candidateObservations.length > 0, "Cartographer runtime projection candidate observation missing");
+  assert(l3Projection.candidateTileSurfaces.length === 0, "Cartographer runtime must not render unverified candidates as tile surfaces");
   assert(l3Projection.tileSurfaces.length === 0, "Cartographer runtime should not create source-backed tile surfaces");
 
   return {
     missingKeyStatus: missingKeyOutput.status,
-    mockNodes: mockOutput.nodes.length,
-    mockAssistantActions: mockAssistantOutput.actions.length,
+    fixtureNodes: fixtureOutput.nodes.length,
+    fixtureAssistantActions: fixtureAssistantOutput.actions.length,
     invalidOutputValid: invalidValidation.valid,
     invalidAssistantValid: invalidAssistantValidation.valid,
-    mockTelemetryAttempts: mockOutput.telemetry.attempts,
+    fixtureTelemetryAttempts: fixtureOutput.telemetry.attempts,
     telemetryCostEstimate: estimatedCost,
     cancellation: {
       generation: cancelledGenerationOutput.status,
       assistant: cancelledAssistantOutput.status,
       levelRuntime: cancelledRuntimeOutput.status,
     },
+    missingGenerator: missingGeneratorRuntimeOutput.status,
+    invalidL3: invalidL3RuntimeOutput.status,
     profile: {
       id: defaultProfile.id,
       l0Policy: l0Module.source_candidate_policy,
@@ -904,8 +1020,10 @@ async function runAiLevelRuntimeSmoke() {
       l1ProjectionMode: l1Projection.mainContent.mode,
       addedL3CandidateObservations: l3Apply.addedObservationIds.length,
       projectionMode: l3Projection.mainContent.mode,
+      candidateObservations: l3Projection.candidateObservations.length,
       candidateTileSurfaces: l3Projection.candidateTileSurfaces.length,
       sourceTileSurfaces: l3Projection.tileSurfaces.length,
+      zoomOutFocusNode: zoomOutSelection.focusNodeId,
     },
     chunkRuntimeHost: {
       firstRequest: hostMiss.cache_status,
@@ -932,11 +1050,14 @@ async function runAiLevelRuntimeSmoke() {
       hitLifecycleRecords: coordinatorHit.chunkRecords.length,
       preloaded: coordinatorMiss.preloaded.length,
       appliedCandidateObservations: coordinatorMiss.sceneApply?.addedObservationIds.length ?? 0,
-      rendererBootstrapCandidates: rendererBootstrapProjection.candidateTileSurfaces.length,
+      rendererBootstrapCandidateObservations: rendererBootstrapProjection.candidateObservations.length,
+      rendererBootstrapCandidateTiles: rendererBootstrapProjection.candidateTileSurfaces.length,
       rendererBootstrapSourceTiles: rendererBootstrapProjection.tileSurfaces.length,
       rendererExpansionAddedNodes: rendererChunkExpansion.sceneApply?.addedNodeIds.length ?? 0,
       rendererExpansionMode: rendererExpansionProjection.mainContent.mode,
       replacementCandidates: coordinatorReplacement.sceneApply?.addedObservationIds.length ?? 0,
+      invalidL3CachedChunks: invalidCoordinatorStoredChunks.length,
+      invalidL3Status: invalidCoordinatorResult.output.status,
       cancellation: {
         lifecyclePhase: coordinatorCancelled.chunkRecords[0]?.phase,
         sceneApplied: Boolean(coordinatorCancelled.sceneApply),
@@ -946,6 +1067,270 @@ async function runAiLevelRuntimeSmoke() {
       storedChunks: coordinatorStoredChunks.length,
     },
   };
+}
+
+function createFixtureCartographerGenerator() {
+  return async (input, options = {}) => {
+    if (options.signal?.aborted) {
+      const generatedAt = new Date().toISOString();
+
+      return {
+        status: "cancelled",
+        mode: input.mode,
+        level_id: input.level_id,
+        seed: input.seed,
+        nodes: [],
+        relations: [],
+        source_candidates: [],
+        diagnostics: [
+          {
+            severity: "info",
+            code: "ai.cancelled",
+            message: "Fixture generation cancelled before work started.",
+            provider_id: "fixture-cartographer",
+          },
+        ],
+        provider_id: "fixture-cartographer",
+        model: "fixture-cartographer-v1",
+        generated_at: generatedAt,
+      };
+    }
+
+    return createFixtureGenerationOutput(input);
+  };
+}
+
+function createFixtureGenerationOutput(input) {
+  const generatedAt = new Date().toISOString();
+  const seed = input.seed?.trim() || "Fixture Seed";
+  const count = getFixtureCount(input.level_id);
+  const titles = Array.from({ length: count }, (_, index) => createFixtureTitle(seed, input.level_id, input.mode, index));
+  const nodes = titles.map((title, index) => ({
+    id: `fixture-${slugify(input.level_id)}-${slugify(seed)}-${slugify(input.chunk?.key ?? "0")}-${index + 1}`,
+    title,
+    summary: `${title} as ${input.level_id} fixture terrain for ${seed}.`,
+    node_type: getFixtureNodeType(input.level_id),
+    source_state: "cartographer_primary",
+    confidence: 0.72,
+    importance: index === 0 ? 0.9 : 0.58,
+    tags: [input.level_id, input.mode, "fixture-cartographer"],
+    level_id: input.level_id,
+    can_create_seed: true,
+  }));
+
+  return {
+    status: "ok",
+    mode: input.mode,
+    level_id: input.level_id,
+    seed,
+    nodes,
+    relations: nodes.slice(1).map((node, index) => ({
+      id: `fixture-relation-${slugify(input.level_id)}-${index + 1}`,
+      from: nodes[Math.max(0, index - 1)]?.id ?? nodes[0]?.id ?? node.id,
+      to: node.id,
+      type: "semantic_similarity",
+      confidence: 0.58,
+      explanation: `Fixture adjacency around ${seed}.`,
+    })),
+    source_candidates: createFixtureSourceCandidates(input, seed, titles),
+    diagnostics: [
+      {
+        severity: "info",
+        code: "ai.fixture_provider",
+        message: "Schema-valid fixture output for module smoke tests.",
+        provider_id: "fixture-cartographer",
+      },
+    ],
+    provider_id: "fixture-cartographer",
+    model: "fixture-cartographer-v1",
+    telemetry: {
+      attempts: 1,
+      completed_at: generatedAt,
+      duration_ms: 0,
+      estimated_cost_usd: 0,
+      started_at: generatedAt,
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+      },
+    },
+    generated_at: generatedAt,
+  };
+}
+
+function createInvalidL3NodeOnlyOutput(input) {
+  const generatedAt = new Date().toISOString();
+  const seed = input.seed?.trim() || "Fixture Seed";
+
+  return {
+    status: "ok",
+    mode: input.mode,
+    level_id: input.level_id,
+    seed,
+    nodes: [
+      {
+        id: `invalid-l3-node-${slugify(seed)}`,
+        title: `${seed} unverified webpage concept`,
+        summary: "This deliberately invalid fixture mimics an AI webpage node without a URL candidate.",
+        node_type: "webpage",
+        source_state: "cartographer_primary",
+        confidence: 0.5,
+        importance: 0.5,
+        tags: ["L3", "fixture-cartographer"],
+        level_id: "L3",
+      },
+    ],
+    relations: [],
+    source_candidates: [],
+    diagnostics: [
+      {
+        severity: "info",
+        code: "ai.invalid_l3_fixture",
+        message: "Fixture output intentionally returns L3 webpage nodes without source candidates.",
+        provider_id: "fixture-cartographer",
+      },
+    ],
+    provider_id: "fixture-cartographer",
+    model: "fixture-cartographer-v1",
+    telemetry: {
+      attempts: 1,
+      completed_at: generatedAt,
+      duration_ms: 0,
+      estimated_cost_usd: 0,
+      started_at: generatedAt,
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+      },
+    },
+    generated_at: generatedAt,
+  };
+}
+
+function createFixtureAssistantOutput(input) {
+  const generatedAt = new Date().toISOString();
+  const actionType = input.available_operations?.includes("request_chunk")
+    ? "request_chunk"
+    : input.available_operations?.includes("focus_node")
+      ? "focus_node"
+      : "none";
+
+  return {
+    status: "ok",
+    intent: input.intent,
+    answer: `Fixture map assistant response for ${input.intent}. ${input.prompt}`,
+    actions: [
+      {
+        type: actionType,
+        label: actionType === "none" ? "No app action" : `Suggested ${actionType}`,
+        target_id: input.selected_nodes?.[0]?.id,
+        level_id: input.current_level,
+        seed: input.seed,
+      },
+    ],
+    diagnostics: [
+      {
+        severity: "info",
+        code: "assistant.fixture_provider",
+        message: "Schema-valid fixture assistant output for module smoke tests.",
+        provider_id: "fixture-cartographer",
+      },
+    ],
+    provider_id: "fixture-cartographer",
+    model: "fixture-cartographer-v1",
+    telemetry: {
+      attempts: 1,
+      completed_at: generatedAt,
+      duration_ms: 0,
+      estimated_cost_usd: 0,
+      started_at: generatedAt,
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+      },
+    },
+    generated_at: generatedAt,
+  };
+}
+
+function createFixtureSourceCandidates(input, seed, titles) {
+  if (input.level_id !== "L3" && input.mode !== "replace_failed_source") {
+    return [];
+  }
+
+  const count = input.mode === "replace_failed_source" ? 2 : Math.min(4, Math.max(1, titles.length));
+
+  return Array.from({ length: count }, (_, index) => ({
+    id: `fixture-source-${slugify(seed)}-${slugify(input.mode)}-${slugify(input.chunk?.key ?? "0")}-${index + 1}`,
+    title: `${seed} source candidate ${index + 1}`,
+    url: `https://example.com/seekstar-fixture/${encodeURIComponent(slugify(seed) || "seed")}/${encodeURIComponent(slugify(input.mode) || "mode")}/${encodeURIComponent(slugify(input.chunk?.key ?? "0") || "chunk")}/${index + 1}`,
+    snippet: `Fixture unverified source candidate ${index + 1} for ${seed}.`,
+    provider_id: "fixture-cartographer",
+    source_type: "webpage",
+    confidence: 0.44,
+    reason: "Fixture candidate remains unverified until DataService probes it.",
+  }));
+}
+
+function createFixtureTitle(seed, levelId, mode, index) {
+  const vocabulary = {
+    supra_macro: ["systems context", "knowledge instrument", "public imagination", "material constraint"],
+    L0: ["computing", "science", "engineering", "medicine", "design", "society", "history", "materials"],
+    L1: ["architecture", "core concept", "research thread", "tool family", "frontier question", "application"],
+    L2: ["official docs", "paper trail", "repository hub", "dataset family", "community source", "visual source"],
+    L3: ["webpage tile", "paper tile", "document tile", "repository tile", "image tile", "reference tile"],
+    deep_lens: ["section", "paragraph", "phrase", "word"],
+    recursive_seed: ["upward context", "same-band neighbor", "downward detail", "source trail"],
+  };
+  const words = vocabulary[levelId] ?? vocabulary.L0;
+  const suffix = mode === "expand_horizontal" ? "neighbor" : mode === "summarize_up" ? "parent" : mode === "decompose_down" ? "detail" : "seed";
+
+  return `${seed} ${words[index % words.length]} ${Math.floor(index / words.length) + 1} ${suffix}`;
+}
+
+function getFixtureCount(levelId) {
+  const counts = {
+    supra_macro: 12,
+    L0: 24,
+    L1: 18,
+    L2: 12,
+    L3: 8,
+    deep_lens: 12,
+    recursive_seed: 6,
+  };
+
+  return counts[levelId] ?? 8;
+}
+
+function getFixtureNodeType(levelId) {
+  if (levelId === "L0" || levelId === "supra_macro") {
+    return "domain";
+  }
+
+  if (levelId === "L1") {
+    return "topic";
+  }
+
+  if (levelId === "L2") {
+    return "source";
+  }
+
+  if (levelId === "L3") {
+    return "webpage";
+  }
+
+  return "concept";
+}
+
+function slugify(value) {
+  return String(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
 }
 
 async function execJson(command, args) {

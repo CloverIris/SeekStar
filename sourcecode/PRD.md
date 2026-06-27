@@ -122,6 +122,52 @@ AI Cartographer proposes and organizes terrain
 -> successful observations become source-backed tiles
 ```
 
+### 3.12 Opening sky and domain hint priority
+
+The default New Seek tab should feel like removing the cover from a telescope at night: the user should immediately see a generated sky, not an empty search shell waiting for a keyword.
+
+For a brand-new tab with no user seed, SeekStar uses `default_tonight_sky` bootstrap context. The AI Cartographer asks for recent, lively, and potentially meaningful fields, then creates the first visible opening sky as Supra Macro plus L0 Star Gallery. L1, L2, and L3 are generated on demand from focus, viewport position, and exploration movement rather than all being generated during first paint. This starting sky is intentionally exploratory and slightly stochastic, so reopening or refreshing the default tab can lead to a different field of discovery without immediately spending tokens on every deeper band.
+
+Preset domain lexicons are not visible default nodes. They are high-quality prompt hints, similar to a news site's section vocabulary such as technology, finance, science, culture, and society. They help the AI orient the opening sky, but they do not fence the map and do not replace AI free exploration.
+
+The product setting `domain_hint_mode` controls this:
+
+* `guided` is the default. Enabled domain terms are sent as opening-sky prompt hints, and the AI is still expected to freely enumerate fresh neighboring possibilities.
+* `pure_ai` sends no preset domain hints. The AI chooses the opening sky from current model knowledge, user context, and the product's exploration brief.
+
+User-entered seeds, selected text, Deep Lens grains, hyperlinks, and orphan-page recursive seeds do not use the default opening-sky mechanism. They already have a concrete exploration center.
+
+### 3.13 Real AI product path
+
+The product path does not use mock terrain. Settings default to the DeepSeek OpenAI-compatible provider, and provider configuration supports a direct masked API key value with environment variable fallback. If no usable key is available, Cartographer transactions must fail with explicit `missing_key` or configuration diagnostics rather than fabricating a star map.
+
+Deterministic generators may exist only as tests or fixtures. They must not appear in default settings, visible provider lists, route defaults, runtime fallback, cached user scenes, or main-canvas material.
+
+### 3.14 Continuous telescope terrain
+
+SeekStar's L0-L3 bands are not nested boxes. They are different focal lengths over one continuous semantic terrain.
+
+Zooming from L1 into L2 should preserve the viewport's semantic position and directional neighborhood. If the user enters L2 through an L1 "cars" region and then pans toward the former L1 direction of "airplanes", the L2 field should gradually shift toward aircraft parts, aviation sources, and aircraft-oriented source directions. When the user zooms back out, the upper band should surface near the current semantic position, not at the original "cars" entry point.
+
+Ordinary L0/L1/L2/L3 zoom and pan therefore stay inside the same scene, coordinate plane, and tab. The runtime should pass focus anchors, nearby upper-band anchors, movement vectors, and viewport/chunk coordinates into Cartographer requests. If lower-band exploration reaches a place that lacks an upper-band node, `summarize_up` should write that missing context back into the existing upper terrain instead of creating a parallel orphan universe.
+
+Orphan and recursive-seed tabs are reserved for genuinely unparented entries: external hyperlinks, direct URLs, local files, source-backed pages opened from outside the current semantic position, or Deep Lens grains promoted into new worlds.
+
+### 3.15 Token and prefetch discipline
+
+Exploratory AI should feel heuristic and alive, but it must not behave like an uncontrolled full-depth crawler.
+
+MVP generation policy:
+
+* opening sky bootstraps only Supra Macro plus L0;
+* L0 and L1 may use a small adjacent prefetch ring for smooth macro exploration;
+* L2 and L3 are generated on demand and do not run default AI preload;
+* failed-source replacement does not trigger neighbor preload;
+* each request sends only the active module, current focus, nearby anchors, compact chunk policy, and a small scene summary;
+* full prompt profiles, all-level module definitions, long response previews, and distant node lists must stay out of ordinary model calls.
+
+AI Service remains the provider and validation boundary. Level Runtime owns prompt compression, per-band target counts, source-candidate policy, layout family, and cache keys. The App Framework owns when a request is allowed to run.
+
 ## 4. Target Users
 
 ### 4.1 Exploratory learner
@@ -188,19 +234,19 @@ The product surface must stay map-first:
 
 * the macro domain layer is experienced as Star Gallery and is primarily AI-cartographed;
 * the topic/source-orientation layers are AI-organized semantic terrain;
-* the content layer is experienced as a tile field of webpages, documents, PDFs, images, and source candidates;
+* the content layer is experienced as a tile field of source-backed webpages, documents, PDFs, images, and page/document surfaces;
 * source-backed tiles are created only after DataService can load or observe the candidate;
 * the detail layer is experienced as a Deep Lens over the focused source or selection, not as a long stack of separate user-facing panels.
 
 Every visible object belongs to a scene, data pool, and derived object pool. Rendering surfaces subscribe to those structures. User actions pass through typed events that mutate objects or request Scout observations. The UI must not depend on AI to decide frame-by-frame interaction.
 
-AI Cartographer is the main terrain producer for Supra Macro, L0-L3, recursive seed bootstrap, orphan context reconstruction, and same-layer frontier expansion. DataService is the reality-probing and loading layer: it validates AI-proposed URLs, source candidates, pages, PDFs, images, and future file snapshots before those objects become source-backed tiles.
+AI Cartographer is the main terrain producer for Supra Macro, L0, L1, L2, recursive seed bootstrap, orphan context reconstruction, same-layer frontier expansion, and L3 source-candidate proposals. DataService is the reality-probing and loading layer: it validates AI-proposed URLs, source candidates, pages, PDFs, images, and future file snapshots before those objects become source-backed tiles. An L3 candidate is therefore only a queue/status object until it is observed.
 
 The object pool is not only a render cache. It is the product's active cognitive field:
 
 * visible objects are rendered;
-* near-viewport objects are preloaded;
-* one or two outer rings may be generated or cached according to settings;
+* near-viewport objects may be preloaded only when the band policy allows it;
+* L0/L1 may keep a small exploratory prefetch ring, while L2/L3 should stay on-demand by default;
 * distant chunks may sleep, persist, or be evicted;
 * failed candidates stay in recovery/diagnostics, not in the main canvas.
 
@@ -285,7 +331,7 @@ The lens is both visual and semantic:
 * the UI magnifies the center;
 * the AI Cartographer prioritizes the center and the near frontier;
 * DataService validates AI-proposed source candidates near the edge;
-* the chunk cache preloads one or more rings beyond the current viewport.
+* the chunk cache may preload a small adjacent ring on L0/L1 when settings allow; L2/L3 stay on-demand by default.
 * settings control automatic expansion, manual preload, request concurrency, API rate limits, cache budgets, and cancellation.
 
 ### 5.5.1 Macro Lens Gallery
@@ -1136,9 +1182,9 @@ Contains:
 
 ## 13.1 Resolved for P6 MVP
 
-1. AI-generated L0-L3 terrain is primary `cartographer_primary` map material after schema validation.
-2. DataService validates and loads source candidates; it does not generate the main map.
-3. Failed source candidates are hidden from the main canvas and handled through retry/replacement recovery.
+1. AI-generated terrain is primary `cartographer_primary` map material for Supra Macro through L2 after schema validation; L3 AI output is candidate/status material until validated.
+2. DataService validates and loads source candidates; it does not generate the main map, but it is the only path that promotes L3 content into source-backed tile surfaces.
+3. Failed or unverified source candidates are hidden from the main canvas and handled through retry/replacement recovery.
 4. L4-L10-style content detail is compressed into Deep Lens instead of separate visible product layers.
 5. Recursive seed creation is a core flow, not a later enhancement.
 6. Viewport-edge movement can automatically request AI horizontal chunks, bounded by settings for depth, rate, budget, and cache.

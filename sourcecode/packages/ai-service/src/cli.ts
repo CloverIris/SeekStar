@@ -29,10 +29,10 @@ async function run(commandName: string | undefined, argsList: string[]): Promise
   if (!commandName || commandName === "help" || commandName === "--help") {
     return {
       commands: [
-        "status [--provider mock|openai-compatible] [--base-url url] [--model model] [--api-key-env ENV]",
-        "generate --input input.json|- [--provider mock|openai-compatible] [--base-url url] [--model model] [--api-key-env ENV]",
+        "status [--provider openai-compatible|deepseek] [--base-url url] [--model model] [--api-key-env ENV] [--api-key-value KEY]",
+        "generate --input input.json|- [--provider openai-compatible|deepseek] [--base-url url] [--model model] [--api-key-env ENV] [--api-key-value KEY]",
         "prompt --input input.json|-",
-        "assist --input input.json|- [--provider mock|openai-compatible]",
+        "assist --input input.json|- [--provider openai-compatible|deepseek]",
         "assistant-prompt --input input.json|-",
         "validate --input output.json|-",
         "build-context --scene scene.json [--selection node-a,node-b] [--prompt text]",
@@ -150,16 +150,21 @@ function readJson<T>(pathOrDash: string): T {
 
 function parseProviderConfig(options: Record<string, string>): AiProviderConfig {
   const providerOption = options.provider;
-  const kind = providerOption === "mock" ? "mock" : "openai_compatible";
+  if (providerOption && providerOption !== "openai-compatible" && providerOption !== "deepseek") {
+    throw new Error(`Unsupported AI provider "${providerOption}". Public CLI supports openai-compatible or deepseek only.`);
+  }
+
   const timeoutMs = options.timeout ? Number.parseInt(options.timeout, 10) : undefined;
   const retryAttempts = options.retries ? Number.parseInt(options.retries, 10) : undefined;
+  const deepSeek = providerOption === "deepseek";
 
   return resolveAiProviderConfig({
-    kind,
-    id: options["provider-id"] ?? (kind === "mock" ? "mock-cartographer" : "openai-compatible"),
-    base_url: options["base-url"],
-    model: options.model,
+    kind: "openai_compatible",
+    id: options["provider-id"] ?? (deepSeek ? "deepseek-openai-compatible" : "openai-compatible"),
+    base_url: options["base-url"] ?? (deepSeek ? "https://api.deepseek.com" : undefined),
+    model: options.model ?? (deepSeek ? "deepseek-v4-flash" : undefined),
     api_key_ref: options["api-key-env"] ? { kind: "env", name: options["api-key-env"] } : undefined,
+    api_key_value: options["api-key-value"],
     timeout_ms: typeof timeoutMs === "number" && Number.isFinite(timeoutMs) ? timeoutMs : undefined,
     retry: typeof retryAttempts === "number" && Number.isFinite(retryAttempts) ? { attempts: retryAttempts, backoff_ms: 250 } : undefined,
   });

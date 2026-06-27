@@ -4,7 +4,6 @@ import type { ReactElement } from "react";
 import { useMemo } from "react";
 import {
   createTerrainPixiProjection,
-  type CandidateTileSurface,
   type MainContentProjection,
   type ProjectionViewportBounds,
   type TerrainTileSurface,
@@ -12,12 +11,10 @@ import {
 
 export interface MainContentRuntime {
   candidateObservations: ScoutObservation[];
-  candidateTileSurfaces: CandidateTileSurface[];
   mainContent: MainContentProjection;
   renderedNodes: TerrainNode[];
   sourceTileSurfaces: TerrainTileSurface[];
   visibleCandidateObservations: ScoutObservation[];
-  visibleCandidateTileSurfaces: CandidateTileSurface[];
   visibleNodeIds: Set<string>;
   visibleNodes: TerrainNode[];
   visibleRelations: TerrainRelation[];
@@ -53,12 +50,10 @@ export function useMainContentRuntime(input: MainContentRuntimeInput): MainConte
 
     return {
       candidateObservations: projection.candidateObservations,
-      candidateTileSurfaces: projection.candidateTileSurfaces,
       mainContent: projection.mainContent,
       renderedNodes,
       sourceTileSurfaces: projection.tileSurfaces,
       visibleCandidateObservations: showCandidateField ? projection.candidateObservations : [],
-      visibleCandidateTileSurfaces: showCandidateField ? projection.candidateTileSurfaces : [],
       visibleNodeIds,
       visibleNodes,
       visibleRelations,
@@ -77,13 +72,9 @@ export function useMainContentRuntime(input: MainContentRuntimeInput): MainConte
 export function MainContentStatusOverlay({
   candidateObservations,
   mainContent,
-  onObservationSelect,
-  selectedObservationId,
 }: {
   candidateObservations: ScoutObservation[];
   mainContent: MainContentProjection;
-  onObservationSelect: (observationId: string) => void;
-  selectedObservationId?: string;
 }): ReactElement | null {
   if (
     mainContent.mode !== "source_candidate_field" &&
@@ -121,21 +112,7 @@ export function MainContentStatusOverlay({
       <strong>{title}</strong>
       <p>{body}</p>
       {mainContent.statusUrl ? <small>{mainContent.statusUrl}</small> : null}
-      {mainContent.mode === "source_candidate_field" ? (
-        <div className="main-content-candidate-list">
-          {candidateObservations.slice(0, 5).map((observation) => (
-            <button
-              className={observation.id === selectedObservationId ? "active" : ""}
-              key={observation.id}
-              onClick={() => onObservationSelect(observation.id)}
-              type="button"
-            >
-              <strong>{observation.title}</strong>
-              <small>{observation.url ?? observation.query}</small>
-            </button>
-          ))}
-        </div>
-      ) : null}
+      {mainContent.mode === "source_candidate_field" ? <small>{candidateObservations.length} waiting in Source review</small> : null}
     </aside>
   );
 }
@@ -156,7 +133,7 @@ function filterRenderableMainContentNodes(nodes: TerrainNode[], mode: MainConten
       return nodes.filter((node) => isCartographerTerrainNode(node) || node.source_state === "user_seed");
     }
 
-    return nodes;
+    return nodes.filter((node) => !isMainContentScaffoldPlaceholder(node));
   }
 
   return nodes.filter((node) => !isMainContentScaffoldPlaceholder(node));
@@ -167,7 +144,11 @@ function isCartographerTerrainNode(node: TerrainNode): boolean {
 }
 
 function isMainContentScaffoldPlaceholder(node: TerrainNode): boolean {
-  if (node.source_state !== "local_only" || isMacroLayer(node.layer)) {
+  if (node.source_state === "local_only") {
+    return true;
+  }
+
+  if (isMacroLayer(node.layer)) {
     return false;
   }
 

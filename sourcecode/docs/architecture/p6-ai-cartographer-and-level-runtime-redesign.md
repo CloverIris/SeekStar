@@ -156,7 +156,7 @@ Output:
 The CLI must let developers test a single band without launching Electron.
 
 P6.1 implementation note:
-`@seekstar/level-runtime` now exposes this first unified input/output contract. It is intentionally independent of Electron, React, Pixi, Playwright, and Storage. The initial runtime uses the AI Service mock provider by default, lightly dedupes nodes and source URLs, emits one-ring chunk preload hints, and refuses to produce `source_backed` material directly. L3 source candidates remain `cartographer_unverified_source` until DataService probes them.
+`@seekstar/level-runtime` now exposes this first unified input/output contract. It is intentionally independent of Electron, React, Pixi, Playwright, and Storage. The runtime lightly dedupes nodes and source URLs, emits one-ring chunk preload hints, and refuses to produce `source_backed` material directly. L3 source candidates remain `cartographer_unverified_source` until DataService probes them. Product runtime must receive an explicit AI generator; without one it returns a configuration diagnostic instead of fabricating terrain.
 
 P6.2 implementation note:
 `@seekstar/constellation-engine` now exposes `applyLevelRuntimeOutputToScene`. This bridge lets the old `TerrainScene`/Pixi transition path consume chunk runtime output without making the desktop renderer orchestrate AI. Level Runtime nodes enter the scene as `cartographer_primary` terrain. Source candidates enter as L3 `ScoutObservation` records with `source_candidate` status. Pixi projection therefore shows a `source_candidate_field`, but no source-backed tile surface is created until DataService/Scout converts a candidate into a source snapshot.
@@ -186,7 +186,7 @@ P6.10 implementation note:
 Desktop session state now exposes a compact Cartographer runtime status for chunk bootstrap and viewport-edge expansion. `TerrainCanvas` renders this as a low-visibility badge containing generation phase, level, chunk key, and cache status. This is not the final chunk-boundary UI, but it makes invisible background generation legible while keeping the main canvas focused on terrain.
 
 P6.11 implementation note:
-Desktop settings now include an AI Cartographer provider surface. It manages the active provider, local deterministic test provider, OpenAI-compatible base URL, model, env-key reference, timeout, and retry knobs without storing plaintext keys. The Electron Cartographer bridge now loads settings for each chunk request, resolves the active provider into `AiCartographerService`, and passes that generator into `runLevelRuntime`. The built-in mock provider remains available for deterministic development and smoke tests, but it is no longer an invisible hard-coded bridge dependency; real providers can be selected through the App Framework settings boundary.
+Desktop settings now include an AI Cartographer provider surface. It manages the active provider, OpenAI-compatible base URL, model, direct masked API key, env-key fallback, timeout, and retry knobs. The Electron Cartographer bridge loads settings for each chunk request, resolves the active provider into `AiCartographerService`, and passes that generator into `runLevelRuntime`. Product defaults point at the DeepSeek OpenAI-compatible preset; missing keys fail clearly instead of fabricating terrain. Deterministic terrain for tests lives in local smoke fixtures, not exported provider implementations.
 
 P6.12 implementation note:
 `@seekstar/level-runtime` now owns explicit band profile modules. The default P6 profile defines Supra Macro, L0 Star Gallery, L1 Topic Field, L2 Source Orientation, L3 Tile Field, Deep Lens, and Recursive Seed with role, prompt brief, constraints, default node type, target count, layout family, and source-candidate policy. `runLevelRuntime` now derives target density, node conversion, source-candidate filtering, and the AI prompt context from those modules. This means L0 can be proven to reject source candidates, L3 can be proven to emit only unverified candidate URLs, and developers can inspect `profiles` or a single `module --level L3` through the Level Runtime CLI without launching Electron.
@@ -222,7 +222,7 @@ Prompt templates should include coarse/fine controls so AI does not over-split o
 The first real AI Service should support an OpenAI-compatible provider boundary.
 
 P6.1 implementation note:
-`@seekstar/ai-service` now includes `AiCartographerService`, an OpenAI-compatible provider, deterministic mock provider, structured output validator, explicit `missing_key` diagnostics, and CLI `generate` / `validate` commands. Encrypted key storage and per-band model routing UI are separate follow-up layers; P6.43 adds baseline call telemetry and cost estimates, P6.44 adds provider cancellation, and P6.46 persists those call records in the desktop App Framework ledger.
+`@seekstar/ai-service` now includes `AiCartographerService`, an OpenAI-compatible provider, structured output validator, explicit `missing_key` diagnostics, and CLI `generate` / `validate` commands. Encrypted key storage and per-band model routing UI are separate follow-up layers; P6.43 adds baseline call telemetry and cost estimates, P6.44 adds provider cancellation, and P6.46 persists those call records in the desktop App Framework ledger.
 
 P6.11 implementation note:
 The first desktop-level provider routing is in place. Settings keep only configuration and env-key references; the runtime bridge constructs the provider on demand. Per-band prompt profiles, encrypted secret storage, durable call ledgers, and right-sidebar agent routing are separate App Framework layers rather than AI Service concerns. P6.45 adds desktop transaction cancel controls on top of the P6.44 provider/runtime cancellation protocol, and P6.46 adds a JSON-backed desktop cost ledger with settings UI/export.
@@ -324,10 +324,10 @@ P6.42 implementation note:
 Editable prompt profile overrides now flow through the full Cartographer path. Settings > AI Cartographer stores profile language, density, and per-band target count, prompt brief, and constraints. Electron main turns those settings into Level Runtime settings for bootstrap, viewport expansion, and failed-source replacement transactions. `@seekstar/level-runtime` applies the overrides before building `context.level_module`, and its cache key includes a prompt revision hash so changed prompts do not silently reuse stale chunk output. The module smoke test verifies that a custom L0 brief/constraint reaches the AI generation input and clamps output to the configured target count.
 
 P6.43 implementation note:
-AI Service now emits call-level telemetry on validated generation and assistant outputs. OpenAI-compatible calls report attempts, start/completion timestamps, duration, provider token usage when available, and optional USD cost estimates when input/output price rates are configured. The mock provider emits deterministic zero-token, zero-cost telemetry for CLI and smoke tests. Desktop provider settings can store those price rates, but long-term cost ledger persistence and UI/export remain App Framework work.
+AI Service now emits call-level telemetry on validated generation and assistant outputs. OpenAI-compatible calls report attempts, start/completion timestamps, duration, provider token usage when available, and optional USD cost estimates when input/output price rates are configured. Module smoke uses local fixture output for deterministic zero-token checks; that fixture is not an exported provider. Desktop provider settings can store those price rates, but long-term cost ledger persistence and UI/export remain App Framework work.
 
 P6.44 implementation note:
-AI Service now has an explicit cancellation protocol. Generation and assistant calls accept `AbortSignal`; deterministic mock providers return `cancelled` without fabricating terrain; OpenAI-compatible calls merge external cancellation with their internal timeout controller and keep user cancellation distinct from provider timeout. Level Runtime forwards the same signal through its generator boundary, so chunk requests can now produce `cancelled` outputs once App Framework exposes transaction-level controls.
+AI Service now has an explicit cancellation protocol. Generation and assistant calls accept `AbortSignal`; OpenAI-compatible calls merge external cancellation with their internal timeout controller and keep user cancellation distinct from provider timeout. Level Runtime forwards the same signal through its generator boundary, so chunk requests can now produce `cancelled` outputs once App Framework exposes transaction-level controls.
 
 P6.45 implementation note:
 The desktop Cartographer transaction layer now owns cancellation controls. Bootstrap, viewport expansion, and failed-source replacement transactions run under tab-scoped `AbortController`s in Electron main. `cartographer.cancelTransaction` is exposed through preload, and the canvas chunk runtime panel shows a Cancel action while a transaction is generating. The coordinator does not cache cancelled outputs, does not apply cancelled scene output, and records cancelled lifecycle status for subscriptions.
@@ -432,9 +432,9 @@ P6.59 removes the old radial/spiral fallback from the MVP layer runtime. AI Serv
 - `tile_field` for L3 webpage/document/image candidates;
 - `deep_lens` for text/selection decomposition.
 
-This makes per-layer CLI debugging stable: the same seed, level, chunk, prompt profile, and provider output produce the same spatial contract, and old provider/mock radial hints cannot re-enter the product path.
+This makes per-layer CLI debugging stable: the same seed, level, chunk, prompt profile, and provider output produce the same spatial contract, and old provider-authored radial hints cannot re-enter the product path.
 
-The same pass adds a first-class DeepSeek AI provider preset to Settings. It uses DeepSeek's OpenAI-compatible endpoint `https://api.deepseek.com`, default model `deepseek-v4-flash`, and environment key reference `DEEPSEEK_API_KEY`. Routes still use the existing App Framework provider/route boundary; activating a provider in Settings now also points the Cartographer routes at that provider so "active provider" means real generation will use it.
+The same pass adds a first-class DeepSeek AI provider preset to Settings. It uses DeepSeek's OpenAI-compatible endpoint `https://api.deepseek.com`, default model `deepseek-v4-flash`, direct API key storage in local settings, and environment key fallback `DEEPSEEK_API_KEY`. Routes still use the existing App Framework provider/route boundary; activating a provider in Settings also points the Cartographer routes at that provider so "active provider" means real generation will use it.
 
 ## P6.60 Destructive App Gallery Projection Cleanup
 
@@ -458,6 +458,38 @@ P6.61 makes the product doctrine explicit across PRD and AGENTS guidance:
 - Failed source candidates stay out of the main canvas and move to recovery/diagnostics, with retry or AI replacement paths.
 - The visible product target is Supra Macro, L0 Star Gallery, L1 Topic Field, L2 Source Orientation, L3 Tile Field, Deep Lens, and Recursive Seed. The old L0-L11 ladder remains only an internal address vocabulary and migration reference.
 - Right sidebar work should converge on AI map chat/control with typed user-approved app actions, not legacy inspector/debug sprawl.
+
+## P6.62 Opening Sky, Domain Hints, And Real Provider Product Path
+
+P6.62 makes the default telescope loop concrete:
+
+- A default New Seek tab uses `default_tonight_sky` bootstrap context and should immediately produce a generated star field. The command input remains an auxiliary seed entry, not the first-screen product center.
+- `createSeedScene` is only a container factory for tabs, layers, viewport, selection, and runtime metadata. It no longer creates visible local L0-L11 scaffold, domain-gallery nodes, fake sources, pending tiles, or local text grains.
+- Domain lexicons are prompt hints. `domain_hint_mode: guided` sends enabled domain terms into opening-sky context; `domain_hint_mode: pure_ai` sends none. Neither mode creates visible domain nodes directly.
+- Product AI settings default to the DeepSeek OpenAI-compatible route. A direct masked `api_key_value` is resolved before env fallback. If neither exists, Cartographer transactions return `missing_key`/configuration diagnostics.
+- Level Runtime CLI remains useful for profiles, modules, validation, and real-provider tests, but `run` no longer silently fabricates terrain when no generator is supplied.
+- The renderer main-content filter excludes old `local_only` scaffold from the product canvas. Visible material must come from AI Cartographer, source-backed intake, Deep Lens snapshots, user seeds, or explicit recursive-seed terrain.
+
+## P6.63 Continuous Telescope, Token Discipline, And Real L3 Tiles
+
+Live DeepSeek testing exposed three product/runtime mismatches:
+
+- L2/L3 generation was slow and token-heavy because viewport expansion could trigger active chunks plus preload work, while each model request still carried too much full-profile context.
+- L3 could show AI-generated `webpage`/`document` cards even when `Sources` was still `0 backed`, making unverified Cartographer output look like real Tile Field content.
+- L0-L3 zooming still risked reading as nested boxes because generated lower-band terrain did not yet use focus anchors, neighbor anchors, movement direction, and zoom-out writeback as first-class context.
+
+The product decision is that L0-L3 are continuous focal bands over one semantic terrain. `x/y/zoom/layer` is the telescope state. A user who zooms from an L1 region into L2, pans toward a neighboring region, and then zooms out should surface near the upper-band region that matches the current viewport, not the original entry node. Ordinary zoom/pan stays in the same scene and coordinate plane; orphan tabs are reserved for external links, direct URLs, files, and Deep Lens grains promoted into new seeds.
+
+The next runtime direction is:
+
+- default opening sky bootstraps only `supra_macro + L0`;
+- L0/L1 may keep a small adjacent AI prefetch ring for macro smoothness;
+- L2/L3 are on-demand by default and should not spawn AI preload rings;
+- failed-source replacement does not preload neighbor chunks;
+- AI requests should carry only the active module, compact chunk policy, focus anchor, neighbor anchors, movement vector, and a short scene summary;
+- the full prompt profile and all-level module definitions must stay out of ordinary generation payloads.
+
+For L3, candidate and tile are separate product objects. AI source candidates become `ScoutObservation(status="source_candidate")` queue/status records. They may appear in overlays, Source review, recovery, and AI Map Control, but not as main-canvas tile surfaces. Only DataService/Playwright-successful observations can create source-backed webpage/document/PDF/image tiles that participate in thumbnail prewarm, live `WebContentsView`, absorption, browser mode, and Deep Lens.
 
 ## Right Sidebar Redesign
 

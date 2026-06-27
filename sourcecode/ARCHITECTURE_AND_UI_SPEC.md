@@ -34,6 +34,16 @@ Zooming changes semantic depth. Panning explores same-layer adjacency. Selection
 
 AI Cartographer is the primary terrain producer for macro exploration, topic/source orientation, recursive seed bootstrap, orphan context reconstruction, and same-layer frontier expansion. DataService is the validation and loading layer for AI-proposed URLs, source candidates, pages, PDFs, images, and future file snapshots. AI should not drive animation or pointer-level behavior, but it should actively fill and extend the map.
 
+### 1.1 Continuous Telescope State
+
+The active `TerrainScene.viewport` tuple (`x`, `y`, `zoom`, `layer`) is the telescope state. L0, L1, L2, and L3 are not nested boxes or isolated canvases; they are focal bands over one continuous semantic terrain. Zooming changes semantic scale while preserving world coordinates. Panning changes the observed neighborhood at the current scale.
+
+Generation should respect that continuity. A Cartographer request should receive compact focus anchors, nearby same/upper-band anchors, the viewport center, movement direction, and chunk coordinates. It should fill the terrain around the current lens position instead of rebuilding a separate child universe for every clicked node.
+
+When the user zooms back out after moving inside L2 or L3, the app should resolve the nearest meaningful upper-band region at the current viewport and reveal that parent context. If no parent region exists yet, upward synthesis writes the missing context back into the existing scene. A new orphan/recursive tab is reserved for genuinely unparented entries such as an external hyperlink, direct URL, file, or Deep Lens grain promoted into a new seed.
+
+AI calls are terrain synthesis jobs, not frame-loop operations. The renderer handles pointer math, absorption animation, panning, zooming, hit testing, and layer interpolation locally. AI may be invoked after a typed event needs new semantic material, source replacement, or upward/downward synthesis.
+
 ## 2. Recommended High-level Architecture
 
 ### 2.1 Electron Host Layer
@@ -118,10 +128,13 @@ P5.17 Content Provider note:
 The DataService registry is now settings-driven. `@seekstar/core-schema` owns the built-in provider catalog and `SeekStarSettings.content_providers` persists activation, priority, languages, URL-only domains, and key-reference metadata. Default active discovery uses arXiv, GitHub, Wikipedia, Wikidata, and a low-priority local Playwright browser-assisted fallback. Zhihu and Runoob are built in as disabled URL-only providers: they may discover candidate URLs when enabled, but they do not extract page bodies or fabricate source-backed terrain during search. Electron passes the current provider settings into each Scout utility-process run, so the UI edits provider availability without coupling React to provider implementation details.
 
 P5.18 Main Content Usability note:
-Keyword discovery now renders a formal L3 `source_candidate_field` in Pixi. `CandidateTileSurface` entries show provider provenance and URL candidates, but they are separate from `TerrainTileSurface` entries and are never synchronized to live browser surfaces. Selecting a candidate exposes source observation actions; direct URL Scout must return source evidence before the candidate becomes a source-backed L3 webpage/document tile. The inspector now promotes the candidate/source loop and moves old job/manual-ingest/tray panels under Advanced.
+Keyword discovery introduced a formal L3 `source_candidate_field` in Pixi. Those historical candidate status cards showed provider provenance and candidate URLs, but they were always separate from real `TerrainTileSurface` entries and were never synchronized to live browser surfaces. Direct URL Scout must return source evidence before any candidate becomes a source-backed L3 webpage/document tile. The current MVP keeps this distinction and routes unverified candidates through Source review/recovery instead of the main Tile Field.
 
 P6 AI Cartographer and Level Runtime note:
-P6 changes the mainline from DataService-driven candidate discovery to AI Cartographer-driven terrain generation. L0-L3 terrain is primarily generated and organized by AI, then validated where needed by DataService. The fixed L0-L11 12Level spine remains the P5 compatibility layer, but the user-facing target moves toward a modular Level Runtime: Supra Macro, L0 Star Gallery, L1 Topic Field, L2 Source Orientation, L3 Tile Field, Deep Lens, and Recursive Seed. See `docs/architecture/p6-ai-cartographer-and-level-runtime-redesign.md`.
+P6 changes the mainline from DataService-driven candidate discovery to AI Cartographer-driven terrain generation. Supra Macro, L0, L1, and L2 terrain is primarily generated and organized by AI. L3 is stricter: AI may propose source candidates and orientation material, but only DataService-successful observations become source-backed Tile Field surfaces. The fixed L0-L11 12Level spine remains the P5 compatibility layer, but the user-facing target moves toward a modular Level Runtime: Supra Macro, L0 Star Gallery, L1 Topic Field, L2 Source Orientation, L3 Tile Field, Deep Lens, and Recursive Seed. See `docs/architecture/p6-ai-cartographer-and-level-runtime-redesign.md`.
+
+Current MVP override:
+Candidate observations and any legacy candidate-surface concept are queue/status surfaces, not live browser/document tiles. The main canvas may show a lightweight candidate/status overlay and the right sidebar may show Source review, but the Pixi Tile Field must only create real tile surfaces for source-backed L3 webpage/document/PDF/image nodes.
 
 These events are the telescope operation protocol. Viewport movement may reveal same-layer frontiers. Layer changes move between macro orientation, source-backed tile surfaces, and text-grain detail. Selection and lasso create addressable regions that can be inspected, promoted, exported, or passed to AI only when the user asks for interpretation.
 

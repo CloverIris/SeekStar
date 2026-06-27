@@ -159,8 +159,8 @@ export function applyLayerSelect(
   focusNodeId?: string,
 ): { scene: TerrainScene; selectedNodeIds: string[]; focusNodeId?: string } {
   const focusNode = focusNodeId
-    ? scene.nodes.find((node) => node.id === focusNodeId)
-    : scene.nodes.find((node) => node.layer === layer);
+    ? scene.nodes.find((node) => node.id === focusNodeId && node.layer === layer)
+    : findNearestNodeOnLayer(scene.nodes, layer, scene.viewport);
   const nextViewport: ViewportState = {
     ...scene.viewport,
     x: focusNode?.position_hint?.x ?? scene.viewport.x,
@@ -190,6 +190,19 @@ export function applyLayerSelect(
       nextViewport,
     ),
   };
+}
+
+function findNearestNodeOnLayer(nodes: TerrainNode[], layer: LayerId, viewport: ViewportState): TerrainNode | undefined {
+  return nodes
+    .filter((node) => node.layer === layer)
+    .sort((left, right) => getViewportDistance(left, viewport) - getViewportDistance(right, viewport))[0];
+}
+
+function getViewportDistance(node: TerrainNode, viewport: ViewportState): number {
+  const x = node.position_hint?.x ?? 0;
+  const y = node.position_hint?.y ?? 0;
+
+  return Math.hypot(x - viewport.x, y - viewport.y);
 }
 
 export function applyTileFocus(scene: TerrainScene, nodeId: string): { scene: TerrainScene; focusNodeId?: string; selectedNodeIds: string[] } {

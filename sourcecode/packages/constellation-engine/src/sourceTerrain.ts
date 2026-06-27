@@ -20,8 +20,6 @@ export interface TextMaterializationProfile {
   sentenceLimitPerParagraph: number;
   phraseLimitPerSentence: number;
   wordLimitPerPhrase: number;
-  characterLimitPerWord: number;
-  heuristicCandidateLimit: number;
   wordsPerSentenceScanLimit: number;
   phraseWordScanLimit: number;
 }
@@ -57,23 +55,6 @@ interface PhraseGrain extends TextRangeGrain {
 }
 
 interface WordGrain {
-  end: number;
-  start: number;
-  text: string;
-  tokenIndex: number;
-}
-
-interface HeuristicCandidateGrain {
-  count: number;
-  end: number;
-  score: number;
-  start: number;
-  text: string;
-  tokenEnd: number;
-  tokenStart: number;
-}
-
-interface CharacterGrain {
   end: number;
   start: number;
   text: string;
@@ -130,7 +111,7 @@ export function createSourceTerrainPatch(input: SourceIngestionInput, scene: Ter
     source_state: "source_backed",
     confidence: 0.86,
     importance: 0.88,
-    tags: ["source", "source-backed", "p5-3-text-terrain", ...tags],
+    tags: ["source", "source-backed", ...tags],
     summary: source.snippet,
     source_id: source.id,
     source_url: source.url,
@@ -156,7 +137,7 @@ export function createSourceTerrainPatch(input: SourceIngestionInput, scene: Ter
     source,
     sourceRange: { source_id: source.id, locator: `${source.id}#document`, start: 0, end: sourceText.length, excerpt: sourceText.slice(0, 320) },
     summary: sourceText.slice(0, 360),
-    tags: ["document-tile", "source-backed", "p5-3-text-terrain", ...tags],
+    tags: ["document-tile", "source-backed", ...tags],
     title,
     type: source.source_type === "webpage" ? "webpage" : "document",
   });
@@ -171,7 +152,7 @@ export function createSourceTerrainPatch(input: SourceIngestionInput, scene: Ter
     source,
     sourceRange: { source_id: source.id, locator: `${source.id}#section-1`, start: 0, end: sourceText.length, excerpt: sourceText.slice(0, 260) },
     summary: sourceText.slice(0, 280),
-    tags: ["section", "source-backed", "p5-3-text-terrain", ...tags],
+    tags: ["section", "source-backed", ...tags],
     title: createSectionTitle(title, sourceText),
     type: "section",
   });
@@ -210,38 +191,12 @@ export function createSourceTerrainPatch(input: SourceIngestionInput, scene: Ter
       materialization,
     }),
   );
-  const heuristicCandidateNodes = createHeuristicCandidates(textTerrain)
-    .slice(0, materialization.heuristicCandidateLimit)
-    .map((candidate, index) =>
-      createHeuristicCandidateNode({
-        anchor,
-        candidate,
-        createdAt,
-        createdFrom: input.createdFrom,
-        id: `node-${slug}-heuristic-candidate-${index + 1}-${stamp}`,
-        index,
-        source,
-        sourceNodeId,
-        tags,
-      }),
-    );
-
   documentNode.child_ids = [sectionNodeId];
   documentNode.child_layer_id = "L4";
   documentNode.zoom_target = { layer: "L4", node_id: sectionNodeId };
   sectionNode.child_ids = paragraphNodes.map((node) => node.id);
   sectionNode.child_layer_id = "L5";
   sectionNode.zoom_target = paragraphNodes[0] ? { layer: "L5", node_id: paragraphNodes[0].id } : undefined;
-  nodes.push(...heuristicCandidateNodes);
-  relations.push(
-    ...heuristicCandidateNodes.map((candidateNode, index) =>
-      createHeuristicCandidateRelation({
-        from: sourceNodeId,
-        id: `rel-${slug}-source-heuristic-candidate-${index + 1}-${stamp}`,
-        to: candidateNode.id,
-      }),
-    ),
-  );
 
   return {
     source,
@@ -284,7 +239,7 @@ function appendParagraphTerrain(input: {
       excerpt: input.paragraph.text,
     },
     summary: input.paragraph.text,
-    tags: ["paragraph", "source-backed", "p5-3-text-terrain", ...input.tags],
+    tags: ["paragraph", "source-backed", ...input.tags],
     title: createExcerptTitle(input.paragraph.text, input.paragraphIndex),
     tokenRange: {
       source_id: input.source.id,
@@ -357,7 +312,7 @@ function appendSentenceTerrain(input: {
       excerpt: input.sentence.text,
     },
     summary: input.sentence.text,
-    tags: ["sentence", "source-backed", "p5-3-text-terrain", ...input.tags],
+    tags: ["sentence", "source-backed", ...input.tags],
     title: input.sentence.text.length > 74 ? `${input.sentence.text.slice(0, 71)}...` : input.sentence.text,
     tokenRange: {
       source_id: input.source.id,
@@ -436,7 +391,7 @@ function appendPhraseTerrain(input: {
       excerpt: input.phrase.text,
     },
     summary: input.phrase.text,
-    tags: ["phrase", "source-backed", "seedable", "p5-3-text-terrain", ...input.tags],
+    tags: ["phrase", "source-backed", "seedable", ...input.tags],
     title: input.phrase.text,
     tokenRange: {
       source_id: input.source.id,
@@ -516,7 +471,7 @@ function appendWordTerrain(input: {
       excerpt: input.word.text,
     },
     summary: `Word grain from ${input.source.title}.`,
-    tags: ["word", "source-backed", "seedable", "p5-3-text-terrain", ...input.tags],
+    tags: ["word", "source-backed", "seedable", ...input.tags],
     title: input.word.text,
     tokenRange: {
       source_id: input.source.id,
@@ -537,239 +492,7 @@ function appendWordTerrain(input: {
     }),
   );
 
-  const characterNodes = createCharacterGrains(input.word).slice(0, input.materialization.characterLimitPerWord).map((character, characterIndex) =>
-    appendCharacterTerrain({
-      ...input,
-      character,
-      characterIndex,
-      wordNodeId: wordNode.id,
-    }),
-  );
-
-  wordNode.child_ids = characterNodes.map((node) => node.id);
-  wordNode.child_layer_id = characterNodes.length > 0 ? "L9" : undefined;
-  wordNode.zoom_target = characterNodes[0] ? { layer: "L9", node_id: characterNodes[0].id } : undefined;
-
   return wordNode;
-}
-
-function appendCharacterTerrain(input: {
-  anchor: { x: number; y: number };
-  character: CharacterGrain;
-  characterIndex: number;
-  createdAt: string;
-  createdFrom?: CreatedFromRef;
-  nodes: TerrainNode[];
-  paragraphIndex: number;
-  phraseIndex: number;
-  relations: TerrainRelation[];
-  scoutBacked: boolean;
-  sentenceIndex: number;
-  slug: string;
-  source: SourceRef;
-  stamp: string;
-  tags: string[];
-  word: WordGrain;
-  wordIndex: number;
-  wordNodeId: string;
-}): TerrainNode {
-  const paragraphOrdinal = input.paragraphIndex + 1;
-  const sentenceOrdinal = input.sentenceIndex + 1;
-  const phraseOrdinal = input.phraseIndex + 1;
-  const wordOrdinal = input.wordIndex + 1;
-  const characterOrdinal = input.characterIndex + 1;
-  const characterNodeId = `node-${input.slug}-character-${paragraphOrdinal}-${sentenceOrdinal}-${phraseOrdinal}-${wordOrdinal}-${characterOrdinal}-${input.stamp}`;
-  const unicodeNodeId = `node-${input.slug}-unicode-${paragraphOrdinal}-${sentenceOrdinal}-${phraseOrdinal}-${wordOrdinal}-${characterOrdinal}-${input.stamp}`;
-  const seedLoopNodeId = `node-${input.slug}-seed-loop-${paragraphOrdinal}-${sentenceOrdinal}-${phraseOrdinal}-${wordOrdinal}-${characterOrdinal}-${input.stamp}`;
-  const characterNode = createSourceNode({
-    canCreateSeed: true,
-    createdAt: input.createdAt,
-    createdFrom: input.createdFrom,
-    id: characterNodeId,
-    layer: "L9",
-    parentId: input.wordNodeId,
-    position: {
-      x: input.anchor.x + 2480 + input.characterIndex * 96,
-      y: input.anchor.y - 196 + input.paragraphIndex * 150 + input.sentenceIndex * 74 + input.phraseIndex * 42 + input.wordIndex * 30,
-    },
-    source: input.source,
-    sourceRange: {
-      source_id: input.source.id,
-      locator: `${input.source.id}#character-${paragraphOrdinal}-${sentenceOrdinal}-${phraseOrdinal}-${wordOrdinal}-${characterOrdinal}`,
-      start: input.character.start,
-      end: input.character.end,
-      excerpt: input.character.text,
-    },
-    summary: `Character grain from the word "${input.word.text}".`,
-    tags: ["character", "source-backed", "seedable", "p5-4-character-terrain", ...input.tags],
-    title: input.character.text,
-    tokenRange: {
-      source_id: input.source.id,
-      start_token: input.word.tokenIndex,
-      end_token: input.word.tokenIndex,
-      text: input.character.text,
-    },
-    type: "character",
-  });
-  const unicodeNode = createUnicodeNode({
-    character: input.character,
-    characterNodeId,
-    createdAt: input.createdAt,
-    createdFrom: input.createdFrom,
-    id: unicodeNodeId,
-    position: {
-      x: input.anchor.x + 2760 + input.characterIndex * 112,
-      y: input.anchor.y - 196 + input.paragraphIndex * 150 + input.sentenceIndex * 74 + input.phraseIndex * 42 + input.wordIndex * 30,
-    },
-    source: input.source,
-    tags: input.tags,
-  });
-  const seedLoopNode = createRecursiveSeedNode({
-    character: input.character,
-    createdAt: input.createdAt,
-    createdFrom: input.createdFrom,
-    id: seedLoopNodeId,
-    parentId: unicodeNodeId,
-    position: {
-      x: input.anchor.x + 3040 + input.characterIndex * 126,
-      y: input.anchor.y - 196 + input.paragraphIndex * 150 + input.sentenceIndex * 74 + input.phraseIndex * 42 + input.wordIndex * 30,
-    },
-    source: input.source,
-    tags: input.tags,
-    word: input.word,
-  });
-
-  characterNode.child_ids = [unicodeNodeId];
-  characterNode.child_layer_id = "L10";
-  characterNode.zoom_target = { layer: "L10", node_id: unicodeNodeId };
-  unicodeNode.child_ids = [seedLoopNodeId];
-  unicodeNode.child_layer_id = "L11";
-  unicodeNode.zoom_target = { layer: "L11", node_id: seedLoopNodeId };
-  input.nodes.push(characterNode, unicodeNode, seedLoopNode);
-  input.relations.push(
-    createContainsRelation({
-      from: input.wordNodeId,
-      id: `rel-${input.slug}-word-character-${paragraphOrdinal}-${sentenceOrdinal}-${phraseOrdinal}-${wordOrdinal}-${characterOrdinal}-${input.stamp}`,
-      scoutBacked: input.scoutBacked,
-      to: characterNodeId,
-    }),
-    createTokenRelation({
-      from: characterNodeId,
-      id: `rel-${input.slug}-character-unicode-${paragraphOrdinal}-${sentenceOrdinal}-${phraseOrdinal}-${wordOrdinal}-${characterOrdinal}-${input.stamp}`,
-      to: unicodeNodeId,
-    }),
-    createRecursiveSeedRelation({
-      from: unicodeNodeId,
-      id: `rel-${input.slug}-unicode-seed-loop-${paragraphOrdinal}-${sentenceOrdinal}-${phraseOrdinal}-${wordOrdinal}-${characterOrdinal}-${input.stamp}`,
-      to: seedLoopNodeId,
-    }),
-  );
-
-  return characterNode;
-}
-
-function createUnicodeNode(input: {
-  character: CharacterGrain;
-  characterNodeId: string;
-  createdAt: string;
-  createdFrom?: CreatedFromRef;
-  id: string;
-  position: { x: number; y: number };
-  source: SourceRef;
-  tags: string[];
-}): TerrainNode {
-  const codePoint = input.character.text.codePointAt(0) ?? 0;
-  const codePointLabel = `U+${codePoint.toString(16).toUpperCase().padStart(4, "0")}`;
-
-  return {
-    id: input.id,
-    type: "dictionary_entry",
-    title: `${codePointLabel} ${input.character.text}`,
-    layer: "L10",
-    source_state: "local_only",
-    confidence: 0.74,
-    importance: 0.48,
-    tags: ["unicode", "dictionary", "seedable", "local-derived", "p5-4-character-terrain", ...input.tags],
-    summary: `Local Unicode card for "${input.character.text}". It is derived from the source character, not retrieved from an external dictionary.`,
-    source_id: input.source.id,
-    source_url: input.source.url,
-    source_title: input.source.title,
-    source_type: "dictionary",
-    retrieved_at: input.createdAt,
-    parent_id: input.characterNodeId,
-    semantic_breadcrumb: [input.source.title, "Unicode / 字典", codePointLabel],
-    quote: input.character.text,
-    source_range: {
-      source_id: input.source.id,
-      locator: `${input.source.id}#unicode-${codePointLabel}`,
-      start: input.character.start,
-      end: input.character.end,
-      excerpt: input.character.text,
-    },
-    token_range: {
-      source_id: input.source.id,
-      start_token: input.character.tokenIndex,
-      end_token: input.character.tokenIndex,
-      text: input.character.text,
-    },
-    can_create_seed: true,
-    created_from: input.createdFrom,
-    position_hint: input.position,
-    created_at: input.createdAt,
-    updated_at: input.createdAt,
-  };
-}
-
-function createRecursiveSeedNode(input: {
-  character: CharacterGrain;
-  createdAt: string;
-  createdFrom?: CreatedFromRef;
-  id: string;
-  parentId: string;
-  position: { x: number; y: number };
-  source: SourceRef;
-  tags: string[];
-  word: WordGrain;
-}): TerrainNode {
-  const seedText = input.character.text || input.word.text;
-
-  return {
-    id: input.id,
-    type: "question",
-    title: `Explore ${seedText} as seed`,
-    layer: "L11",
-    source_state: "local_only",
-    confidence: 0.68,
-    importance: 0.56,
-    tags: ["recursive-seed", "seedable", "source-grain", "p5-12level-spine", ...input.tags],
-    summary: `Recursive seed entry for "${seedText}" from ${input.source.title}. It can open a new independent 12Level SeekStar tab.`,
-    source_id: input.source.id,
-    source_url: input.source.url,
-    source_title: input.source.title,
-    source_type: input.source.source_type,
-    retrieved_at: input.createdAt,
-    parent_id: input.parentId,
-    semantic_breadcrumb: [input.source.title, "新的探索 seed", seedText],
-    quote: seedText,
-    source_range: {
-      source_id: input.source.id,
-      locator: `${input.source.id}#recursive-seed-${seedText}`,
-      start: input.character.start,
-      end: input.character.end,
-      excerpt: seedText,
-    },
-    token_range: {
-      source_id: input.source.id,
-      start_token: input.character.tokenIndex,
-      end_token: input.character.tokenIndex,
-      text: seedText,
-    },
-    can_create_seed: true,
-    created_from: input.createdFrom,
-    position_hint: input.position,
-    created_at: input.createdAt,
-    updated_at: input.createdAt,
-  };
 }
 
 function createSourceNode(input: {
@@ -830,42 +553,6 @@ function createContainsRelation(input: { from: string; id: string; scoutBacked: 
   };
 }
 
-function createTokenRelation(input: { from: string; id: string; to: string }): TerrainRelation {
-  return {
-    id: input.id,
-    from: input.from,
-    to: input.to,
-    type: "token_contains",
-    confidence: 0.76,
-    explanation: "Local deterministic Unicode expansion from a source-backed character grain.",
-    source_state: "local_only",
-  };
-}
-
-function createRecursiveSeedRelation(input: { from: string; id: string; to: string }): TerrainRelation {
-  return {
-    id: input.id,
-    from: input.from,
-    to: input.to,
-    type: "parent_child",
-    confidence: 0.68,
-    explanation: "Local deterministic recursive-seed affordance from a source-backed text grain.",
-    source_state: "local_only",
-  };
-}
-
-function createHeuristicCandidateRelation(input: { from: string; id: string; to: string }): TerrainRelation {
-  return {
-    id: input.id,
-    from: input.from,
-    to: input.to,
-    type: "semantic_similarity",
-    confidence: 0.52,
-    explanation: "Local heuristic candidate derived from repeated or salient source text. It is a seed suggestion, not an AI claim.",
-    source_state: "local_only",
-  };
-}
-
 function getSourceAnchor(scene: TerrainScene): { x: number; y: number } {
   const existingSourceNodes = scene.nodes.filter((node) => node.type === "source" || node.source_state === "source_backed");
   const offset = existingSourceNodes.length * 130;
@@ -881,8 +568,6 @@ const DEFAULT_TEXT_MATERIALIZATION: TextMaterializationProfile = {
   sentenceLimitPerParagraph: 4,
   phraseLimitPerSentence: 3,
   wordLimitPerPhrase: 6,
-  characterLimitPerWord: 4,
-  heuristicCandidateLimit: 14,
   wordsPerSentenceScanLimit: 48,
   phraseWordScanLimit: 12,
 };
@@ -892,8 +577,6 @@ const TEXT_GRAIN_MATERIALIZATION: TextMaterializationProfile = {
   sentenceLimitPerParagraph: 6,
   phraseLimitPerSentence: 4,
   wordLimitPerPhrase: 8,
-  characterLimitPerWord: 6,
-  heuristicCandidateLimit: 18,
   wordsPerSentenceScanLimit: 72,
   phraseWordScanLimit: 18,
 };
@@ -919,8 +602,6 @@ function resolveTextMaterializationProfile(input: SourceIngestionInput): TextMat
     sentenceLimitPerParagraph: clampMaterializationLimit(profile.sentenceLimitPerParagraph, 1, 18),
     phraseLimitPerSentence: clampMaterializationLimit(profile.phraseLimitPerSentence, 1, 12),
     wordLimitPerPhrase: clampMaterializationLimit(profile.wordLimitPerPhrase, 1, 20),
-    characterLimitPerWord: clampMaterializationLimit(profile.characterLimitPerWord, 1, 16),
-    heuristicCandidateLimit: clampMaterializationLimit(profile.heuristicCandidateLimit, 0, 48),
     wordsPerSentenceScanLimit: clampMaterializationLimit(profile.wordsPerSentenceScanLimit, 8, 180),
     phraseWordScanLimit: clampMaterializationLimit(profile.phraseWordScanLimit, 4, 60),
   };
@@ -1002,120 +683,6 @@ function createTextTerrain(body: string, materialization: TextMaterializationPro
   };
 }
 
-function createHeuristicCandidateNode(input: {
-  anchor: { x: number; y: number };
-  candidate: HeuristicCandidateGrain;
-  createdAt: string;
-  createdFrom?: CreatedFromRef;
-  id: string;
-  index: number;
-  source: SourceRef;
-  sourceNodeId: string;
-  tags: string[];
-}): TerrainNode {
-  const angle = -Math.PI / 2 + input.index * 0.58;
-  const radius = 360 + Math.floor(input.index / 5) * 110;
-
-  return {
-    id: input.id,
-    type: "concept",
-    title: input.candidate.text,
-    layer: "L1",
-    source_state: "local_only",
-    confidence: Math.min(0.72, 0.38 + input.candidate.score / 18),
-    importance: Math.min(0.82, 0.42 + input.candidate.score / 16),
-    tags: ["heuristic-candidate", "seedable", "local-derived", "p5-5-candidate-pool", ...input.tags],
-    summary: `Local candidate seed from ${input.source.title}. It appears ${input.candidate.count} time${input.candidate.count === 1 ? "" : "s"} in the source text.`,
-    source_id: input.source.id,
-    source_url: input.source.url,
-    source_title: input.source.title,
-    source_type: input.source.source_type,
-    retrieved_at: input.createdAt,
-    parent_id: input.sourceNodeId,
-    semantic_breadcrumb: [input.source.title, "Heuristic candidates", input.candidate.text],
-    quote: input.candidate.text,
-    source_range: {
-      source_id: input.source.id,
-      locator: `${input.source.id}#heuristic-candidate-${input.index + 1}`,
-      start: input.candidate.start,
-      end: input.candidate.end,
-      excerpt: input.candidate.text,
-    },
-    token_range: {
-      source_id: input.source.id,
-      start_token: input.candidate.tokenStart,
-      end_token: input.candidate.tokenEnd,
-      text: input.candidate.text,
-    },
-    can_create_seed: true,
-    created_from: input.createdFrom,
-    position_hint: {
-      x: input.anchor.x + Math.cos(angle) * radius,
-      y: input.anchor.y + Math.sin(angle) * radius,
-    },
-    created_at: input.createdAt,
-    updated_at: input.createdAt,
-  };
-}
-
-function createHeuristicCandidates(textTerrain: TextTerrain): HeuristicCandidateGrain[] {
-  const candidatesByKey = new Map<string, HeuristicCandidateGrain>();
-
-  for (const paragraph of textTerrain.paragraphs) {
-    for (const sentence of paragraph.sentences) {
-      for (const phrase of sentence.phrases) {
-        collectCandidate(candidatesByKey, phrase.text, phrase.start, phrase.end, phrase.tokenStart, phrase.tokenEnd, 1.35);
-      }
-
-      for (const word of sentence.phrases.flatMap((phrase) => phrase.words)) {
-        collectCandidate(candidatesByKey, word.text, word.start, word.end, word.tokenIndex, word.tokenIndex, 1);
-      }
-    }
-  }
-
-  return [...candidatesByKey.values()]
-    .map((candidate) => ({
-      ...candidate,
-      score: candidate.score + Math.min(4, candidate.count) * 1.6 + Math.min(3, candidate.text.length / 7),
-    }))
-    .sort((left, right) => right.score - left.score || left.start - right.start);
-}
-
-function collectCandidate(
-  candidatesByKey: Map<string, HeuristicCandidateGrain>,
-  rawText: string,
-  start: number,
-  end: number,
-  tokenStart: number,
-  tokenEnd: number,
-  baseScore: number,
-): void {
-  const text = normalizeCandidateText(rawText);
-  const key = text.toLocaleLowerCase();
-
-  if (!isUsefulCandidate(text)) {
-    return;
-  }
-
-  const current = candidatesByKey.get(key);
-
-  if (current) {
-    current.count += 1;
-    current.score += baseScore;
-    return;
-  }
-
-  candidatesByKey.set(key, {
-    count: 1,
-    end,
-    score: baseScore,
-    start,
-    text,
-    tokenEnd,
-    tokenStart,
-  });
-}
-
 function createWordGrains(text: string, offset: number, tokenStart: number, limit: number): WordGrain[] {
   return [...text.matchAll(/[\p{L}\p{N}_-]+/gu)].slice(0, limit).map((match, index) => ({
     start: offset + (match.index ?? 0),
@@ -1165,47 +732,6 @@ function createPhraseGrains(
     });
 }
 
-function createCharacterGrains(word: WordGrain): CharacterGrain[] {
-  let offset = 0;
-
-  return Array.from(word.text).map((character) => {
-    const start = word.start + offset;
-    offset += character.length;
-
-    return {
-      start,
-      end: start + character.length,
-      text: character,
-      tokenIndex: word.tokenIndex,
-    };
-  });
-}
-
-function normalizeCandidateText(rawText: string): string {
-  return rawText
-    .trim()
-    .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")
-    .replace(/\s+/g, " ");
-}
-
-function isUsefulCandidate(text: string): boolean {
-  const lower = text.toLocaleLowerCase();
-
-  if (text.length < 4 || text.length > 42) {
-    return false;
-  }
-
-  if (/^\d+$/.test(text)) {
-    return false;
-  }
-
-  if (STOP_WORDS.has(lower)) {
-    return false;
-  }
-
-  return /[\p{L}\p{N}]/u.test(text);
-}
-
 function createExcerptTitle(excerpt: string, index: number): string {
   const firstSentence = excerpt.match(/[^.!?。！？]+/)?.[0]?.trim();
   const title = firstSentence || `Source excerpt ${index + 1}`;
@@ -1238,36 +764,3 @@ function toSlug(value: string): string {
 
   return slug || "source";
 }
-
-const STOP_WORDS = new Set([
-  "about",
-  "after",
-  "again",
-  "also",
-  "because",
-  "before",
-  "between",
-  "could",
-  "from",
-  "have",
-  "into",
-  "more",
-  "only",
-  "other",
-  "over",
-  "should",
-  "source",
-  "that",
-  "their",
-  "there",
-  "these",
-  "they",
-  "this",
-  "through",
-  "under",
-  "when",
-  "where",
-  "which",
-  "with",
-  "would",
-]);

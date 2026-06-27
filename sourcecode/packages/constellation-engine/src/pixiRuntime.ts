@@ -97,7 +97,8 @@ export interface TerrainPixiProjectionOptions {
   viewportBounds?: ProjectionViewportBounds;
 }
 
-const candidateStatuses = new Set<ScoutObservation["status"]>(["pending", "observed", "source_candidate", "failed"]);
+const AUTO_CANDIDATE_VERIFICATION_PROVIDER_ID = "seekstar-auto-candidate-verification";
+const candidateStatuses = new Set<ScoutObservation["status"]>(["pending", "observed", "source_candidate"]);
 const TILE_ABSORPTION_VIEWPORT_SHARE = 0.8;
 const DEFAULT_TILE_FIELD_TARGET_COUNT = 25;
 const TILE_ASPECT_RATIO = 16 / 10;
@@ -108,19 +109,10 @@ export function createTerrainPixiProjection(
   viewport: ViewportState,
   options: TerrainPixiProjectionOptions = {},
 ): TerrainPixiProjection {
-  const currentLayer = scene.layers.find((layer) => layer.id === viewport.layer);
-  const parentLayerId = currentLayer?.parent_layer_id;
-  const childLayerIds = currentLayer?.child_layer_ids ?? [];
-  const visibleNodes = scene.nodes.filter((node) => node.layer === viewport.layer);
-  const layerNodes = applyMvpLayerLayout(visibleNodes.length > 0 ? visibleNodes : scene.nodes, viewport.layer);
+  const visibleNodes = scene.nodes.filter((node) => node.layer === viewport.layer && isRenderableNodeForLayer(node, viewport.layer));
+  const layerNodes = applyMvpLayerLayout(visibleNodes, viewport.layer);
   const layerNodeIds = new Set(layerNodes.map((node) => node.id));
-  const ghostNodes = scene.nodes.filter(
-    (node) =>
-      node.layer !== viewport.layer &&
-      (node.layer === parentLayerId || childLayerIds.includes(node.layer)) &&
-      !layerNodeIds.has(node.id),
-  );
-  const renderedNodes = [...ghostNodes, ...layerNodes];
+  const renderedNodes = layerNodes;
   const renderedNodeIds = new Set(renderedNodes.map((node) => node.id));
   const candidateObservations = (scene.scout_observations ?? []).filter(
     (observation) =>
@@ -130,13 +122,13 @@ export function createTerrainPixiProjection(
       observation.status !== "converted",
   );
   const tileSurfaces = createTileSurfaces(layerNodes, viewport, options);
-  const candidateTileSurfaces = createCandidateTileSurfaces(candidateObservations, viewport, options);
+  const candidateTileSurfaces: CandidateTileSurface[] = [];
   const nodesById = new Map(renderedNodes.map((node) => [node.id, node]));
 
   return {
     candidateTileSurfaces,
     candidateObservations,
-    mainContent: createMainContentProjection(scene, viewport, tileSurfaces, candidateTileSurfaces),
+    mainContent: createMainContentProjection(scene, viewport, tileSurfaces),
     renderedNodes,
     tileSurfaces,
     visibleNodes: layerNodes,
@@ -178,8 +170,8 @@ function createMainContentProjection(
   scene: TerrainScene,
   viewport: ViewportState,
   sourceTileSurfaces: TerrainTileSurface[],
-  candidateTileSurfaces: CandidateTileSurface[],
 ): MainContentProjection {
+  const candidateTileSurfaces: CandidateTileSurface[] = [];
   const directUrlObservation = getLatestDirectUrlObservation(scene);
   const candidateObservations = getCandidateObservationsForLayer(scene, viewport.layer);
   const cartographerNodes = getCartographerNodesForLayer(scene, viewport.layer);
@@ -230,30 +222,19 @@ function createMainContentProjection(
     };
   }
 
-  if (candidateTileSurfaces.length > 0 || candidateObservations.length > 0) {
-    const candidateCount = candidateTileSurfaces.length || candidateObservations.length;
-    const firstCandidateSurface = candidateTileSurfaces[0];
+  if (candidateObservations.length > 0) {
+    const candidateCount = candidateObservations.length;
     const firstCandidateObservation = candidateObservations[0];
-    const allCandidateSurfacesPending =
-      candidateTileSurfaces.length > 0 && candidateTileSurfaces.every((surface) => surface.actionState === "observing");
-    const allCandidateSurfacesFailed =
-      candidateTileSurfaces.length > 0 && candidateTileSurfaces.every((surface) => surface.actionState === "failed");
-    const intakeStatus = allCandidateSurfacesPending ? "pending" : allCandidateSurfacesFailed ? "failed" : "ready";
-    const statusText =
-      intakeStatus === "pending"
-        ? `Discovering candidate URLs. Provider results will replace this pending marker.`
-        : intakeStatus === "failed"
-          ? `${candidateCount} candidate discovery attempt${candidateCount === 1 ? "" : "s"} failed.`
-          : `${candidateCount} candidate source${candidateCount === 1 ? "" : "s"} discovered. Observe one to create a source-backed L3 tile.`;
+    const statusText = `${candidateCount} source candidate${candidateCount === 1 ? "" : "s"} queued for DataService verification. Verified sources become L3 tiles.`;
 
     return {
-      intakeStatus,
+      intakeStatus: "ready",
       mode: "source_candidate_field",
       candidateTileSurfaces,
       sourceTileSurfaces,
-      statusObservationId: firstCandidateSurface?.observationId ?? firstCandidateObservation?.id,
+      statusObservationId: firstCandidateObservation?.id,
       statusText,
-      statusUrl: firstCandidateSurface?.url ?? firstCandidateObservation?.url ?? firstCandidateObservation?.query,
+      statusUrl: firstCandidateObservation?.url ?? firstCandidateObservation?.query,
     };
   }
 
@@ -276,7 +257,17 @@ function createMainContentProjection(
     };
   }
 
-  if (viewport.layer === "L2" || viewport.layer === "L3") {
+  if (viewport.layer === "L2") {
+    return {
+      intakeStatus: "idle",
+      mode: "cartographer_chunk_field",
+      candidateTileSurfaces,
+      sourceTileSurfaces,
+      statusText: "Source Orientation terrain is waiting for Cartographer generation.",
+    };
+  }
+
+  if (viewport.layer === "L3") {
     return {
       emptyReason: "No source-backed webpage/document tile exists on this layer yet.",
       intakeStatus: "idle",
@@ -340,7 +331,7 @@ function applyMvpLayerLayout(nodes: TerrainNode[], layer: LayerId): TerrainNode[
 }
 
 function isMacroGalleryLayer(layer: LayerId): boolean {
-  return layer === "L0" || layer === "L1";
+  return layer === "supra_macro" || layer === "L0" || layer === "L1" || layer === "L2";
 }
 
 function createMvpGalleryNodes(nodes: TerrainNode[]): TerrainNode[] {
@@ -498,7 +489,19 @@ function createMvpGalleryPosition(index: number, total: number): { x: number; y:
 }
 
 function getCartographerNodesForLayer(scene: TerrainScene, layer: LayerId): TerrainNode[] {
+  if (layer === "L3") {
+    return [];
+  }
+
   return scene.nodes.filter((node) => node.layer === layer && (node.source_state === "cartographer_primary" || node.tags?.includes("cartographer")));
+}
+
+function isRenderableNodeForLayer(node: TerrainNode, layer: LayerId): boolean {
+  if (layer !== "L3") {
+    return true;
+  }
+
+  return isTileSurfaceNode(node);
 }
 
 function getCandidateObservationsForLayer(scene: TerrainScene, layer: LayerId): ScoutObservation[] {
@@ -516,6 +519,7 @@ function getLatestDirectUrlObservation(scene: TerrainScene): ScoutObservation | 
     .filter(
       (observation) =>
         observation.discovery_mode === "direct_url" &&
+        observation.provider_id !== AUTO_CANDIDATE_VERIFICATION_PROVIDER_ID &&
         (observation.status === "pending" || observation.status === "failed"),
     )
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
@@ -570,63 +574,6 @@ function createTileSurfaces(
         worldBounds,
       };
     });
-}
-
-function createCandidateTileSurfaces(
-  observations: ScoutObservation[],
-  viewport: ViewportState,
-  options: TerrainPixiProjectionOptions,
-): CandidateTileSurface[] {
-  if (!isTileLayer(viewport.layer)) {
-    return [];
-  }
-
-  const viewportWorldBounds = options.viewportBounds ? createViewportWorldBounds(viewport, options.viewportBounds) : undefined;
-  const nearWorldBounds = viewportWorldBounds ? inflateRect(viewportWorldBounds, PRELOAD_VIEWPORT_MARGIN) : undefined;
-  const tileSize = resolveTileWorldSize(viewport, options.viewportBounds, options.tileFieldTargetCount);
-
-  return observations
-    .filter((observation) => observation.layer === viewport.layer && observation.position_hint)
-    .map((observation) => {
-      const position = observation.position_hint ?? { x: 0, y: 0 };
-      const worldBounds = {
-        x: position.x - tileSize.width / 2,
-        y: position.y - tileSize.height / 2,
-        width: tileSize.width,
-        height: tileSize.height,
-      };
-      const screenBounds = options.viewportBounds ? projectWorldRect(worldBounds, viewport, options.viewportBounds) : undefined;
-      const focused = observation.id === options.focusedObservationId;
-      const visible = viewportWorldBounds ? rectsIntersect(worldBounds, viewportWorldBounds) : true;
-      const near = nearWorldBounds ? rectsIntersect(worldBounds, nearWorldBounds) : visible;
-
-      return {
-        actionState: resolveCandidateActionState(observation),
-        confidence: observation.confidence,
-        layer: observation.layer ?? viewport.layer,
-        observationId: observation.id,
-        providerId: observation.provider_id ?? observation.provider_kind ?? observation.adapter ?? observation.discovery_mode,
-        screenBounds,
-        snippet: observation.failure_reason ?? observation.snippet,
-        status: observation.status,
-        title: observation.title,
-        url: observation.url,
-        visibility: resolveTileVisibility({ focused, near, visible }),
-        worldBounds,
-      };
-    });
-}
-
-function resolveCandidateActionState(observation: ScoutObservation): CandidateTileSurface["actionState"] {
-  if (observation.status === "pending") {
-    return "observing";
-  }
-
-  if (observation.status === "failed") {
-    return "failed";
-  }
-
-  return "candidate";
 }
 
 function isTileSurfaceNode(node: TerrainNode): boolean {

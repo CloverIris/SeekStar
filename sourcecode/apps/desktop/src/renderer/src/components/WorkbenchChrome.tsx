@@ -36,7 +36,7 @@ export function WorkbenchHeader({
       <div className="workbench-context">
         <span className="workbench-context-label">{activeTab.seed}</span>
         <span className="workbench-context-meta">
-          {layer} - {layerLabel}
+          {formatLayerMeta(layer, layerLabel)}
         </span>
         <div className="workbench-breadcrumb" aria-label="Semantic breadcrumb">
           {breadcrumbItems.map((item, index) => {
@@ -60,13 +60,21 @@ export function WorkbenchHeader({
         <span className="workbench-job">{jobState}</span>
         <SidebarToggleButton
           expanded={rightSidebarExpanded}
-          label="Inspector"
+          label="AI Map Control"
           onClick={onToggleRightSidebar}
           side="right"
         />
       </div>
     </header>
   );
+}
+
+function formatLayerMeta(layer: LayerId, layerLabel: string): string {
+  if (layerLabel === "Deep Lens" || layerLabel === "Recursive Seed") {
+    return layerLabel;
+  }
+
+  return `${layer} - ${layerLabel}`;
 }
 
 export function CommandComposer({

@@ -1,4 +1,4 @@
-import { app, ipcMain, webContents } from "electron";
+import { app, BrowserWindow, ipcMain } from "electron";
 import { mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { CartographerChunkLifecycleRecord } from "@seekstar/constellation-engine";
@@ -275,7 +275,7 @@ function compareCartographerChunkRecords(left: CartographerChunkStoreRecord, rig
 }
 
 function broadcastCartographerChunkSnapshot(snapshot: CartographerChunkStoreSnapshot, excludeWebContentsId?: number): void {
-  for (const targetWebContents of webContents.getAllWebContents()) {
+  for (const targetWebContents of BrowserWindow.getAllWindows().map((window) => window.webContents)) {
     if (targetWebContents.id === excludeWebContentsId || targetWebContents.isDestroyed()) {
       continue;
     }

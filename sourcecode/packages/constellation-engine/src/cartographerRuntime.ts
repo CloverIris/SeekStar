@@ -125,7 +125,7 @@ export interface CartographerLevelRuntimeOutput {
 }
 
 export type CartographerChunkCacheStatus = "hit" | "miss" | "refresh";
-export type CartographerChunkLifecyclePhase = "applied" | "cancelled";
+export type CartographerChunkLifecyclePhase = "applied" | "cancelled" | "error";
 export type CartographerChunkLifecycleRole = "active" | "preload";
 
 export interface CartographerChunkLifecycleRecord {
@@ -234,17 +234,39 @@ export class CartographerChunkCoordinator {
   async request(input: CartographerChunkRequest): Promise<CartographerChunkRequestResult> {
     const runtimeInput = toRuntimeInput(input);
     const cacheKey = createCartographerChunkCacheKey(runtimeInput);
-    const cached = input.forceRefresh ? undefined : await this.storage?.loadChunk(cacheKey);
-    const cacheStatus: CartographerChunkCacheStatus = cached ? "hit" : input.forceRefresh ? "refresh" : "miss";
+    const stored = input.forceRefresh ? undefined : await this.storage?.loadChunk(cacheKey);
+    const cached = isUsableCartographerCacheRecord(stored) ? stored : undefined;
+    const cacheStatus: CartographerChunkCacheStatus = cached ? "hit" : input.forceRefresh || stored ? "refresh" : "miss";
+    traceCartographerEngine("coordinator.request", {
+      apply_to_scene: input.applyToScene !== false,
+      cache_key: cacheKey,
+      cache_status: cacheStatus,
+      ignored_cached_status: stored && !cached ? stored.output.status : undefined,
+      chunk: runtimeInput.chunk,
+      level_id: runtimeInput.level_id,
+      mode: runtimeInput.mode,
+      seed: runtimeInput.seed,
+    });
     const output = cached ? cached.output : await this.generate(runtimeInput, { signal: input.signal });
 
-    if (output.status !== "cancelled") {
+    traceCartographerEngine("coordinator.output", {
+      cache_status: cacheStatus,
+      diagnostics: output.diagnostics.slice(0, 4),
+      level_id: output.level_id,
+      mode: output.mode,
+      node_count: output.nodes.length,
+      relation_count: output.relations.length,
+      source_candidate_count: output.source_candidates.length,
+      status: output.status,
+    });
+
+    if (isCacheableCartographerOutput(output)) {
       await this.saveOutput(cacheKey, runtimeInput, output, cached);
     }
 
-    const preloadResults = input.preload && output.status !== "cancelled" ? await this.preload(output, runtimeInput, input.signal) : [];
+    const preloadResults = input.preload && output.status === "ok" ? await this.preload(output, runtimeInput, input.signal) : [];
     const preloaded = preloadResults.map((result) => result.output);
-    const sceneApply = input.applyToScene === false || output.status === "cancelled"
+    const sceneApply = input.applyToScene === false || output.status !== "ok"
       ? undefined
       : applyLevelRuntimeOutputToScene(input.scene, output, {
           focusFirstNode: false,
@@ -291,8 +313,9 @@ export class CartographerChunkCoordinator {
         },
       };
       const cacheKey = createCartographerChunkCacheKey(runtimeInput);
-      const cached = await this.storage?.loadChunk(cacheKey);
-      const cacheStatus: CartographerChunkCacheStatus = cached ? "hit" : "miss";
+      const stored = await this.storage?.loadChunk(cacheKey);
+      const cached = isUsableCartographerCacheRecord(stored) ? stored : undefined;
+      const cacheStatus: CartographerChunkCacheStatus = cached ? "hit" : stored ? "refresh" : "miss";
 
       if (signal?.aborted) {
         break;
@@ -300,11 +323,11 @@ export class CartographerChunkCoordinator {
 
       const nextOutput = cached?.output ?? await this.generate(runtimeInput, { signal });
 
-      if (!cached && nextOutput.status !== "cancelled") {
+      if (!cached && isCacheableCartographerOutput(nextOutput)) {
         await this.saveOutput(cacheKey, runtimeInput, nextOutput);
       }
 
-      if (nextOutput.status === "cancelled") {
+      if (nextOutput.status !== "ok") {
         break;
       }
 
@@ -352,6 +375,14 @@ export class CartographerChunkCoordinator {
   }
 }
 
+function isUsableCartographerCacheRecord(record: CartographerChunkCacheRecord | undefined): record is CartographerChunkCacheRecord {
+  return Boolean(record && isCacheableCartographerOutput(record.output));
+}
+
+function isCacheableCartographerOutput(output: CartographerLevelRuntimeOutput): boolean {
+  return output.status === "ok" && (output.nodes.length > 0 || output.relations.length > 0 || output.source_candidates.length > 0);
+}
+
 const DEFAULT_CARTOGRAPHER_PROMPT_PROFILE_ID = "seekstar-default-p6-gallery-v3";
 
 function createCartographerChunkLifecycleRecord(input: {
@@ -368,7 +399,7 @@ function createCartographerChunkLifecycleRecord(input: {
     levelId: input.output.level_id,
     message: `${input.role === "active" ? "Loaded" : "Preloaded"} ${input.output.level_id} chunk ${chunk.key}`,
     mode: input.output.mode,
-    phase: input.output.status === "cancelled" ? "cancelled" : "applied",
+    phase: input.output.status === "ok" ? "applied" : input.output.status === "cancelled" ? "cancelled" : "error",
     role: input.role,
     updatedAt: input.output.generated_at,
   };
@@ -433,6 +464,27 @@ export function applyLevelRuntimeOutputToScene(
 
     return [mappedObservation];
   });
+
+  traceCartographerEngine("scene.apply.prepare", {
+    added_node_count: nextNodes.length,
+    added_observation_count: nextObservations.length,
+    added_relation_count: nextRelations.length,
+    existing_node_count: scene.nodes.length,
+    existing_observation_count: scene.scout_observations?.length ?? 0,
+    existing_relation_count: scene.relations.length,
+    output: {
+      chunk: output.chunk.key,
+      diagnostics: output.diagnostics.slice(0, 4),
+      level_id: output.level_id,
+      mode: output.mode,
+      node_count: output.nodes.length,
+      relation_count: output.relations.length,
+      source_candidate_count: output.source_candidates.length,
+      status: output.status,
+    },
+    target_layer: targetLayer,
+  });
+
   const focusNode = options.focusFirstNode ? nextNodes[0] : undefined;
   const nextViewport = focusNode
     ? {
@@ -479,6 +531,17 @@ export function applyLevelRuntimeOutputToScene(
     },
   });
 
+  traceCartographerEngine("scene.apply.done", {
+    added_node_count: nextNodes.length,
+    added_observation_count: nextObservations.length,
+    added_relation_count: nextRelations.length,
+    next_node_count: nextScene.nodes.length,
+    next_observation_count: nextScene.scout_observations?.length ?? 0,
+    next_relation_count: nextScene.relations.length,
+    target_layer: targetLayer,
+    viewport_layer: nextScene.viewport.layer,
+  });
+
   return {
     addedNodeIds: nextNodes.map((node) => node.id),
     addedObservationIds: nextObservations.map((observation) => observation.id),
@@ -503,7 +566,7 @@ export function createCartographerChunkCacheKey(input: CartographerLevelRuntimeI
 
 export function mapLevelBandToLayer(levelId: CartographerLevelBandId): LayerId {
   if (levelId === "supra_macro") {
-    return "L0";
+    return "supra_macro";
   }
 
   if (levelId === "deep_lens") {
@@ -730,6 +793,44 @@ function normalizeUrlKey(url: string): string {
     return `${parsed.protocol}//${parsed.host}${parsed.pathname}${parsed.search}`.toLowerCase();
   } catch {
     return url.trim().toLowerCase();
+  }
+}
+
+function traceCartographerEngine(event: string, payload?: unknown): void {
+  if (!isSeekStarTraceEnabled()) {
+    return;
+  }
+
+  const suffix = payload === undefined ? "" : ` ${stringifyCartographerEngineTracePayload(payload)}`;
+  console.info(`[SeekStar][constellation-engine] ${event}${suffix}`);
+}
+
+function isSeekStarTraceEnabled(): boolean {
+  if (process.env.SEEKSTAR_TRACE === "0" || process.env.SEEKSTAR_TRACE === "false") {
+    return false;
+  }
+
+  return (
+    process.env.SEEKSTAR_TRACE === "1" ||
+    process.env.SEEKSTAR_TRACE === "true" ||
+    process.env.npm_lifecycle_event === "dev" ||
+    process.env.NODE_ENV === "development"
+  );
+}
+
+function stringifyCartographerEngineTracePayload(payload: unknown): string {
+  try {
+    return JSON.stringify(payload, (_key, value: unknown) => {
+      if (typeof value === "string" && value.length > 800) {
+        return `${value.slice(0, 800)}...<truncated ${value.length - 800} chars>`;
+      }
+
+      return value;
+    });
+  } catch (error) {
+    return JSON.stringify({
+      trace_error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 

@@ -3,7 +3,12 @@ import type { AiAssistantInput, AiAssistantOutput } from "@seekstar/ai-service";
 import type { ScoutPlan, ScoutRunResult } from "@seekstar/core-schema";
 import type { WorkspaceChangeEvent } from "@seekstar/storage-service";
 import type { SeekStarSettings } from "../main/appSettingsStore";
-import type { AiCartographerPromptPreviewRequest, AiCartographerPromptPreviewResult } from "../main/aiAssistantBridge";
+import type {
+  AiAdapterTestRequest,
+  AiAdapterTestResult,
+  AiCartographerPromptPreviewRequest,
+  AiCartographerPromptPreviewResult,
+} from "../main/aiAssistantBridge";
 import type { AiCostLedgerSnapshot } from "../main/aiCostLedgerStore";
 import type { AssistantSessionSnapshot } from "../main/assistantSessionStore";
 import type { CartographerChunkStoreSnapshot } from "../main/cartographerChunkStore";
@@ -136,6 +141,7 @@ contextBridge.exposeInMainWorld("seekstar", {
       ipcRenderer.invoke("ai:preview-cartographer-prompt", input),
     saveSession: (snapshot: AssistantSessionSnapshot): Promise<AssistantSessionSnapshot> =>
       ipcRenderer.invoke("assistant-session:save", snapshot),
+    testAdapter: (input: AiAdapterTestRequest): Promise<AiAdapterTestResult> => ipcRenderer.invoke("ai:test-adapter", input),
   },
   tiles: {
     clear: (tabId: string): Promise<void> => ipcRenderer.invoke("tiles:clear", tabId),

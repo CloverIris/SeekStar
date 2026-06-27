@@ -14,6 +14,15 @@ export interface SemanticLayerDefinition {
 
 export const CANONICAL_LAYER_DEFINITIONS = [
   {
+    id: "supra_macro",
+    order: -1,
+    label: "Supra Macro",
+    focal_band: "macro_gallery",
+    description: "Broader systems, parent domains, and high-level orientation above the Star Gallery.",
+    primary_node_types: ["domain", "topic", "concept", "fog_region", "constellation_anchor"],
+    zoom: 0.86,
+  },
+  {
     id: "L0",
     order: 0,
     label: "Star Gallery",

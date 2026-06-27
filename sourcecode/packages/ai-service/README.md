@@ -8,17 +8,17 @@ It should not become a chat-only utility. Its primary job is to generate, organi
 
 The package now provides the first OpenAI-compatible boundary and CLI harness:
 
-- `AiCartographerService` with OpenAI-compatible and deterministic mock providers;
-- `SEEKSTAR_AI_API_KEY` first, then `OPENAI_API_KEY` fallback for real calls;
+- `AiCartographerService` with an OpenAI-compatible provider boundary;
+- direct `api_key_value`, explicit env references, then `SEEKSTAR_AI_API_KEY` / `OPENAI_API_KEY` fallback for real calls;
 - explicit `missing_key` outputs when no key is available;
 - structured JSON validation for nodes, relations, and source candidates;
 - CLI commands:
 
 ```bash
 node packages/ai-service/dist/cli.js status
-node packages/ai-service/dist/cli.js generate --input input.json --provider mock
+node packages/ai-service/dist/cli.js generate --input input.json --provider deepseek --api-key-env DEEPSEEK_API_KEY
 node packages/ai-service/dist/cli.js prompt --input input.json
-node packages/ai-service/dist/cli.js assist --input assistant-input.json --provider mock
+node packages/ai-service/dist/cli.js assist --input assistant-input.json --provider deepseek --api-key-env DEEPSEEK_API_KEY
 node packages/ai-service/dist/cli.js assistant-prompt --input assistant-input.json
 node packages/ai-service/dist/cli.js validate --input output.json
 node packages/ai-service/dist/cli.js validate-assistant --input assistant-output.json
@@ -38,6 +38,10 @@ The implementation boundary supports:
 - request cancellation through `AbortSignal`; persistent cost ledgers and UI/export live above this package in the desktop App Framework.
 
 No permanent plaintext API keys should be written to project JSON. Secret storage can start as a key reference and later move to OS-backed encryption.
+
+AI Service is a real-provider boundary, not a product mock fallback. Product routes should resolve to OpenAI-compatible providers such as DeepSeek, validate structured JSON, return explicit diagnostics, and surface telemetry. Deterministic fixtures belong in tests only.
+
+The provider should receive compact, band-specific generation input. Full prompt profiles, all level modules, distant scene nodes, and verbose debug payloads should not be sent on every terrain request. Level Runtime/App Framework are responsible for reducing a scene into the active module, focus anchor, nearby anchors, movement vector, source-candidate policy, and compact chunk settings before calling `generate()`.
 
 ## Cartographer Jobs
 
@@ -112,9 +116,9 @@ P6.41 adds configurable chunk scheduling above AI Service. Settings now control 
 
 P6.42 adds editable prompt profile overrides above AI Service. Desktop settings now edit language, density, per-band target count, prompt brief, and constraints; Level Runtime applies those overrides before building `context.level_module`. AI Service receives the resulting structured generation input and prompt context, but it still does not own settings persistence, prompt-profile UI, or chunk cache invalidation.
 
-P6.43 adds provider telemetry at the AI Service boundary. OpenAI-compatible calls now return attempts, start/completion timestamps, duration, provider token usage when available, and estimated USD cost when pricing is configured. The deterministic mock provider emits zero-token, zero-cost telemetry for repeatable CLI and smoke tests. AI Service still does not persist a cost ledger or decide UI presentation.
+P6.43 adds provider telemetry at the AI Service boundary. OpenAI-compatible calls now return attempts, start/completion timestamps, duration, provider token usage when available, and estimated USD cost when pricing is configured. Module smoke tests use local fixture output when deterministic terrain is needed; fixture generators are not exported as AI providers. AI Service still does not persist a cost ledger or decide UI presentation.
 
-P6.44 adds the first provider cancellation baseline. `AiCartographerService.generate()` and `assist()` accept an optional `AbortSignal`, mock and OpenAI-compatible providers return explicit `cancelled` outputs with `ai.cancelled` diagnostics, and OpenAI-compatible timeout remains a separate `timeout` provider status. This gives App Framework transactions a real cancellation protocol without making AI Service own cancel buttons or renderer state.
+P6.44 adds the first provider cancellation baseline. `AiCartographerService.generate()` and `assist()` accept an optional `AbortSignal`, OpenAI-compatible providers return explicit `cancelled` outputs with `ai.cancelled` diagnostics, and provider timeout remains a separate `timeout` status. This gives App Framework transactions a real cancellation protocol without making AI Service own cancel buttons or renderer state.
 
 P6.45 wires that protocol into the desktop Cartographer transaction layer above AI Service. Electron main owns tab-scoped transaction `AbortController`s for bootstrap, viewport expansion, and failed-source replacement, while the provider still only honors signals and returns structured `cancelled` results.
 
@@ -148,12 +152,14 @@ P6.11 adds the first App Framework settings boundary for this package.
 
 Desktop settings can now choose an active Cartographer provider:
 
-- built-in deterministic `mock` provider for development and smoke tests;
-- OpenAI-compatible provider configured by `base_url`, `model`, env-key reference, timeout, and retry knobs.
+- DeepSeek as the default OpenAI-compatible provider;
+- custom OpenAI-compatible providers configured by `base_url`, `model`, direct key/env-key reference, timeout, and retry knobs.
 
-The Electron Cartographer bridge loads settings for each chunk request, resolves the active provider into `AiCartographerService`, and passes that service into `@seekstar/level-runtime`. Plaintext API keys are still not saved in JSON; real providers use env references such as `SEEKSTAR_AI_API_KEY` or `OPENAI_API_KEY`.
+The Electron Cartographer bridge loads settings for each chunk request, resolves the active provider into `AiCartographerService`, and passes that service into `@seekstar/level-runtime`. Settings support a local masked API key value plus env references such as `DEEPSEEK_API_KEY`, `SEEKSTAR_AI_API_KEY`, or `OPENAI_API_KEY`.
 
-P6.59 adds DeepSeek as a first-class OpenAI-compatible settings preset above this package. The AI Service implementation remains generic: Settings supplies `base_url: https://api.deepseek.com`, `model: deepseek-v4-flash`, and `api_key_ref: { kind: "env", name: "DEEPSEEK_API_KEY" }`. CLI and module tests can use the same provider boundary as long as the environment variable is present in the process that launches the test.
+P6.59 adds DeepSeek as a first-class OpenAI-compatible settings preset above this package. The AI Service implementation remains generic: Settings supplies `base_url: https://api.deepseek.com`, `model: deepseek-v4-flash`, and either `api_key_value` or `api_key_ref: { kind: "env", name: "DEEPSEEK_API_KEY" }`. CLI generation uses the same real provider boundary; deterministic module tests use local fixtures instead of an exported provider.
+
+P6.63 records the token-discipline boundary: default opening sky should not ask the provider to generate every band, L2/L3 should not be preloaded by default, and L3 candidates returned by the model remain unverified queue objects until DataService observes them. AI Service validates provider output; it does not decide that an unverified webpage-looking node is a source-backed tile.
 
 P6.14 adds route rules above the provider boundary. Desktop settings can match a level and optional generation modes, choose a provider, and optionally override the model. AI Service does not own that routing table; it receives the already resolved `AiProviderConfig` and remains responsible for provider execution, diagnostics, and output validation.
 

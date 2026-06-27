@@ -1,14 +1,11 @@
 import type {
-  LayerId,
-  ScoutObservation,
-  TerrainLayer,
   TerrainNode,
   TerrainRelation,
   TerrainScene,
   TileAbsorptionTrigger,
   ViewportState,
 } from "@seekstar/core-schema";
-import { getLayerDefinition, isMacroLayer } from "@seekstar/core-schema";
+import { isMacroLayer } from "@seekstar/core-schema";
 import type { CSSProperties, PointerEvent, ReactElement } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LocateFixed, Maximize2, RotateCcw } from "lucide-react";
@@ -18,7 +15,6 @@ import {
   createTileAbsorptionTransition,
   type CanvasPoint,
   type CanvasTool,
-  type CandidateTileSurface,
   type LassoDraft,
   type ProjectionViewportBounds,
   type TileAbsorptionTransition,
@@ -26,7 +22,6 @@ import {
   fitViewportToNodes,
   normalizeRect,
   resetViewport,
-  resolveZoomForLayer,
   screenToWorld,
   selectNodesInRect,
   zoomViewportAtScreenPoint,
@@ -45,14 +40,12 @@ interface TerrainCanvasProps {
   onBrowserModeExit: () => void;
   onCurrentPageDeepLens: (nodeId: string) => void;
   onNodeSelect: (nodeId: string) => void;
-  onObservationSelect: (observationId: string) => void;
   onRelationSelect: (relationId: string) => void;
   onSelectionChange: (nodeIds: string[], focusNodeId?: string, showSelectionActions?: boolean) => void;
   onTileAbsorptionComplete: (nodeId: string, trigger: TileAbsorptionTrigger) => void;
   onViewportChange: (viewport: ViewportState) => void;
   scene: TerrainScene;
   selectedNodeIds: string[];
-  selectedObservationId?: string;
   selectedRelationId?: string;
   tileAbsorptionRequest?: TileAbsorptionRequest;
   tileFieldTargetCount?: number;
@@ -117,14 +110,12 @@ export function TerrainCanvas({
   onCurrentPageDeepLens,
   onFrontierDiscovery,
   onNodeSelect,
-  onObservationSelect,
   onRelationSelect,
   onSelectionChange,
   onTileAbsorptionComplete,
   onViewportChange,
   scene,
   selectedNodeIds,
-  selectedObservationId,
   selectedRelationId,
   tileAbsorptionRequest,
   tileFieldTargetCount,
@@ -136,7 +127,6 @@ export function TerrainCanvas({
   const onViewportChangeRef = useRef(onViewportChange);
   const onFrontierDiscoveryRef = useRef(onFrontierDiscovery);
   const onNodeSelectRef = useRef(onNodeSelect);
-  const onObservationSelectRef = useRef(onObservationSelect);
   const onRelationSelectRef = useRef(onRelationSelect);
   const [pixiReady, setPixiReady] = useState(false);
   const [viewportBounds, setViewportBounds] = useState<ProjectionViewportBounds | undefined>();
@@ -151,7 +141,6 @@ export function TerrainCanvas({
     absorbedNodeId: scene.runtime.browser_absorption.status === "absorbed" ? scene.runtime.browser_absorption.node_id : undefined,
     focusedNodeId,
     scene,
-    selectedObservationId,
     tileFieldTargetCount,
     viewport,
     viewportBounds,
@@ -161,8 +150,6 @@ export function TerrainCanvas({
     mainContent,
     renderedNodes,
     sourceTileSurfaces: tileSurfaces,
-    visibleCandidateObservations,
-    visibleCandidateTileSurfaces,
     visibleNodeIds,
     visibleNodes,
     visibleRelations,
@@ -171,6 +158,49 @@ export function TerrainCanvas({
   const absorbedTileSurface = isBrowserAbsorbed
     ? tileSurfaces.find((surface) => surface.nodeId === scene.runtime.browser_absorption.node_id && surface.sourceUrl)
     : undefined;
+
+  useEffect(() => {
+    traceTerrainCanvas("projection.state", {
+      active_tab_id: scene.active_tab_id,
+      browser_absorbed: isBrowserAbsorbed,
+      candidate_observations: candidateObservations.length,
+      main_content_mode: mainContent.mode,
+      projection_nodes: renderedNodes.length,
+      scene_nodes: scene.nodes.length,
+      scene_observations: scene.scout_observations?.length ?? 0,
+      scene_relations: scene.relations.length,
+      selected_nodes: selectedNodeIds.length,
+      source_tile_surfaces: tileSurfaces.length,
+      tile_field_target_count: tileFieldTargetCount ?? 25,
+      viewport: {
+        layer: viewport.layer,
+        x: Math.round(viewport.x),
+        y: Math.round(viewport.y),
+        zoom: Number(viewport.zoom.toFixed(3)),
+      },
+      visible_nodes: visibleNodes.length,
+      visible_relations: visibleRelations.length,
+    });
+  }, [
+    candidateObservations.length,
+    isBrowserAbsorbed,
+    mainContent.mode,
+    renderedNodes.length,
+    scene.active_tab_id,
+    scene.nodes.length,
+    scene.relations.length,
+    scene.scout_observations?.length,
+    selectedNodeIds.length,
+    tileFieldTargetCount,
+    tileSurfaces.length,
+    viewport.layer,
+    viewport.x,
+    viewport.y,
+    viewport.zoom,
+    visibleNodes.length,
+    visibleRelations.length,
+  ]);
+
   const beginTileAbsorptionTransition = useCallback(
     (nodeId: string, trigger: TileAbsorptionTrigger): void => {
       if (isBrowserAbsorbed || activeAbsorptionTransition) {
@@ -215,9 +245,8 @@ export function TerrainCanvas({
     onViewportChangeRef.current = onViewportChange;
     onFrontierDiscoveryRef.current = onFrontierDiscovery;
     onNodeSelectRef.current = onNodeSelect;
-    onObservationSelectRef.current = onObservationSelect;
     onRelationSelectRef.current = onRelationSelect;
-  }, [onFrontierDiscovery, onNodeSelect, onObservationSelect, onRelationSelect, onViewportChange, viewport]);
+  }, [onFrontierDiscovery, onNodeSelect, onRelationSelect, onViewportChange, viewport]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -294,19 +323,15 @@ export function TerrainCanvas({
 
     renderPixiScene({
       app,
-      candidateObservations: visibleCandidateObservations,
-      candidateTileSurfaces: visibleCandidateTileSurfaces,
       focusedNodeId,
       highlightedNodeIds,
       host,
       onHover: setHoverPreview,
       onHoverClear: () => setHoverPreview(undefined),
       onNodeSelect: (nodeId) => onNodeSelectRef.current(nodeId),
-      onObservationSelect: (observationId) => onObservationSelectRef.current(observationId),
       onRelationSelect: (relationId) => onRelationSelectRef.current(relationId),
       renderedNodes,
       selectedNodeIds,
-      selectedObservationId,
       selectedRelationId,
       tileThumbnailsByNodeId,
       tileSurfaces,
@@ -317,13 +342,10 @@ export function TerrainCanvas({
   }, [
     focusedNodeId,
     highlightedNodeIds,
-    visibleCandidateObservations,
-    visibleCandidateTileSurfaces,
     pixiReady,
     renderedNodes,
     scene,
     selectedNodeIds,
-    selectedObservationId,
     selectedRelationId,
     tileThumbnailsByNodeId,
     tileSurfaces,
@@ -602,17 +624,6 @@ export function TerrainCanvas({
     setHoverPreview(undefined);
   }
 
-  function handleLayerSelect(layer: LayerId): void {
-    const zoom = resolveZoomForLayer(layer);
-
-    onViewportChange({
-      ...viewport,
-      zoom,
-      layer,
-    });
-    setHoverPreview(undefined);
-  }
-
   function handleExitBrowserMode(): void {
     void window.seekstar.tiles.clear(scene.active_tab_id);
     onBrowserModeExit();
@@ -643,20 +654,12 @@ export function TerrainCanvas({
       <MainContentStatusOverlay
         candidateObservations={candidateObservations}
         mainContent={mainContent}
-        onObservationSelect={onObservationSelect}
-        selectedObservationId={selectedObservationId}
       />
       <ViewportControls
         canFocusSelection={selectedNodeIds.length > 0}
         onFitScene={handleFitScene}
         onFocusSelection={handleFocusSelection}
         onResetViewport={handleResetViewport}
-      />
-      <SemanticLayerRail
-        currentLayer={viewport.layer}
-        layers={scene.layers.filter(isMvpVisibleLayer)}
-        onLayerSelect={handleLayerSelect}
-        zoom={viewport.zoom}
       />
       {activeAbsorptionTransition ? (
         <div
@@ -701,19 +704,15 @@ function createAbsorptionTransitionStyle(transition: TileAbsorptionTransition): 
 
 function renderPixiScene({
   app,
-  candidateObservations,
-  candidateTileSurfaces,
   focusedNodeId,
   highlightedNodeIds,
   host,
   onHover,
   onHoverClear,
   onNodeSelect,
-  onObservationSelect,
   onRelationSelect,
   renderedNodes,
   selectedNodeIds,
-  selectedObservationId,
   selectedRelationId,
   tileThumbnailsByNodeId,
   tileSurfaces,
@@ -722,19 +721,15 @@ function renderPixiScene({
   viewport,
 }: {
   app: Application;
-  candidateObservations: ScoutObservation[];
-  candidateTileSurfaces: CandidateTileSurface[];
   focusedNodeId?: string;
   highlightedNodeIds: string[];
   host: HTMLElement;
   onHover: (preview: HoverPreviewState) => void;
   onHoverClear: () => void;
   onNodeSelect: (nodeId: string) => void;
-  onObservationSelect: (observationId: string) => void;
   onRelationSelect: (relationId: string) => void;
   renderedNodes: TerrainNode[];
   selectedNodeIds: string[];
-  selectedObservationId?: string;
   selectedRelationId?: string;
   tileThumbnailsByNodeId: Map<string, TileThumbnailState>;
   tileSurfaces: TerrainTileSurface[];
@@ -746,7 +741,6 @@ function renderPixiScene({
   const stage = app.stage;
   const world = new Container();
   const nodesById = new Map(renderedNodes.map((node) => [node.id, node]));
-  const candidateTileObservationIds = new Set(candidateTileSurfaces.map((surface) => surface.observationId));
 
   stage.removeChildren();
   drawPixiBackground(stage, bounds);
@@ -756,7 +750,6 @@ function renderPixiScene({
   const relationLayer = new Container();
   const tileSurfaceLayer = new Container();
   const nodeLayer = new Container();
-  const observationLayer = new Container();
 
   for (const surface of tileSurfaces) {
     if (surface.visibility === "off_viewport") {
@@ -764,22 +757,6 @@ function renderPixiScene({
     }
 
     tileSurfaceLayer.addChild(createTileSurfaceFrame(surface, tileThumbnailsByNodeId.get(surface.nodeId)));
-  }
-
-  for (const surface of candidateTileSurfaces) {
-    if (surface.visibility === "off_viewport") {
-      continue;
-    }
-
-    tileSurfaceLayer.addChild(
-      createCandidateTileFrame({
-        isSelected: selectedObservationId === surface.observationId,
-        onHover,
-        onHoverClear,
-        onObservationSelect,
-        surface,
-      }),
-    );
   }
 
   for (const relation of visibleRelations) {
@@ -836,31 +813,7 @@ function renderPixiScene({
     nodeLayer.addChild(displayObject);
   }
 
-  for (const observation of candidateObservations) {
-    if (candidateTileObservationIds.has(observation.id)) {
-      continue;
-    }
-
-    const position = observation.position_hint;
-
-    if (!position) {
-      continue;
-    }
-
-    const displayObject = createObservationStar({
-      isSelected: selectedObservationId === observation.id,
-      observation,
-      onHover,
-      onHoverClear,
-      onObservationSelect,
-      viewport,
-    });
-
-    displayObject.position.set(position.x, position.y);
-    observationLayer.addChild(displayObject);
-  }
-
-  world.addChild(tileSurfaceLayer, relationLayer, observationLayer, nodeLayer);
+  world.addChild(tileSurfaceLayer, relationLayer, nodeLayer);
   stage.addChild(world);
 }
 
@@ -920,94 +873,6 @@ function createTileSurfaceFrame(surface: TerrainTileSurface, thumbnail?: TileThu
   }
 
   container.addChild(frame);
-  return container;
-}
-
-function createCandidateTileFrame({
-  isSelected,
-  onHover,
-  onHoverClear,
-  onObservationSelect,
-  surface,
-}: {
-  isSelected: boolean;
-  onHover: (preview: HoverPreviewState) => void;
-  onHoverClear: () => void;
-  onObservationSelect: (observationId: string) => void;
-  surface: CandidateTileSurface;
-}): Container {
-  const container = new Container();
-  const frame = new Graphics();
-  const { x, y, width, height } = surface.worldBounds;
-  const isFocused = surface.visibility === "focused" || isSelected;
-  const isFailed = surface.actionState === "failed";
-  const fillColor = getCandidateTileColor(surface);
-  const strokeColor = isFocused ? 0xc4d7ff : isFailed ? 0xb85d6b : 0x3b7e9b;
-
-  frame
-    .roundRect(x, y, width, height, 10)
-    .fill({ color: fillColor, alpha: isFocused ? 0.22 : 0.13 })
-    .stroke({ color: strokeColor, alpha: isFocused ? 0.86 : 0.48, width: isFocused ? 2.2 : 1.2 });
-
-  const statusBar = new Graphics();
-  statusBar.roundRect(x + 10, y + 10, Math.max(20, width - 20), 4, 2).fill({
-    color: isFailed ? 0xb85d6b : surface.actionState === "observing" ? 0x9b8cff : 0x20a6c7,
-    alpha: 0.58,
-  });
-
-  const provider = createPixiText(surface.providerId ?? "candidate", {
-    color: 0xa9b6c8,
-    fontSize: 9,
-    wordWrapWidth: width - 28,
-  });
-  const title = createPixiText(surface.title, {
-    color: 0xf5f7fb,
-    fontSize: Math.max(12, Math.min(18, width / 22)),
-    wordWrapWidth: width - 36,
-  });
-  const url = createPixiText(formatCandidateUrl(surface.url), {
-    color: isFailed ? 0xdca1aa : 0x93d9e8,
-    fontSize: 10,
-    wordWrapWidth: width - 36,
-  });
-  const hint = createPixiText(
-    surface.actionState === "failed" ? "failed" : surface.actionState === "observing" ? "observing" : "candidate - observe to create tile",
-    {
-      color: 0x96a3b8,
-      fontSize: 9,
-      wordWrapWidth: width - 36,
-    },
-  );
-
-  provider.anchor.set(0, 0);
-  title.anchor.set(0, 0);
-  url.anchor.set(0, 0);
-  hint.anchor.set(0, 0);
-  provider.position.set(x + 18, y + 22);
-  title.position.set(x + 18, y + 46);
-  url.position.set(x + 18, y + Math.max(78, height - 58));
-  hint.position.set(x + 18, y + Math.max(100, height - 34));
-
-  container.addChild(frame, statusBar, provider, title, url, hint);
-  container.eventMode = "static";
-  container.cursor = "pointer";
-  container.hitArea = new Rectangle(x, y, width, height);
-  container.on("pointertap", () => onObservationSelect(surface.observationId));
-  container.on(
-    "pointerover",
-    (event) =>
-      onHover(
-        createHoverPreview(
-          surface.title,
-          surface.actionState === "failed" ? "Scout candidate failed" : "Scout source candidate",
-          surface.providerId ?? surface.status,
-          surface.snippet,
-          event.global,
-        ),
-      ),
-  );
-  container.on("pointerout", onHoverClear);
-
   return container;
 }
 
@@ -1226,62 +1091,6 @@ function createDetailCard({
   return container;
 }
 
-function createObservationStar({
-  isSelected,
-  observation,
-  onHover,
-  onHoverClear,
-  onObservationSelect,
-  viewport,
-}: {
-  isSelected: boolean;
-  observation: ScoutObservation;
-  onHover: (preview: HoverPreviewState) => void;
-  onHoverClear: () => void;
-  onObservationSelect: (observationId: string) => void;
-  viewport: ViewportState;
-}): Container {
-  const container = new Container();
-  const position = observation.position_hint ?? { x: 0, y: 0 };
-  const distance = Math.min(1, Math.hypot(position.x - viewport.x, position.y - viewport.y) / 720);
-  const radius = 30 - distance * 8;
-  const color = getObservationColor(observation);
-  const star = new Graphics();
-
-  container.alpha = observation.status === "failed" ? 0.46 : Math.max(0.42, 0.92 - distance * 0.34);
-  star.circle(0, 0, radius).fill({ color, alpha: 1 });
-  star.circle(-radius * 0.22, -radius * 0.24, radius * 0.34).fill({ color: 0xffffff, alpha: 0.16 });
-  star.circle(0, 0, radius).stroke({ color: isSelected ? 0xffffff : 0x0b1220, alpha: isSelected ? 0.92 : 0.55, width: isSelected ? 2.4 : 1.2 });
-
-  const label = createPixiText(observation.title, {
-    color: 0xf5f7fb,
-    fontSize: 9,
-    wordWrapWidth: radius * 1.55,
-  });
-
-  container.addChild(star, label);
-  container.eventMode = "static";
-  container.cursor = "pointer";
-  container.hitArea = new Rectangle(-radius, -radius, radius * 2, radius * 2);
-  container.on("pointertap", () => onObservationSelect(observation.id));
-  container.on(
-    "pointerover",
-    (event) =>
-      onHover(
-        createHoverPreview(
-          observation.title,
-          `Scout ${observation.status.replace("_", " ")}`,
-          observation.adapter ?? "playwright",
-          observation.snippet,
-          event.global,
-        ),
-      ),
-  );
-  container.on("pointerout", onHoverClear);
-
-  return container;
-}
-
 function createPixiText(text: string, options: { color: number; fontSize: number; wordWrapWidth: number }): Text {
   const label = new Text({
     text,
@@ -1351,34 +1160,6 @@ function getMacroColor(node: TerrainNode): number {
   return 0x5667d8;
 }
 
-function getObservationColor(observation: ScoutObservation): number {
-  if (observation.status === "failed") {
-    return 0x515866;
-  }
-
-  if (observation.status === "pending") {
-    return 0x7674d8;
-  }
-
-  if (observation.status === "observed") {
-    return 0x2b8fb8;
-  }
-
-  return 0x20a6c7;
-}
-
-function getCandidateTileColor(surface: CandidateTileSurface): number {
-  if (surface.actionState === "failed") {
-    return 0x2a1d26;
-  }
-
-  if (surface.actionState === "observing") {
-    return 0x221f3f;
-  }
-
-  return 0x102b38;
-}
-
 function getTileSurfaceColor(surface: TerrainTileSurface): number {
   if (surface.sourceState === "source_backed") {
     return 0x123143;
@@ -1393,20 +1174,6 @@ function getTileSurfaceColor(surface: TerrainTileSurface): number {
   }
 
   return 0x121a28;
-}
-
-function formatCandidateUrl(url: string | undefined): string {
-  if (!url) {
-    return "No URL";
-  }
-
-  try {
-    const parsed = new URL(url);
-    const path = parsed.pathname === "/" ? "" : parsed.pathname;
-    return `${parsed.hostname}${path}`.slice(0, 72);
-  } catch {
-    return url.slice(0, 72);
-  }
 }
 
 function getDetailColor(node: TerrainNode): number {
@@ -1427,6 +1194,41 @@ function getDetailColor(node: TerrainNode): number {
 
 function isCartographerTerrainNode(node: TerrainNode): boolean {
   return node.source_state === "cartographer_primary" || node.tags?.includes("cartographer") === true;
+}
+
+function traceTerrainCanvas(event: string, payload?: unknown): void {
+  try {
+    if (window.localStorage.getItem("seekstar.trace") === "0") {
+      return;
+    }
+
+    if (!import.meta.env.DEV && window.localStorage.getItem("seekstar.trace") !== "1") {
+      return;
+    }
+  } catch {
+    if (!import.meta.env.DEV) {
+      return;
+    }
+  }
+
+  const suffix = payload === undefined ? "" : ` ${stringifyTerrainCanvasTracePayload(payload)}`;
+  console.info(`[SeekStar][terrain-canvas] ${event}${suffix}`);
+}
+
+function stringifyTerrainCanvasTracePayload(payload: unknown): string {
+  try {
+    return JSON.stringify(payload, (_key, value: unknown) => {
+      if (typeof value === "string" && value.length > 800) {
+        return `${value.slice(0, 800)}...<truncated ${value.length - 800} chars>`;
+      }
+
+      return value;
+    });
+  } catch (error) {
+    return JSON.stringify({
+      trace_error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 function getDetailCardWidth(node: TerrainNode): number {
@@ -1503,93 +1305,6 @@ function ViewportControls({
   );
 }
 
-function SemanticLayerRail({
-  currentLayer,
-  layers,
-  onLayerSelect,
-  zoom,
-}: {
-  currentLayer: LayerId;
-  layers: TerrainLayer[];
-  onLayerSelect: (layer: LayerId) => void;
-  zoom: number;
-}): ReactElement {
-  return (
-    <aside
-      className="semantic-layer-rail"
-      aria-label="Semantic zoom layers"
-      onPointerDown={(event) => {
-        event.stopPropagation();
-      }}
-    >
-      <div className="semantic-layer-rail-header">
-        <span>MVP bands</span>
-        <strong>{zoom.toFixed(2)}x</strong>
-      </div>
-      <div className="semantic-layer-list">
-        {layers.map((layer) => (
-          <button
-            aria-pressed={layer.id === currentLayer}
-            className={layer.id === currentLayer ? "semantic-layer-item active" : "semantic-layer-item"}
-            key={layer.id}
-            onClick={() => onLayerSelect(layer.id)}
-            type="button"
-          >
-            <span>{layer.id}</span>
-            <strong>{getLayerDefinition(layer.id)?.label ?? layer.label}</strong>
-          </button>
-        ))}
-      </div>
-    </aside>
-  );
-}
-
-export function DeepZoomMiniMap({
-  currentLayer,
-  layers,
-  nodes,
-  onLayerSelect,
-}: {
-  currentLayer: LayerId;
-  layers: TerrainLayer[];
-  nodes: TerrainNode[];
-  onLayerSelect: (layer: LayerId) => void;
-}): ReactElement {
-  return (
-    <aside
-      className="deep-zoom-minimap"
-      aria-label="Deep zoom mini map"
-      onPointerDown={(event) => {
-        event.stopPropagation();
-      }}
-    >
-      <div className="deep-zoom-minimap-header">
-        <span>Internal lens</span>
-        <strong>{currentLayer}</strong>
-      </div>
-      <div className="deep-zoom-minimap-track">
-        {layers.map((layer) => {
-          const nodeCount = nodes.filter((node) => node.layer === layer.id).length;
-
-          return (
-            <button
-              aria-label={`${layer.id} ${layer.label}, ${nodeCount} nodes`}
-              aria-pressed={layer.id === currentLayer}
-              className={layer.id === currentLayer ? "deep-zoom-minimap-dot active" : "deep-zoom-minimap-dot"}
-              key={layer.id}
-              onClick={() => onLayerSelect(layer.id)}
-              title={`${layer.id} · ${layer.label} · ${nodeCount} nodes`}
-              type="button"
-            >
-              <span />
-            </button>
-          );
-        })}
-      </div>
-    </aside>
-  );
-}
-
 function NodeHoverPreview({ preview }: { preview: HoverPreviewState }): ReactElement {
   return (
     <aside
@@ -1615,10 +1330,6 @@ function NodeHoverPreview({ preview }: { preview: HoverPreviewState }): ReactEle
 
 function isMacroBubbleNode(node: TerrainNode): boolean {
   return isMacroLayer(node.layer);
-}
-
-function isMvpVisibleLayer(layer: TerrainLayer): boolean {
-  return layer.id === "L0" || layer.id === "L1" || layer.id === "L2" || layer.id === "L3" || layer.id === "L4" || layer.id === "L11";
 }
 
 function getMacroLensDistance(node: TerrainNode, viewport: ViewportState): number {

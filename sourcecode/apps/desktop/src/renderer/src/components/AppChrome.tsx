@@ -80,7 +80,7 @@ export function DetachedTabTitleBar({
         </button>
         <SidebarToggleButton
           expanded={rightSidebarExpanded}
-          label="Inspector"
+          label="AI Map Control"
           onClick={onToggleRightSidebar}
           side="right"
         />

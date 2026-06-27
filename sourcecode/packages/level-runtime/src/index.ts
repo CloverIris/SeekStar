@@ -9,7 +9,6 @@ import type {
   AiRequestOptions,
   AiModelTelemetry,
 } from "@seekstar/ai-service";
-import { MockAiModelProvider } from "@seekstar/ai-service";
 import type { NodeType, SourceState, SourceType } from "@seekstar/core-schema";
 import {
   DEFAULT_LEVEL_RUNTIME_PROFILE_ID,
@@ -154,6 +153,8 @@ export interface LevelRuntimeOptions {
 export type { LevelModuleDefinition, LevelRuntimeProfile } from "./profiles.js";
 export { DEFAULT_LEVEL_RUNTIME_PROFILE_ID, listLevelRuntimeProfiles, resolveLevelModuleDefinition, resolveLevelRuntimeProfile };
 
+const LEVEL_RUNTIME_TRACE_PREVIEW_LIMIT = 800;
+
 export type LevelRuntimeCacheStatus = "hit" | "miss" | "refresh";
 
 export interface LevelRuntimeCacheEntry {
@@ -254,7 +255,7 @@ export class ChunkedLevelRuntimeHost {
       },
     });
     const current = await this.requestSingle(normalized, options.forceRefresh ?? false);
-    const preloaded = options.preload ? await this.preloadFrom(current.output, normalized) : [];
+    const preloaded = options.preload && current.output.status === "ok" ? await this.preloadFrom(current.output, normalized) : [];
 
     return {
       cache_status: current.cacheStatus,
@@ -294,7 +295,7 @@ export class ChunkedLevelRuntimeHost {
     const cacheKey = createLevelRuntimeCacheKey(input);
     const cached = this.cache.get(cacheKey);
 
-    if (cached && !forceRefresh) {
+    if (cached && !forceRefresh && isCacheableLevelRuntimeOutput(cached.output)) {
       cached.access_count += 1;
       cached.last_accessed_at = this.now();
 
@@ -302,16 +303,20 @@ export class ChunkedLevelRuntimeHost {
     }
 
     const output = await runLevelRuntime(input, { generate: this.generate });
-    this.cache.set(cacheKey, {
-      access_count: 1,
-      bytes_estimate: estimateOutputBytes(output),
-      cache_key: cacheKey,
-      created_at: this.now(),
-      input,
-      last_accessed_at: this.now(),
-      output,
-    });
-    this.evictIfNeeded();
+    if (isCacheableLevelRuntimeOutput(output)) {
+      this.cache.set(cacheKey, {
+        access_count: 1,
+        bytes_estimate: estimateOutputBytes(output),
+        cache_key: cacheKey,
+        created_at: cached?.created_at ?? this.now(),
+        input,
+        last_accessed_at: this.now(),
+        output,
+      });
+      this.evictIfNeeded();
+    } else if (cached && !isCacheableLevelRuntimeOutput(cached.output)) {
+      this.cache.delete(cacheKey);
+    }
 
     return { cacheStatus: cached ? "refresh" : "miss", output };
   }
@@ -332,6 +337,10 @@ export class ChunkedLevelRuntimeHost {
         },
         false,
       );
+
+      if (result.output.status !== "ok") {
+        break;
+      }
 
       preloaded.push(result.output);
     }
@@ -371,12 +380,41 @@ export function createLevelChunkKey(x = 0, y = 0, ring = 0, z?: number): LevelCh
 export async function runLevelRuntime(input: LevelRuntimeInput, options: LevelRuntimeOptions = {}): Promise<LevelRuntimeOutput> {
   const normalized = normalizeLevelRuntimeInput(input);
   const moduleDefinition = getLevelModule(normalized);
-  const generator = options.generate ?? ((generationInput: CartographerGenerationInput, generateOptions?: AiRequestOptions) =>
-    new MockAiModelProvider().generate(generationInput, generateOptions));
+  const generator = options.generate;
+
+  traceLevelRuntime("run.start", {
+    input: summarizeLevelRuntimeInput(normalized),
+    module: {
+      label: moduleDefinition.label,
+      level_id: moduleDefinition.level_id,
+      source_candidate_policy: moduleDefinition.source_candidate_policy,
+      target_count: getTargetCount(normalized.level_id, normalized.settings),
+    },
+  });
+
+  if (!generator) {
+    const missingOutput = createMissingGeneratorOutput(normalized);
+    traceLevelRuntime("run.missing_generator", {
+      output: summarizeLevelRuntimeOutput(missingOutput),
+    });
+    return missingOutput;
+  }
+
   const generation = await generator(toCartographerInput(normalized, moduleDefinition), { signal: options.signal });
 
+  traceLevelRuntime("run.generation_result", {
+    diagnostics: generation.diagnostics.slice(0, 4),
+    input: summarizeLevelRuntimeInput(normalized),
+    model: generation.model,
+    node_count: generation.nodes.length,
+    provider_id: generation.provider_id,
+    relation_count: generation.relations.length,
+    source_candidate_count: generation.source_candidates.length,
+    status: generation.status,
+  });
+
   if (generation.status !== "ok") {
-    return {
+    const failedOutput: LevelRuntimeOutput = {
       status: generation.status,
       mode: normalized.mode,
       model: generation.model,
@@ -388,26 +426,65 @@ export async function runLevelRuntime(input: LevelRuntimeInput, options: LevelRu
       nodes: [],
       relations: [],
       source_candidates: [],
-      chunk_hints: createChunkHints(normalized.chunk, normalized.settings),
+      chunk_hints: createChunkHints(normalized.chunk, normalized.settings, normalized.level_id),
       diagnostics: generation.diagnostics,
       telemetry: generation.telemetry,
       generated_at: generation.generated_at,
     };
+    traceLevelRuntime("run.failed_output", {
+      output: summarizeLevelRuntimeOutput(failedOutput),
+    });
+    return failedOutput;
+  }
+
+  const rawSourceCandidates =
+    moduleDefinition.source_candidate_policy === "none"
+      ? []
+      : dedupeSourceCandidates(generation.source_candidates).map((candidate, index) => toLevelSourceCandidateDraft(candidate, normalized, index));
+
+  if (normalized.level_id === "L3" && rawSourceCandidates.length === 0) {
+    const invalidOutput: LevelRuntimeOutput = {
+      status: "invalid_output",
+      mode: normalized.mode,
+      model: generation.model,
+      level_id: normalized.level_id,
+      provider_id: generation.provider_id,
+      seed: normalized.seed,
+      chunk: normalized.chunk,
+      chunk_policy: normalized.settings?.chunk_policy,
+      nodes: [],
+      relations: [],
+      source_candidates: [],
+      chunk_hints: createChunkHints(normalized.chunk, normalized.settings, normalized.level_id),
+      diagnostics: [
+        ...generation.diagnostics,
+        {
+          severity: "error",
+          code: "level_runtime.l3_missing_valid_source_candidates",
+          message: "L3 Cartographer output must put valid URLs in source_candidates. Unverified webpage/document nodes are not applied to the main canvas.",
+        },
+      ],
+      telemetry: generation.telemetry,
+      generated_at: generation.generated_at,
+    };
+
+    traceLevelRuntime("run.invalid_l3_output", {
+      output: summarizeLevelRuntimeOutput(invalidOutput),
+    });
+    return invalidOutput;
   }
 
   const nodes = dedupeNodes(generation.nodes)
+    .filter((node) => shouldKeepGeneratedNode(node, normalized.level_id))
     .slice(0, getTargetCount(normalized.level_id, normalized.settings))
     .map((node, index) => toLevelNodeDraft(node, normalized, moduleDefinition, index));
   const nodeIds = new Set(nodes.map((node) => node.id));
   const relations = shouldOwnVisibleLayout(moduleDefinition)
     ? createLocalAdjacencyRelations(nodes, normalized)
     : generation.relations.flatMap((relation, index) => toLevelRelationDraft(relation, normalized, index, nodeIds));
-  const sourceCandidates =
-    moduleDefinition.source_candidate_policy === "none"
-      ? []
-      : dedupeSourceCandidates(generation.source_candidates).map((candidate, index) => toLevelSourceCandidateDraft(candidate, normalized, index));
+  const sourceCandidates = rawSourceCandidates;
 
-  return {
+  const output: LevelRuntimeOutput = {
     status: "ok",
     mode: normalized.mode,
     model: generation.model,
@@ -419,11 +496,17 @@ export async function runLevelRuntime(input: LevelRuntimeInput, options: LevelRu
     nodes,
     relations,
     source_candidates: sourceCandidates,
-    chunk_hints: createChunkHints(normalized.chunk, normalized.settings),
+    chunk_hints: createChunkHints(normalized.chunk, normalized.settings, normalized.level_id),
     diagnostics: generation.diagnostics,
     telemetry: generation.telemetry,
     generated_at: generation.generated_at,
   };
+
+  traceLevelRuntime("run.output", {
+    output: summarizeLevelRuntimeOutput(output),
+  });
+
+  return output;
 }
 
 export function normalizeLevelRuntimeInput(input: LevelRuntimeInput): LevelRuntimeInput {
@@ -447,6 +530,33 @@ export function normalizeLevelRuntimeInput(input: LevelRuntimeInput): LevelRunti
       prompt_profile_id: promptProfileId,
     },
     context: input.context,
+  };
+}
+
+function createMissingGeneratorOutput(input: LevelRuntimeInput): LevelRuntimeOutput {
+  const generatedAt = new Date().toISOString();
+
+  return {
+    status: "provider_error",
+    mode: input.mode,
+    model: input.model,
+    level_id: input.level_id,
+    provider_id: input.provider_id,
+    seed: input.seed,
+    chunk: input.chunk,
+    chunk_policy: input.settings?.chunk_policy,
+    nodes: [],
+    relations: [],
+    source_candidates: [],
+    chunk_hints: createChunkHints(input.chunk, input.settings, input.level_id),
+    diagnostics: [
+      {
+        severity: "error",
+        code: "level_runtime.missing_generator",
+        message: "Level Runtime requires an explicit AI generator. Product runtime must not fabricate terrain without a provider.",
+      },
+    ],
+    generated_at: generatedAt,
   };
 }
 
@@ -505,6 +615,8 @@ export function createLevelRuntimeCacheKey(input: LevelRuntimeInput): string {
 
 function toCartographerInput(input: LevelRuntimeInput, moduleDefinition: LevelModuleDefinition): CartographerGenerationInput {
   const profile = resolvePromptProfileSettings(input.settings);
+  const targetNodeCount = getTargetCount(input.level_id, input.settings);
+  const levelModule = createCompactLevelModule(moduleDefinition, targetNodeCount);
 
   return {
     mode: input.mode,
@@ -513,27 +625,43 @@ function toCartographerInput(input: LevelRuntimeInput, moduleDefinition: LevelMo
     chunk: input.chunk,
     focus: input.focus,
     settings: {
-      ...(input.settings as Record<string, unknown>),
       prompt_profile_id: profile.id,
-      chunk_policy: createChunkPolicyCacheKey(input.settings),
       language: profile.language,
       density: profile.density,
-      target_node_count: getTargetCount(input.level_id, input.settings),
+      target_node_count: targetNodeCount,
       source_candidate_policy: moduleDefinition.source_candidate_policy,
       layout_family: moduleDefinition.layout_family,
       default_node_type: moduleDefinition.default_node_type,
+      chunk_policy_digest: createChunkPolicyCacheKey(input.settings),
+      level_module: levelModule,
     },
     context: {
       ...input.context,
-      level_module: {
-        level_id: moduleDefinition.level_id,
-        label: moduleDefinition.label,
-        role: moduleDefinition.role,
-        prompt_brief: moduleDefinition.prompt_brief,
-        prompt_constraints: moduleDefinition.prompt_constraints,
-      },
+      level_module: levelModule,
     },
   };
+}
+
+function createCompactLevelModule(moduleDefinition: LevelModuleDefinition, targetNodeCount: number): Record<string, unknown> {
+  return {
+    level_id: moduleDefinition.level_id,
+    label: moduleDefinition.label,
+    role: moduleDefinition.role,
+    prompt_brief: moduleDefinition.prompt_brief,
+    prompt_constraints: moduleDefinition.prompt_constraints,
+    target_count: targetNodeCount,
+    source_candidate_policy: moduleDefinition.source_candidate_policy,
+    layout_family: moduleDefinition.layout_family,
+    default_node_type: moduleDefinition.default_node_type,
+  };
+}
+
+function shouldKeepGeneratedNode(node: CartographerGeneratedNode, levelId: LevelBandId): boolean {
+  if (levelId !== "L3") {
+    return true;
+  }
+
+  return node.source_state === "fog" || node.node_type === "fog_region";
 }
 
 function toLevelNodeDraft(
@@ -660,8 +788,86 @@ function dedupeSourceCandidates(candidates: CartographerGeneratedSourceCandidate
   return deduped;
 }
 
-function createChunkHints(chunk: LevelChunkKey, settings?: LevelRuntimeSettings): LevelChunkHints {
-  const rings = Math.max(0, settings?.preload_rings ?? DEFAULT_LEVEL_RUNTIME_SETTINGS.preload_rings);
+function traceLevelRuntime(event: string, payload?: unknown): void {
+  if (!isSeekStarTraceEnabled()) {
+    return;
+  }
+
+  const suffix = payload === undefined ? "" : ` ${stringifyLevelRuntimeTracePayload(payload)}`;
+  console.info(`[SeekStar][level-runtime] ${event}${suffix}`);
+}
+
+function isSeekStarTraceEnabled(): boolean {
+  if (process.env.SEEKSTAR_TRACE === "0" || process.env.SEEKSTAR_TRACE === "false") {
+    return false;
+  }
+
+  return (
+    process.env.SEEKSTAR_TRACE === "1" ||
+    process.env.SEEKSTAR_TRACE === "true" ||
+    process.env.npm_lifecycle_event === "dev" ||
+    process.env.NODE_ENV === "development"
+  );
+}
+
+function stringifyLevelRuntimeTracePayload(payload: unknown): string {
+  try {
+    return JSON.stringify(payload, (_key, value: unknown) => {
+      if (typeof value === "string") {
+        return truncateLevelRuntimeTraceText(value);
+      }
+
+      return value;
+    });
+  } catch (error) {
+    return JSON.stringify({
+      trace_error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function summarizeLevelRuntimeInput(input: LevelRuntimeInput): Record<string, unknown> {
+  return {
+    chunk: input.chunk,
+    context_keys: input.context ? Object.keys(input.context).slice(0, 24) : [],
+    focus: input.focus
+      ? {
+          id: input.focus.id,
+          level_id: input.focus.level_id,
+          title: input.focus.title,
+        }
+      : undefined,
+    level_id: input.level_id,
+    mode: input.mode,
+    prompt_profile_id: input.settings?.prompt_profile_id,
+    seed: input.seed,
+  };
+}
+
+function summarizeLevelRuntimeOutput(output: LevelRuntimeOutput): Record<string, unknown> {
+  return {
+    chunk: output.chunk,
+    diagnostics: output.diagnostics.slice(0, 4),
+    generated_at: output.generated_at,
+    level_id: output.level_id,
+    mode: output.mode,
+    model: output.model,
+    node_count: output.nodes.length,
+    provider_id: output.provider_id,
+    relation_count: output.relations.length,
+    source_candidate_count: output.source_candidates.length,
+    status: output.status,
+  };
+}
+
+function truncateLevelRuntimeTraceText(text: string, maxLength = LEVEL_RUNTIME_TRACE_PREVIEW_LIMIT): string {
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...<truncated ${text.length - maxLength} chars>` : text;
+}
+
+function createChunkHints(chunk: LevelChunkKey, settings?: LevelRuntimeSettings, levelId?: LevelBandId): LevelChunkHints {
+  const rings = shouldAllowAiPreloadForLevel(levelId)
+    ? Math.max(0, settings?.preload_rings ?? DEFAULT_LEVEL_RUNTIME_SETTINGS.preload_rings)
+    : 0;
   const preload: LevelChunkKey[] = [];
 
   for (let dx = -rings; dx <= rings; dx += 1) {
@@ -675,6 +881,10 @@ function createChunkHints(chunk: LevelChunkKey, settings?: LevelRuntimeSettings)
   }
 
   return { active: chunk, preload };
+}
+
+function shouldAllowAiPreloadForLevel(levelId: LevelBandId | undefined): boolean {
+  return levelId === "L0" || levelId === "L1";
 }
 
 function shouldOwnVisibleLayout(moduleDefinition: LevelModuleDefinition): boolean {
@@ -904,6 +1114,10 @@ function clamp01(value: number): number {
 
 function estimateOutputBytes(output: LevelRuntimeOutput): number {
   return JSON.stringify(output).length;
+}
+
+function isCacheableLevelRuntimeOutput(output: LevelRuntimeOutput): boolean {
+  return output.status === "ok" && (output.nodes.length > 0 || output.relations.length > 0 || output.source_candidates.length > 0);
 }
 
 function slugify(value: string): string {

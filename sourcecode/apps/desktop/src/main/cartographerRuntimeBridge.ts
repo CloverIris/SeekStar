@@ -8,11 +8,12 @@ import {
   type CartographerLevelRuntimeInput,
   type CartographerLevelRuntimeSettings,
 } from "@seekstar/constellation-engine";
-import type { ScoutObservation, TerrainScene } from "@seekstar/core-schema";
-import { AiCartographerService, type AiModelTelemetry } from "@seekstar/ai-service";
+import type { ScoutObservation, TerrainNode, TerrainScene } from "@seekstar/core-schema";
+import { AiCartographerService, resolveApiKey, type AiModelTelemetry, type AiProviderConfig } from "@seekstar/ai-service";
 import { runLevelRuntime } from "@seekstar/level-runtime";
 import { JsonLevelChunkStorage } from "@seekstar/storage-service";
 import { loadSettings, resolveAiProviderConfigForRoute, resolveCartographerLevelRuntimeSettings } from "./appSettingsStore.js";
+import type { SeekStarSettings } from "./appSettingsStore.js";
 import { appendAiCostLedgerRecords } from "./aiCostLedgerStore.js";
 import { appendCartographerChunkRecords, type CartographerChunkStoreRecord, type CartographerChunkStoreSnapshot } from "./cartographerChunkStore.js";
 
@@ -41,6 +42,7 @@ export interface CartographerRuntimeRequest {
 }
 
 export interface CartographerRuntimeBootstrapRequest {
+  entryMode?: "default_tonight_sky";
   forceRefresh?: boolean;
   scene: TerrainScene;
   seed: string;
@@ -55,7 +57,7 @@ export interface CartographerRuntimeBootstrapResult {
     cacheStatus?: "hit" | "miss" | "refresh";
     chunkKey?: string;
     message: string;
-    phase: "applied" | "cancelled";
+    phase: "applied" | "cancelled" | "error";
     updatedAt: string;
   };
 }
@@ -76,7 +78,7 @@ export interface CartographerRuntimeViewportExpansionResult {
     levelId: CartographerRuntimeRequest["level_id"];
     message: string;
     mode: "expand_horizontal";
-    phase: "applied" | "cancelled";
+    phase: "applied" | "cancelled" | "error";
     updatedAt: string;
   };
 }
@@ -97,7 +99,7 @@ export interface CartographerRuntimeSourceReplacementResult {
     levelId: "L3";
     message: string;
     mode: "replace_failed_source";
-    phase: "applied" | "cancelled";
+    phase: "applied" | "cancelled" | "error";
     updatedAt: string;
   };
 }
@@ -115,7 +117,8 @@ export interface CartographerRuntimeCancelResult {
   transactionIds: string[];
 }
 
-const CARTOGRAPHER_BOOTSTRAP_LEVELS: readonly CartographerRuntimeRequest["level_id"][] = ["L0", "L1", "L2", "L3"];
+const CARTOGRAPHER_BOOTSTRAP_LEVELS: readonly CartographerRuntimeRequest["level_id"][] = ["supra_macro", "L0", "L1", "L2", "L3"];
+const DEFAULT_TONIGHT_SKY_BOOTSTRAP_LEVELS: readonly CartographerRuntimeRequest["level_id"][] = ["supra_macro", "L0"];
 
 let coordinator: CartographerChunkCoordinator | undefined;
 const activeCartographerTransactions = new Map<string, ActiveCartographerTransaction>();
@@ -143,15 +146,27 @@ export function registerCartographerRuntimeBridge(): void {
     const transaction = beginCartographerTransaction(bootstrap.tabId, "bootstrap");
     const seed = bootstrap.seed.trim() || bootstrap.scene.metadata.title;
     const chunk = createCartographerLevelChunkKey(0, 0, 0);
-    const runtimeSettings = resolveCartographerLevelRuntimeSettings(await loadSettings());
+    const appSettings = await loadSettings();
+    const runtimeSettings = resolveCartographerLevelRuntimeSettings(appSettings);
     let nextScene = bootstrap.scene;
     let lastSnapshot = await appendCartographerChunkRecords(bootstrap.tabId, []);
     let lastCacheStatus: "hit" | "miss" | "refresh" | undefined;
     let currentLevelId: CartographerRuntimeRequest["level_id"] = "L0";
     let currentMode: CartographerGenerationMode = "bootstrap_seed";
 
+    traceCartographerBridge("bootstrap.start", {
+      entry_mode: bootstrap.entryMode,
+      force_refresh: Boolean(bootstrap.forceRefresh),
+      seed,
+      scene: summarizeSceneForTrace(nextScene),
+      tab_id: bootstrap.tabId,
+    });
+
     try {
-      for (const levelId of CARTOGRAPHER_BOOTSTRAP_LEVELS) {
+      const bootstrapLevels =
+        bootstrap.entryMode === "default_tonight_sky" ? DEFAULT_TONIGHT_SKY_BOOTSTRAP_LEVELS : CARTOGRAPHER_BOOTSTRAP_LEVELS;
+
+      for (const levelId of bootstrapLevels) {
         const mode = resolveBootstrapCartographerMode(levelId);
         currentLevelId = levelId;
         currentMode = mode;
@@ -174,11 +189,14 @@ export function registerCartographerRuntimeBridge(): void {
         const result = await getCoordinator().request({
           applyToScene: true,
           chunk,
-          context: createCartographerSceneContext(nextScene, levelId),
+          context: {
+            ...createCartographerSceneContext(nextScene, levelId),
+            ...createBootstrapEntryContext(bootstrap.entryMode, levelId, appSettings),
+          },
           forceRefresh: bootstrap.forceRefresh,
           level_id: levelId,
           mode,
-          preload: true,
+          preload: false,
           scene: nextScene,
           seed,
           signal: transaction.controller.signal,
@@ -189,8 +207,23 @@ export function registerCartographerRuntimeBridge(): void {
         lastSnapshot = await appendCartographerChunkRecords(bootstrap.tabId, result.chunkRecords);
         await appendCartographerCostLedgerRecords(bootstrap.tabId, result, seed);
 
+        traceCartographerBridge("bootstrap.level.done", {
+          cache_status: result.cacheStatus,
+          level_id: levelId,
+          mode,
+          output: summarizeRuntimeOutputForTrace(result.output),
+          preloaded_count: result.preloaded.length,
+          scene_apply: summarizeSceneApplyForTrace(result.sceneApply),
+          scene_after: result.sceneApply?.scene ? summarizeSceneForTrace(result.sceneApply.scene) : summarizeSceneForTrace(nextScene),
+          tab_id: bootstrap.tabId,
+        });
+
         if (result.output.status === "cancelled") {
           return createCancelledBootstrapResult(nextScene, lastSnapshot, chunk, seed, lastCacheStatus);
+        }
+
+        if (result.output.status !== "ok") {
+          return createFailedBootstrapResult(nextScene, lastSnapshot, chunk, seed, levelId, result, lastCacheStatus);
         }
 
         if (result.sceneApply?.scene) {
@@ -198,9 +231,11 @@ export function registerCartographerRuntimeBridge(): void {
         }
       }
 
+      const completedScene = normalizeBootstrapCompletedScene(nextScene, bootstrap.entryMode);
+
       return {
         cacheStatus: lastCacheStatus,
-        scene: nextScene,
+        scene: completedScene,
         snapshot: lastSnapshot,
         status: {
           cacheStatus: lastCacheStatus,
@@ -211,6 +246,14 @@ export function registerCartographerRuntimeBridge(): void {
         },
       };
     } catch (error) {
+      traceCartographerBridge("bootstrap.error", {
+        error: error instanceof Error ? error.message : String(error),
+        level_id: currentLevelId,
+        mode: currentMode,
+        seed,
+        tab_id: bootstrap.tabId,
+      });
+
       if (transaction.controller.signal.aborted) {
         return createCancelledBootstrapResult(nextScene, lastSnapshot, chunk, seed, lastCacheStatus);
       }
@@ -238,8 +281,19 @@ export function registerCartographerRuntimeBridge(): void {
     const levelId = parseExpandableLevelId(expansion.viewport.layer);
     const seed = resolveSceneSeed(expansion.scene);
     const chunk = createCartographerChunkKeyForViewport(expansion.viewport, runtimeSettings);
+    const preloadAllowed = shouldAllowAiPreloadForLevel(levelId);
     const startedMessage = `Generating adjacent ${levelId} chunk ${chunk.key}`;
     const errorMessage = `Failed to generate ${levelId} chunk ${chunk.key}`;
+
+    traceCartographerBridge("viewport_expansion.start", {
+      chunk,
+      force_refresh: Boolean(expansion.forceRefresh),
+      level_id: levelId,
+      preload_allowed: preloadAllowed,
+      scene: summarizeSceneForTrace(expansion.scene),
+      seed,
+      tab_id: expansion.tabId,
+    });
 
     await appendCartographerChunkRecords(expansion.tabId, [
       createCartographerChunkStoreRecord({
@@ -257,14 +311,14 @@ export function registerCartographerRuntimeBridge(): void {
         applyToScene: true,
         chunk,
         context: {
-          ...createCartographerSceneContext(expansion.scene, levelId),
+          ...createCartographerSceneContext(expansion.scene, levelId, expansion.viewport),
           expansion_reason: "viewport_edge",
           viewport: expansion.viewport,
         },
         forceRefresh: expansion.forceRefresh,
         level_id: levelId,
         mode: "expand_horizontal",
-        preload: true,
+        preload: preloadAllowed,
         scene: expansion.scene,
         seed,
         signal: transaction.controller.signal,
@@ -272,7 +326,16 @@ export function registerCartographerRuntimeBridge(): void {
       });
       const snapshot = await appendCartographerChunkRecords(expansion.tabId, result.chunkRecords);
       const cancelled = result.output.status === "cancelled";
+      const failed = result.output.status !== "ok" && !cancelled;
       await appendCartographerCostLedgerRecords(expansion.tabId, result, seed);
+
+      traceCartographerBridge("viewport_expansion.done", {
+        cache_status: result.cacheStatus,
+        output: summarizeRuntimeOutputForTrace(result.output),
+        preloaded_count: result.preloaded.length,
+        scene_apply: summarizeSceneApplyForTrace(result.sceneApply),
+        tab_id: expansion.tabId,
+      });
 
       return {
         result,
@@ -281,13 +344,24 @@ export function registerCartographerRuntimeBridge(): void {
           cacheStatus: result.cacheStatus,
           chunkKey: chunk.key,
           levelId,
-          message: cancelled ? `Cancelled ${levelId} chunk ${chunk.key}` : `Loaded ${levelId} chunk ${chunk.key}`,
+          message: cancelled
+            ? `Cancelled ${levelId} chunk ${chunk.key}`
+            : failed
+              ? createRuntimeFailureMessage(`Failed ${levelId} chunk ${chunk.key}`, result)
+              : `Loaded ${levelId} chunk ${chunk.key}`,
           mode: "expand_horizontal",
-          phase: cancelled ? "cancelled" : "applied",
+          phase: cancelled ? "cancelled" : failed ? "error" : "applied",
           updatedAt: new Date().toISOString(),
         },
       };
     } catch (error) {
+      traceCartographerBridge("viewport_expansion.error", {
+        chunk,
+        error: error instanceof Error ? error.message : String(error),
+        level_id: levelId,
+        tab_id: expansion.tabId,
+      });
+
       if (transaction.controller.signal.aborted) {
         const snapshot = await appendCartographerChunkRecords(expansion.tabId, [
           createCartographerChunkStoreRecord({
@@ -331,6 +405,14 @@ export function registerCartographerRuntimeBridge(): void {
     const startedMessage = `Replacing failed source candidate ${messageTitle}`;
     const errorMessage = `Failed to replace source candidate ${messageTitle}`;
 
+    traceCartographerBridge("source_replacement.start", {
+      chunk,
+      force_refresh: Boolean(replacement.forceRefresh),
+      observation_id: replacement.observationId,
+      seed,
+      tab_id: replacement.tabId,
+    });
+
     await appendCartographerChunkRecords(replacement.tabId, [
       createCartographerChunkStoreRecord({
         chunk,
@@ -368,7 +450,7 @@ export function registerCartographerRuntimeBridge(): void {
         forceRefresh: replacement.forceRefresh,
         level_id: "L3",
         mode: "replace_failed_source",
-        preload: true,
+        preload: false,
         scene: replacement.scene,
         seed,
         signal: transaction.controller.signal,
@@ -376,7 +458,16 @@ export function registerCartographerRuntimeBridge(): void {
       });
       const snapshot = await appendCartographerChunkRecords(replacement.tabId, result.chunkRecords);
       const cancelled = result.output.status === "cancelled";
+      const failed = result.output.status !== "ok" && !cancelled;
       await appendCartographerCostLedgerRecords(replacement.tabId, result, seed);
+
+      traceCartographerBridge("source_replacement.done", {
+        cache_status: result.cacheStatus,
+        output: summarizeRuntimeOutputForTrace(result.output),
+        preloaded_count: result.preloaded.length,
+        scene_apply: summarizeSceneApplyForTrace(result.sceneApply),
+        tab_id: replacement.tabId,
+      });
 
       return {
         result,
@@ -385,13 +476,24 @@ export function registerCartographerRuntimeBridge(): void {
           cacheStatus: result.cacheStatus,
           chunkKey: chunk.key,
           levelId: "L3",
-          message: cancelled ? `Cancelled replacement for ${messageTitle}` : `Replacement candidates loaded for ${messageTitle}`,
+          message: cancelled
+            ? `Cancelled replacement for ${messageTitle}`
+            : failed
+              ? createRuntimeFailureMessage(`Failed replacement for ${messageTitle}`, result)
+              : `Replacement candidates loaded for ${messageTitle}`,
           mode: "replace_failed_source",
-          phase: cancelled ? "cancelled" : "applied",
+          phase: cancelled ? "cancelled" : failed ? "error" : "applied",
           updatedAt: new Date().toISOString(),
         },
       };
     } catch (error) {
+      traceCartographerBridge("source_replacement.error", {
+        chunk,
+        error: error instanceof Error ? error.message : String(error),
+        observation_id: replacement.observationId,
+        tab_id: replacement.tabId,
+      });
+
       if (transaction.controller.signal.aborted) {
         const snapshot = await appendCartographerChunkRecords(replacement.tabId, [
           createCartographerChunkStoreRecord({
@@ -430,11 +532,23 @@ function getCoordinator(): CartographerChunkCoordinator {
     coordinator = new CartographerChunkCoordinator({
       generate: async (input: CartographerLevelRuntimeInput, options) => {
         const settings = await loadSettings();
-        const service = new AiCartographerService(
-          resolveAiProviderConfigForRoute(settings, {
+        const provider = resolveAiProviderConfigForRoute(settings, {
+          level_id: input.level_id,
+          mode: input.mode,
+        });
+
+        traceCartographerBridge("coordinator.provider", {
+          input: {
+            chunk: input.chunk,
             level_id: input.level_id,
             mode: input.mode,
-          }),
+            seed: input.seed,
+          },
+          provider: summarizeProviderForTrace(provider),
+        });
+
+        const service = new AiCartographerService(
+          provider,
         );
 
         return runLevelRuntime(input, {
@@ -507,6 +621,142 @@ function createCartographerTransactionKey(tabId: string, kind: CartographerRunti
   return `${tabId}:${kind}`;
 }
 
+function traceCartographerBridge(event: string, payload?: unknown): void {
+  if (!isSeekStarTraceEnabled()) {
+    return;
+  }
+
+  const suffix = payload === undefined ? "" : ` ${stringifyTracePayload(payload)}`;
+  console.info(`[SeekStar][cartographer-bridge] ${event}${suffix}`);
+}
+
+function isSeekStarTraceEnabled(): boolean {
+  if (process.env.SEEKSTAR_TRACE === "0" || process.env.SEEKSTAR_TRACE === "false") {
+    return false;
+  }
+
+  return (
+    process.env.SEEKSTAR_TRACE === "1" ||
+    process.env.SEEKSTAR_TRACE === "true" ||
+    process.env.npm_lifecycle_event === "dev" ||
+    process.env.NODE_ENV === "development"
+  );
+}
+
+function stringifyTracePayload(payload: unknown): string {
+  try {
+    return JSON.stringify(payload, (_key, value: unknown) => {
+      if (typeof value === "string" && value.length > 1_000) {
+        return `${value.slice(0, 1_000)}...<truncated ${value.length - 1_000} chars>`;
+      }
+
+      return value;
+    });
+  } catch (error) {
+    return JSON.stringify({
+      trace_error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function summarizeProviderForTrace(provider: AiProviderConfig): Record<string, unknown> {
+  const key = resolveApiKey(provider);
+
+  return {
+    base_url: provider.base_url,
+    id: provider.id,
+    key_source: key.source ?? "missing",
+    kind: provider.kind,
+    model: provider.model,
+    timeout_ms: provider.timeout_ms,
+  };
+}
+
+function summarizeRuntimeOutputForTrace(output: CartographerChunkRequestResult["output"]): Record<string, unknown> {
+  return {
+    chunk: output.chunk,
+    diagnostics: output.diagnostics.slice(0, 4),
+    generated_at: output.generated_at,
+    level_id: output.level_id,
+    mode: output.mode,
+    model: output.model,
+    node_count: output.nodes.length,
+    provider_id: output.provider_id,
+    relation_count: output.relations.length,
+    source_candidate_count: output.source_candidates.length,
+    status: output.status,
+  };
+}
+
+function summarizeSceneApplyForTrace(sceneApply: CartographerChunkRequestResult["sceneApply"]): Record<string, unknown> | undefined {
+  if (!sceneApply) {
+    return undefined;
+  }
+
+  return {
+    added_node_count: sceneApply.addedNodeIds.length,
+    added_observation_count: sceneApply.addedObservationIds.length,
+    added_relation_count: sceneApply.addedRelationIds.length,
+    focus_node_id: sceneApply.focusNodeId,
+  };
+}
+
+function summarizeSceneForTrace(scene: TerrainScene): Record<string, unknown> {
+  return {
+    active_tab_id: scene.active_tab_id,
+    metadata_title: scene.metadata.title,
+    node_count: scene.nodes.length,
+    observation_count: scene.scout_observations?.length ?? 0,
+    relation_count: scene.relations.length,
+    viewport: {
+      layer: scene.viewport.layer,
+      x: Math.round(scene.viewport.x),
+      y: Math.round(scene.viewport.y),
+      zoom: Number(scene.viewport.zoom.toFixed(3)),
+    },
+  };
+}
+
+function normalizeBootstrapCompletedScene(scene: TerrainScene, entryMode: CartographerRuntimeBootstrapRequest["entryMode"]): TerrainScene {
+  if (entryMode !== "default_tonight_sky") {
+    return scene;
+  }
+
+  const now = new Date().toISOString();
+  const starGalleryNodes = scene.nodes.filter((node) => node.layer === "L0");
+  const focusNodeId = starGalleryNodes[0]?.id;
+  const viewport = { x: 0, y: 0, zoom: 1, layer: "L0" as const };
+
+  return {
+    ...scene,
+    tabs: scene.tabs.map((tab) =>
+      tab.id === scene.active_tab_id
+        ? {
+            ...tab,
+            current_layer: "L0",
+            node_ids: starGalleryNodes.map((node) => node.id),
+            updated_at: now,
+            viewport,
+          }
+        : tab,
+    ),
+    viewport,
+    selection: {
+      ...scene.selection,
+      node_ids: focusNodeId ? [focusNodeId] : [],
+    },
+    runtime: {
+      ...scene.runtime,
+      focused_node_id: focusNodeId,
+      updated_at: now,
+    },
+    metadata: {
+      ...scene.metadata,
+      updated_at: now,
+    },
+  };
+}
+
 function createCancelledBootstrapResult(
   scene: TerrainScene,
   snapshot: CartographerChunkStoreSnapshot,
@@ -526,6 +776,41 @@ function createCancelledBootstrapResult(
       updatedAt: new Date().toISOString(),
     },
   };
+}
+
+function createFailedBootstrapResult(
+  scene: TerrainScene,
+  snapshot: CartographerChunkStoreSnapshot,
+  chunk: CartographerLevelChunkKey,
+  seed: string,
+  levelId: CartographerRuntimeRequest["level_id"],
+  result: CartographerChunkRequestResult,
+  cacheStatus?: "hit" | "miss" | "refresh",
+): CartographerRuntimeBootstrapResult {
+  return {
+    cacheStatus,
+    scene,
+    snapshot,
+    status: {
+      cacheStatus,
+      chunkKey: chunk.key,
+      message: createRuntimeFailureMessage(`Cartographer failed at ${levelId} for ${seed}`, result),
+      phase: "error",
+      updatedAt: new Date().toISOString(),
+    },
+  };
+}
+
+function createRuntimeFailureMessage(prefix: string, result: CartographerChunkRequestResult): string {
+  const diagnostics = Array.isArray(result.output.diagnostics) ? result.output.diagnostics.filter(isRuntimeDiagnostic) : [];
+  const diagnostic = diagnostics.find((candidate) => candidate.severity === "error") ?? diagnostics[0];
+  const detail = diagnostic?.message ?? result.output.status;
+
+  return `${prefix}: ${detail}`;
+}
+
+function isRuntimeDiagnostic(value: unknown): value is { message: string; severity?: string } {
+  return typeof value === "object" && value !== null && "message" in value && typeof value.message === "string";
 }
 
 function createCancelledViewportExpansionResult(
@@ -670,6 +955,7 @@ function parseCartographerRuntimeBootstrapRequest(value: unknown): CartographerR
   }
 
   return {
+    entryMode: candidate.entryMode === "default_tonight_sky" ? "default_tonight_sky" : undefined,
     forceRefresh: candidate.forceRefresh,
     scene: candidate.scene as TerrainScene,
     seed: candidate.seed,
@@ -798,24 +1084,263 @@ function clampCartographerPolicyNumber(value: unknown, min: number, max: number,
   return Math.max(min, Math.min(max, Math.round(value)));
 }
 
-function createCartographerSceneContext(scene: TerrainScene, levelId: CartographerRuntimeRequest["level_id"]): Record<string, unknown> {
+function createCartographerSceneContext(
+  scene: TerrainScene,
+  levelId: CartographerRuntimeRequest["level_id"],
+  requestedViewport: TerrainScene["viewport"] = scene.viewport,
+): Record<string, unknown> {
+  const activeTab = scene.tabs.find((tab) => tab.id === scene.active_tab_id) ?? scene.tabs[0];
+  const anchorContext = createContinuousScaleAnchorContext(scene, levelId, requestedViewport);
+
   return {
     active_layer: scene.viewport.layer,
-    existing_cartographer_nodes: scene.nodes.filter((node) => node.tags?.includes("cartographer")).slice(0, 24).map((node) => ({
-      id: node.id,
-      title: node.title,
-      layer: node.layer,
-      summary: node.summary,
-    })),
+    active_seed: activeTab?.seed ?? scene.metadata.title,
+    existing_cartographer_nodes: anchorContext.existingCartographerNodes,
+    focus_anchor: anchorContext.focusAnchor,
     level_id: levelId,
+    movement_vector: anchorContext.movementVector,
+    neighbor_anchors: anchorContext.neighborAnchors,
+    parent_backlink: activeTab?.parent_backlink
+      ? {
+          excerpt: activeTab.parent_backlink.excerpt,
+          label: activeTab.parent_backlink.label,
+          node_id: activeTab.parent_backlink.node_id,
+          source_id: activeTab.parent_backlink.source_id,
+          tab_id: activeTab.parent_backlink.tab_id,
+        }
+      : undefined,
+    parent_viewport: anchorContext.parentViewport,
+    scale_model: "continuous",
     selected_node_ids: scene.selection.node_ids,
     source_count: scene.sources.length,
     tab_id: scene.active_tab_id,
   };
 }
 
+function createContinuousScaleAnchorContext(
+  scene: TerrainScene,
+  levelId: CartographerRuntimeRequest["level_id"],
+  requestedViewport: TerrainScene["viewport"],
+): {
+  existingCartographerNodes: Array<Record<string, unknown>>;
+  focusAnchor?: Record<string, unknown>;
+  movementVector: { dx: number; dy: number };
+  neighborAnchors: Array<Record<string, unknown>>;
+  parentViewport?: Record<string, unknown>;
+} {
+  const parentLayer = getParentLayerForLevel(levelId);
+  const focusedNode = resolveFocusAnchorNode(scene, levelId, requestedViewport, parentLayer);
+  const existingCartographerNodes = selectNearbyCartographerNodes(scene, levelId, requestedViewport, parentLayer).map(toCartographerAnchor);
+  const neighborAnchors = selectNeighborAnchors(scene, focusedNode, requestedViewport, parentLayer).map(toCartographerAnchor);
+
+  return {
+    existingCartographerNodes,
+    focusAnchor: focusedNode ? toCartographerAnchor(focusedNode) : undefined,
+    movementVector: {
+      dx: Math.round(requestedViewport.x - scene.viewport.x),
+      dy: Math.round(requestedViewport.y - scene.viewport.y),
+    },
+    neighborAnchors,
+    parentViewport: parentLayer
+      ? {
+          layer: parentLayer,
+          x: requestedViewport.x,
+          y: requestedViewport.y,
+        }
+      : undefined,
+  };
+}
+
+function resolveFocusAnchorNode(
+  scene: TerrainScene,
+  levelId: CartographerRuntimeRequest["level_id"],
+  requestedViewport: TerrainScene["viewport"],
+  parentLayer: string | undefined,
+): TerrainNode | undefined {
+  const focusedNodeId = scene.runtime.focused_node_id ?? scene.selection.node_ids[0];
+  const focusedNode = focusedNodeId ? scene.nodes.find((node) => node.id === focusedNodeId) : undefined;
+
+  if (focusedNode) {
+    return focusedNode;
+  }
+
+  return findNearestNode(scene.nodes, requestedViewport, (node) => node.layer === parentLayer || node.layer === levelId || node.layer === scene.viewport.layer);
+}
+
+function selectNearbyCartographerNodes(
+  scene: TerrainScene,
+  levelId: CartographerRuntimeRequest["level_id"],
+  requestedViewport: TerrainScene["viewport"],
+  parentLayer: string | undefined,
+): TerrainNode[] {
+  const preferredLayers = [levelId, parentLayer, scene.viewport.layer].filter((layer): layer is string => Boolean(layer));
+  const selected: TerrainNode[] = [];
+  const selectedIds = new Set<string>();
+
+  for (const layer of preferredLayers) {
+    const nodes = sortNodesByViewportDistance(
+      scene.nodes.filter((node) => node.layer === layer && isCartographerAnchorNode(node)),
+      requestedViewport,
+    );
+
+    for (const node of nodes) {
+      if (selectedIds.has(node.id)) {
+        continue;
+      }
+
+      selected.push(node);
+      selectedIds.add(node.id);
+
+      if (selected.length >= 10) {
+        return selected;
+      }
+    }
+  }
+
+  return selected;
+}
+
+function selectNeighborAnchors(
+  scene: TerrainScene,
+  focusedNode: TerrainNode | undefined,
+  requestedViewport: TerrainScene["viewport"],
+  parentLayer: string | undefined,
+): TerrainNode[] {
+  const focusLayer = focusedNode?.layer ?? parentLayer ?? requestedViewport.layer;
+  return sortNodesByViewportDistance(
+    scene.nodes.filter((node) => node.id !== focusedNode?.id && node.layer === focusLayer && isCartographerAnchorNode(node)),
+    requestedViewport,
+  ).slice(0, 6);
+}
+
+function findNearestNode(
+  nodes: TerrainNode[],
+  viewport: TerrainScene["viewport"],
+  predicate: (node: TerrainNode) => boolean,
+): TerrainNode | undefined {
+  return sortNodesByViewportDistance(nodes.filter(predicate), viewport)[0];
+}
+
+function sortNodesByViewportDistance(nodes: TerrainNode[], viewport: TerrainScene["viewport"]): TerrainNode[] {
+  return [...nodes].sort((left, right) => getNodeViewportDistance(left, viewport) - getNodeViewportDistance(right, viewport));
+}
+
+function getNodeViewportDistance(node: TerrainNode, viewport: TerrainScene["viewport"]): number {
+  const x = node.position_hint?.x ?? 0;
+  const y = node.position_hint?.y ?? 0;
+  return Math.hypot(x - viewport.x, y - viewport.y);
+}
+
+function isCartographerAnchorNode(node: TerrainNode): boolean {
+  return node.source_state === "cartographer_primary" || node.source_state === "source_backed" || node.tags?.includes("cartographer") === true;
+}
+
+function toCartographerAnchor(node: TerrainNode): Record<string, unknown> {
+  return {
+    id: node.id,
+    layer: node.layer,
+    source_state: node.source_state,
+    summary: truncateContextText(node.summary ?? node.quote ?? "", 180),
+    title: truncateContextText(node.title, 80),
+    type: node.type,
+    x: node.position_hint?.x,
+    y: node.position_hint?.y,
+  };
+}
+
+function getParentLayerForLevel(levelId: CartographerRuntimeRequest["level_id"]): string | undefined {
+  switch (levelId) {
+    case "L0":
+      return "supra_macro";
+    case "L1":
+      return "L0";
+    case "L2":
+      return "L1";
+    case "L3":
+      return "L2";
+    default:
+      return undefined;
+  }
+}
+
+function truncateContextText(text: string, maxLength: number): string | undefined {
+  const normalized = text.trim();
+
+  if (!normalized) {
+    return undefined;
+  }
+
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+}
+
+function shouldAllowAiPreloadForLevel(levelId: CartographerRuntimeRequest["level_id"]): boolean {
+  return levelId === "L0" || levelId === "L1";
+}
+
+function createBootstrapEntryContext(
+  entryMode: CartographerRuntimeBootstrapRequest["entryMode"],
+  levelId: CartographerRuntimeRequest["level_id"],
+  settings: SeekStarSettings,
+): Record<string, unknown> {
+  if (entryMode !== "default_tonight_sky") {
+    return {};
+  }
+
+  return {
+    entry_mode: "default_tonight_sky",
+    default_sky: {
+      observation_date: new Date().toISOString().slice(0, 10),
+      metaphor: "The user has opened the telescope cap and should immediately see a complete night sky, not an empty search box.",
+      intent:
+        "Generate a diverse seed group of fresh, recent, surprising, and explorable fields. Favor unknown unknowns, new dynamics, adjacent frontiers, and useful curiosity over obvious evergreen categories.",
+      constraints: [
+        "Do not treat New Seek as the user query.",
+        "Do not ask the user for a keyword.",
+        "Keep topics concrete enough that L3 can later produce real webpages, PDFs, papers, images, or documents.",
+        "Mix technology, science, society, culture, infrastructure, research, and emerging tools when appropriate.",
+      ],
+      domain_hint_mode: settings.domain_hint_mode,
+      domain_hints: settings.domain_hint_mode === "guided" ? createDomainHints(settings) : [],
+      level_guidance: resolveDefaultSkyLevelGuidance(levelId),
+    },
+  };
+}
+
+function createDomainHints(settings: SeekStarSettings): Array<{ id: string; title: string; tags: string[] }> {
+  const activeLexicon =
+    settings.domain_lexicons.find((lexicon) => lexicon.id === settings.active_domain_lexicon_id) ??
+    settings.domain_lexicons.find((lexicon) => lexicon.active) ??
+    settings.domain_lexicons[0];
+
+  return (activeLexicon?.terms ?? [])
+    .filter((term) => term.enabled)
+    .slice(0, 48)
+    .map((term) => ({
+      id: term.id,
+      title: term.labels["zh-Hans"]?.trim() || term.labels.en?.trim() || term.canonical,
+      tags: term.tags ?? [],
+    }));
+}
+
+function resolveDefaultSkyLevelGuidance(levelId: CartographerRuntimeRequest["level_id"]): string {
+  switch (levelId) {
+    case "supra_macro":
+      return "Create the broader parent sky: systems, forces, and civilization-scale contexts above the first Star Gallery.";
+    case "L0":
+      return "Create the first visible Star Gallery: broad but fresh domains that feel like bright regions in tonight's sky.";
+    case "L1":
+      return "For each domain, create explorable topic fields and live dynamics, not static textbook chapters.";
+    case "L2":
+      return "Orient toward likely source families: papers, labs, institutions, explainers, datasets, benchmarks, communities, and primary references.";
+    case "L3":
+      return "Propose source candidates suitable for validation into dense tile fields: webpages, PDFs, papers, images, documents, repositories, and encyclopedic pages.";
+    default:
+      return "Support telescope-style exploration from macro field to source-backed detail.";
+  }
+}
+
 function resolveBootstrapCartographerMode(levelId: CartographerRuntimeRequest["level_id"]): CartographerGenerationMode {
-  return levelId === "L0" ? "bootstrap_seed" : "decompose_down";
+  return levelId === "supra_macro" || levelId === "L0" ? "bootstrap_seed" : "decompose_down";
 }
 
 function isCartographerTransactionKind(value: unknown): value is CartographerRuntimeTransactionKind {

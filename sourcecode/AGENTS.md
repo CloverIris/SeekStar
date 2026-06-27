@@ -22,12 +22,20 @@ Do not "reduce noise" by merely not displaying old state. If the old path can re
 
 Current MVP spine:
 
-* AI Cartographer is the primary L0-L3, Supra Macro, and recursive-seed terrain producer.
-* AI-generated `cartographer_primary` terrain is the normal map material for L0-L3, not a suspicious fallback. Source-backed terrain is stronger provenance, not the only legitimate visible content.
+* A default New Seek tab opens as an AI-generated `default_tonight_sky`, not as an empty search shell. Users may still type or select a seed, but the first product surface is the star field.
+* `createSeedScene` creates only the tab/runtime/layer container. It must not manufacture visible local scaffold nodes, default domain nodes, fake sources, pending tiles, or old layer breadcrumbs.
+* AI Cartographer is the primary Supra Macro, L0, L1, L2, L3-candidate, and recursive-seed terrain producer.
+* AI-generated `cartographer_primary` terrain is the normal map material for Supra Macro through L2. In L3, AI may propose source candidates and orientation material, but a `cartographer_primary` `webpage`/`document` node must not be rendered as a real tile surface.
+* Domain lexicons are opening-sky prompt hints, not a visible seed pool. In `guided` mode enabled terms are sent as hints; in `pure_ai` mode no preset domain hints are sent. In both modes the AI remains responsible for free exploration.
 * DataService validates, observes, and loads sources for AI and user actions; it is a reality probe and tool surface, not the main map generator.
 * Failed AI-proposed URLs or source candidates must stay out of the main canvas. They may enter diagnostics/recovery queues, then be retried or replaced by AI.
+* L3 source candidates are queue/status objects only. They may appear in Source review, recovery, status overlays, or AI Map Control, but only successful DataService observations create source-backed Tile Field surfaces.
 * Level Runtime owns per-band data contracts, prompt profiles, chunk policy, and layout families. AI supplies semantic material; the runtime decides the product spatial contract.
+* Level Runtime and bridge code must keep model requests compact. Do not send the complete prompt profile or all level modules on every request; send the active module, nearby anchors, compact chunk policy, and the minimum scene summary required for the current band.
+* L0/L1 may use limited AI prefetch for smooth macro exploration. L2/L3 should be on-demand by default and must not spawn automatic preload rings unless the user explicitly asks for that behavior.
+* L0-L3 movement is continuous telescope navigation in one scene and coordinate plane. Do not simulate normal zooming by opening nested seed tabs or isolated layer boxes.
 * Pixi/App Framework render those contracts; they must not resurrect legacy radial, mock, DOM placeholder, debug-HUD, or old inspector-first layouts.
+* Product AI routes default to DeepSeek/OpenAI-compatible real generation. Missing keys must fail clearly. Synthetic generators are allowed only as local test fixtures, never as exported providers or default product fallback.
 * Right sidebar work should become an AI map chat/control surface. Old inspector/debug sprawl should be removed from the default product path.
 * Every level/band module should be CLI-testable with structured input, structured output, validation, and diagnostics. If a path cannot be tested outside the full Electron UI, it is not ready to be a core layer boundary.
 
@@ -151,7 +159,8 @@ The AI Agent is the cartographer.
 
 Responsibilities:
 
-* generate `cartographer_primary` L0-L3 terrain;
+* generate `cartographer_primary` Supra Macro, L0, L1, and L2 terrain;
+* propose L3 source candidates that DataService may validate into source-backed tiles;
 * generate Supra Macro context above L0 without using negative levels;
 * classify retrieved content;
 * detect parent, child, and sibling concepts;
@@ -497,7 +506,7 @@ The MVP product target is no longer a visible 12-step UI ladder. The user-facing
 * L0 Star Gallery: domain seed pool and broad exploration field.
 * L1 Topic Field: topic neighborhoods and same-layer branches.
 * L2 Source Orientation: source directions, reference families, communities, repositories, papers, and trails.
-* L3 Tile Field: webpage, article, PDF, image, and document candidates or source-backed tiles.
+* L3 Tile Field: source-backed webpage, article, PDF, image, and document tiles. Unverified webpage/document candidates stay in Source review/recovery and must not render as main-canvas tiles.
 * Deep Lens: section, paragraph, sentence, phrase, word, character, Unicode/dictionary, and future byte/hex inspection inside one close-reading mode.
 * Recursive Seed: any selected grain, region, link, file, image region, or text span becomes a new exploration universe.
 
@@ -568,12 +577,12 @@ When the user enters text and chooses “as new exploration seed”:
 1. Create a new independent tab.
 2. Do not inherit the previous tab’s navigation history.
 3. Use the text as the seed context.
-4. Ask AI Cartographer to bootstrap Supra Macro, L0, L1, and L2 by default; L3 candidates may be prepared when useful.
+4. Ask AI Cartographer to bootstrap Supra Macro and L0 first; generate L1/L2/L3 on demand from focus, viewport, and user movement.
 5. Render valid `cartographer_primary` terrain immediately after schema validation.
 6. Ask DataService to validate only the URL/source candidates that need reality probing.
 7. Promote successful observations into source-backed L3 tiles.
 8. Hide failed candidates from the main canvas and keep them in recovery/diagnostics.
-9. Preload nearby chunks according to settings.
+9. Preload nearby chunks according to settings, with the MVP default of limited L0/L1 prefetch and on-demand L2/L3.
 
 ### 5.3 Search within current tab
 
@@ -602,7 +611,7 @@ When the user approaches an edge:
 
 1. Detect that the active viewport is near the prepared chunk boundary.
 2. Request AI Cartographer `expand_horizontal` for the next same-band chunk.
-3. Preload one or two rings when settings allow.
+3. Preload one small ring only for L0/L1 when settings allow; keep L2/L3 on-demand unless explicitly requested.
 4. Run DataService only for source candidates that require observation.
 5. Add new structures in the direction of travel without re-laying out the entire map.
 6. Put distant chunks to sleep, cache them, or evict them when budgets are exceeded.
@@ -614,16 +623,18 @@ When the user zooms in:
 
 1. Determine whether the next semantic band should be revealed.
 2. Fade the current band into context.
-3. Generate or hydrate child/detail terrain through the band module.
+3. Generate or hydrate child/detail terrain through the band module using the current focus anchor, nearby sibling anchors, viewport center, and movement direction.
 4. Keep parent/supra context visible.
-5. Enter Deep Lens for text/content detail instead of marching through many visible text layers.
+5. Stay in the same scene and coordinate plane for ordinary L0/L1/L2/L3 zooming; do not create nested tabs or isolated boxes.
+6. Enter Deep Lens for text/content detail instead of marching through many visible text layers.
 
 When the user zooms out:
 
 1. Collapse child nodes into summaries.
 2. Fade lower band detail to zero or near-zero opacity.
-3. Reveal parent region.
-4. Preserve the user’s trail.
+3. Reveal the parent region nearest the current viewport, not necessarily the original entry node.
+4. If the lower-band exploration discovered an upper-band gap, write that context back into the existing parent terrain with `summarize_up`.
+5. Preserve the user’s trail.
 
 ### 5.7 HTML content zoom
 

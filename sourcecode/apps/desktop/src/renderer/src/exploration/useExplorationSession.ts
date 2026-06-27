@@ -8,7 +8,10 @@ import {
   createFailedScoutObservation,
   createSeedScene,
   defaultSeekStarSeedScene,
+  DEFAULT_NEW_SEEK_SCENE_ID,
+  DEFAULT_NEW_SEEK_TAB_ID,
   isDirectHttpUrl,
+  NEW_SEEK_TITLE,
   resolveFrontierTrigger,
   resolveZoomForLayer,
   resolveActiveDomainLexicon,
@@ -55,6 +58,7 @@ interface SeedTabCreationResult extends SelectionSyncResult {
 interface SyncWorkspaceFromStoreOptions {
   preferredActiveTabId?: string;
   registerRuntimeTabs?: boolean;
+  resetDefaultOpeningSky?: boolean;
   shouldCancel?: () => boolean;
   protectLocalNavigation?: boolean;
   suppressAutosave?: boolean;
@@ -62,6 +66,9 @@ interface SyncWorkspaceFromStoreOptions {
 
 const DIRECT_URL_SOURCE_INTAKE_TIMEOUT_MS = 52_000;
 const STALE_DIRECT_URL_PENDING_MS = 90_000;
+const DEFAULT_TONIGHT_SKY_SEED =
+  "Tonight Sky: fresh signals, recent field dynamics, unknown unknowns, and explorable seed constellations";
+const AUTO_CANDIDATE_VERIFICATION_PROVIDER_ID = "seekstar-auto-candidate-verification";
 
 export interface CartographerChunkSchedulingPolicy {
   auto_expand_enabled: boolean;
@@ -102,6 +109,9 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
   const lastWorkspaceChangeRevisionRef = useRef(0);
   const suppressNextAutosaveRef = useRef(false);
   const cartographerBootstrapRef = useRef<Set<string>>(new Set());
+  const autoCandidateVerificationRef = useRef<Set<string>>(new Set());
+  const autoCandidateVerificationInFlightRef = useRef(false);
+  const defaultTonightSkySeedRef = useRef(createDefaultTonightSkySessionSeed());
   const cartographerChunkRecords = useMemo(
     () => Object.values(cartographerChunksByTabId[activeTabId] ?? {}).sort(compareCartographerChunkRecords),
     [activeTabId, cartographerChunksByTabId],
@@ -230,7 +240,10 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
           runtimeTabId,
         });
         const settledLaunch = settleStaleDirectUrlPendingScenes(launch.scenesByTabId);
-        const launchScenesByTabId = settledLaunch.scenesByTabId;
+        const resetLaunch = syncOptions.resetDefaultOpeningSky
+          ? resetHydratedDefaultNewSeekScenes(settledLaunch.scenesByTabId)
+          : { changed: false, scenesByTabId: settledLaunch.scenesByTabId };
+        const launchScenesByTabId = resetLaunch.scenesByTabId;
 
         if (syncOptions.shouldCancel?.()) {
           return undefined;
@@ -240,9 +253,10 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
           return undefined;
         }
 
+        const activeLaunchScene = launchScenesByTabId[launch.activeTabId];
         const nextSelection = {
-          selectedNodeIds: launch.selectedNodeIds,
-          focusNodeId: launch.focusNodeId,
+          selectedNodeIds: activeLaunchScene?.selection.node_ids ?? launch.selectedNodeIds,
+          focusNodeId: activeLaunchScene?.runtime.focused_node_id ?? activeLaunchScene?.selection.node_ids[0] ?? launch.focusNodeId,
         };
 
         if (syncOptions.suppressAutosave) {
@@ -262,7 +276,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
           await registerRuntimeScenes(launchScenesByTabId, launch.activeTabId);
         }
 
-        if (settledLaunch.changed) {
+        if (settledLaunch.changed || resetLaunch.changed) {
           suppressNextAutosaveRef.current = true;
           void workspacePersistence
             .persist({
@@ -297,6 +311,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     void syncWorkspaceFromStore({
       protectLocalNavigation: true,
       registerRuntimeTabs: true,
+      resetDefaultOpeningSky: true,
       shouldCancel: () => cancelled,
     });
 
@@ -558,6 +573,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
 
   const bootstrapCartographerTerrain = useCallback(
     async (input: {
+      entryMode?: "default_tonight_sky";
       forceRefresh?: boolean;
       scene: TerrainScene;
       seed: string;
@@ -572,6 +588,11 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       const bootstrapKey = `${input.tabId}:${seed.toLowerCase()}:p6-bootstrap`;
 
       if (!input.forceRefresh && cartographerBootstrapRef.current.has(bootstrapKey)) {
+        traceExplorationSession("bootstrap.skip_already_queued", {
+          bootstrap_key: bootstrapKey,
+          seed,
+          tab_id: input.tabId,
+        });
         return undefined;
       }
 
@@ -580,7 +601,15 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
 
       try {
         const latestScene = scenesByTabIdRef.current[input.tabId] ?? input.scene;
+        traceExplorationSession("bootstrap.start", {
+          entry_mode: input.entryMode,
+          force_refresh: Boolean(input.forceRefresh),
+          scene: summarizeExplorationScene(latestScene),
+          seed,
+          tab_id: input.tabId,
+        });
         const result = await window.seekstar.cartographer.runBootstrapTransaction({
+          entryMode: input.entryMode,
           forceRefresh: input.forceRefresh,
           scene: latestScene,
           seed,
@@ -588,6 +617,10 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         });
 
         if (!scenesByTabIdRef.current[input.tabId]) {
+          traceExplorationSession("bootstrap.drop_missing_tab", {
+            seed,
+            tab_id: input.tabId,
+          });
           return undefined;
         }
 
@@ -598,11 +631,23 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         setCartographerStatus(result.status);
         setPersistenceStatus("saved");
 
+        traceExplorationSession("bootstrap.applied", {
+          scene: summarizeExplorationScene(nextScene),
+          seed,
+          status: result.status,
+          tab_id: input.tabId,
+        });
+
         return {
           selectedNodeIds: nextScene.selection.node_ids,
           focusNodeId: nextScene.runtime.focused_node_id ?? nextScene.selection.node_ids[0],
         };
-      } catch {
+      } catch (error) {
+        traceExplorationSession("bootstrap.error", {
+          error: error instanceof Error ? error.message : String(error),
+          seed,
+          tab_id: input.tabId,
+        });
         setCartographerStatus({
           message: `Cartographer bootstrap failed for ${seed}`,
           phase: "error",
@@ -617,6 +662,8 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
 
   const ingestDirectUrlSourceIntoScene = useCallback(
     async (input: {
+      autoCandidateVerification?: boolean;
+      candidateObservationId?: string;
       createdFrom?: NonNullable<TerrainScene["tabs"][number]["parent_backlink"]>;
       reliabilityHints?: string[];
       scene: TerrainScene;
@@ -638,6 +685,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
 
       try {
         const pendingObservation = createPendingDirectUrlObservation({
+          autoCandidateVerification: input.autoCandidateVerification,
           createdAt: new Date().toISOString(),
           tabId: input.tabId,
           targetNodeIds: input.targetNodeIds ?? [],
@@ -672,6 +720,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
           DIRECT_URL_SOURCE_INTAKE_TIMEOUT_MS,
           () =>
             createDirectUrlIntakeFailureResult({
+              providerId: input.autoCandidateVerification ? AUTO_CANDIDATE_VERIFICATION_PROVIDER_ID : undefined,
               pendingObservationId: pendingObservation.id,
               scene: pendingResult.scene,
               tabId: input.tabId,
@@ -685,20 +734,24 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
           return undefined;
         }
 
-        const resultScenesByTabId = replaceScene(input.tabId, result.scene);
+        const settledScene = input.candidateObservationId
+          ? settleScoutObservation(result.scene, input.candidateObservationId, result.sourceCandidate ? "converted" : "failed")
+          : result.scene;
+        const resultScenesByTabId = replaceScene(input.tabId, settledScene);
         await persistWorkspaceAfterSceneChange(input.tabId, resultScenesByTabId);
         setPersistenceStatus("saved");
 
         return {
-          selectedNodeIds: result.scene.selection.node_ids,
-          focusNodeId: result.scene.runtime.focused_node_id ?? result.scene.selection.node_ids[0],
-          scene: result.scene,
+          selectedNodeIds: settledScene.selection.node_ids,
+          focusNodeId: settledScene.runtime.focused_node_id ?? settledScene.selection.node_ids[0],
+          scene: settledScene,
         };
       } catch (error) {
         const sourceScene = pendingScene ?? input.scene;
 
         if (scenesByTabIdRef.current[input.tabId]) {
           const failedResult = createDirectUrlIntakeFailureResult({
+            providerId: input.autoCandidateVerification ? AUTO_CANDIDATE_VERIFICATION_PROVIDER_ID : undefined,
             pendingObservationId: sourceScene.scout_observations?.find((observation) => observation.status === "pending")?.id,
             scene: sourceScene,
             tabId: input.tabId,
@@ -706,7 +759,10 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
             url,
             reason: getErrorMessage(error, "Direct URL source intake failed before Scout returned."),
           });
-          const failedScenesByTabId = replaceScene(input.tabId, failedResult.scene);
+          const settledFailedScene = input.candidateObservationId
+            ? settleScoutObservation(failedResult.scene, input.candidateObservationId, "failed")
+            : failedResult.scene;
+          const failedScenesByTabId = replaceScene(input.tabId, settledFailedScene);
           await persistWorkspaceAfterSceneChange(input.tabId, failedScenesByTabId).catch(() => undefined);
         }
 
@@ -796,6 +852,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       }
 
       return ingestDirectUrlSourceIntoScene({
+        candidateObservationId: observation.id,
         createdFrom: {
           tab_id: tabId,
           node_id: observation.target_node_ids[0] ?? currentScene.selection.node_ids[0],
@@ -945,20 +1002,70 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       return;
     }
 
-    const activeTab = currentScene.tabs.find((tab) => tab.id === currentScene.active_tab_id) ?? currentScene.tabs[0];
-    const query = (activeTab?.seed || currentScene.metadata.title).trim();
-    const bootstrapKey = `${activeTabId}:${query.toLowerCase()}:p6-bootstrap`;
+    const bootstrapRequest = resolveInitialCartographerBootstrap(currentScene, defaultTonightSkySeedRef.current);
+    const bootstrapKey = `${activeTabId}:${bootstrapRequest.seed.toLowerCase()}:p6-bootstrap`;
 
     if (cartographerBootstrapRef.current.has(bootstrapKey)) {
+      traceExplorationSession("initial_bootstrap.skip_existing_key", {
+        bootstrap_key: bootstrapKey,
+        tab_id: activeTabId,
+      });
       return;
     }
 
+    traceExplorationSession("initial_bootstrap.trigger", {
+      entry_mode: bootstrapRequest.entryMode,
+      scene: summarizeExplorationScene(currentScene),
+      seed: bootstrapRequest.seed,
+      tab_id: activeTabId,
+    });
+
     void bootstrapCartographerTerrain({
+      entryMode: bootstrapRequest.entryMode,
       scene: currentScene,
-      seed: query,
+      seed: bootstrapRequest.seed,
       tabId: activeTabId,
     });
   }, [activeTabId, bootstrapCartographerTerrain, scenesByTabId, workspaceHydrated]);
+
+  useEffect(() => {
+    if (!workspaceHydrated || autoCandidateVerificationInFlightRef.current) {
+      return;
+    }
+
+    const currentScene = scenesByTabId[activeTabId];
+    const candidate = currentScene ? findNextAutoVerifiableCandidate(currentScene, autoCandidateVerificationRef.current) : undefined;
+
+    if (!currentScene || !candidate?.url) {
+      return;
+    }
+
+    autoCandidateVerificationRef.current.add(candidate.id);
+    autoCandidateVerificationInFlightRef.current = true;
+
+    void ingestDirectUrlSourceIntoScene({
+      autoCandidateVerification: true,
+      candidateObservationId: candidate.id,
+      createdFrom: {
+        tab_id: activeTabId,
+        node_id: candidate.target_node_ids[0] ?? currentScene.selection.node_ids[0],
+        label: `Auto-verified candidate source: ${candidate.title}`,
+        excerpt: candidate.snippet ?? candidate.query,
+      },
+      reliabilityHints: [
+        "auto-verified from AI Cartographer L3 candidate",
+        candidate.provider_id ? `candidate provider: ${candidate.provider_id}` : "candidate provider unavailable",
+      ],
+      scene: currentScene,
+      tabId: activeTabId,
+      tags: ["scout-observation", "candidate-auto-verified", "source-backed-command"],
+      targetNodeIds: candidate.target_node_ids,
+      title: candidate.title,
+      url: candidate.url,
+    }).finally(() => {
+      autoCandidateVerificationInFlightRef.current = false;
+    });
+  }, [activeTabId, ingestDirectUrlSourceIntoScene, scenesByTabId, workspaceHydrated]);
 
   const handleApplyDomainLexiconToDefaultSeek = useCallback(
     (domainLexicons: readonly DomainLexicon[] | undefined, activeLexiconId?: string): SelectionSyncResult => {
@@ -1717,7 +1824,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
   const handleUseNodeAsSeed = useCallback(
     async (node: TerrainNode, source?: SourceRef): Promise<SeedTabCreationResult | undefined> => {
       const seedTitle = node.title.trim() || source?.title || "Source-backed seed";
-      const excerpt = node.quote ?? node.summary ?? source?.snippet;
+      const excerpt = createRecursiveSeedBacklinkExcerpt(node, source);
       const createdFromLabel = node.created_from?.label ?? node.semantic_breadcrumb?.join(" / ");
       const originTabId = activeTabIdRef.current;
 
@@ -1737,15 +1844,22 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
           },
         }),
       );
+      const tabId = openedScene.active_tab_id;
+      const latestScene = scenesByTabIdRef.current[tabId] ?? openedScene;
+      const bootstrapped = await bootstrapCartographerTerrain({
+        scene: latestScene,
+        seed: createRecursiveSeedBootstrapSeed(seedTitle, node, source),
+        tabId,
+      });
 
       return {
-        createdTabId: openedScene.active_tab_id,
-        focusNodeId: openedScene.runtime.focused_node_id ?? openedScene.selection.node_ids[0],
+        createdTabId: tabId,
+        focusNodeId: bootstrapped?.focusNodeId ?? openedScene.runtime.focused_node_id ?? openedScene.selection.node_ids[0],
         originTabId,
-        selectedNodeIds: openedScene.selection.node_ids,
+        selectedNodeIds: bootstrapped?.selectedNodeIds ?? openedScene.selection.node_ids,
       };
     },
-    [openSeedScene],
+    [bootstrapCartographerTerrain, openSeedScene],
   );
 
   return {
@@ -1798,6 +1912,41 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
   };
 }
 
+interface InitialCartographerBootstrap {
+  entryMode?: "default_tonight_sky";
+  seed: string;
+}
+
+function createDefaultTonightSkySessionSeed(): string {
+  return `${DEFAULT_TONIGHT_SKY_SEED}; opened_at=${new Date().toISOString()}`;
+}
+
+function resolveInitialCartographerBootstrap(scene: TerrainScene, defaultTonightSkySeed: string): InitialCartographerBootstrap {
+  if (isDefaultNewSeekScene(scene)) {
+    return {
+      entryMode: "default_tonight_sky",
+      seed: defaultTonightSkySeed,
+    };
+  }
+
+  const activeTab = scene.tabs.find((tab) => tab.id === scene.active_tab_id) ?? scene.tabs[0];
+
+  return {
+    seed: (activeTab?.seed || scene.metadata.title).trim(),
+  };
+}
+
+function isDefaultNewSeekScene(scene: TerrainScene): boolean {
+  if (scene.id !== DEFAULT_NEW_SEEK_SCENE_ID || scene.active_tab_id !== DEFAULT_NEW_SEEK_TAB_ID || scene.sources.length > 0) {
+    return false;
+  }
+
+  const activeTab = scene.tabs.find((tab) => tab.id === scene.active_tab_id) ?? scene.tabs[0];
+  const visibleSeed = (activeTab?.seed || activeTab?.title || scene.metadata.title).trim();
+
+  return activeTab?.id === DEFAULT_NEW_SEEK_TAB_ID && !activeTab.parent_backlink && visibleSeed === NEW_SEEK_TITLE;
+}
+
 async function loadConfiguredDefaultScene(fallbackScene: TerrainScene): Promise<TerrainScene> {
   try {
     const settings = await window.seekstar.settings.load();
@@ -1810,6 +1959,44 @@ async function loadConfiguredDefaultScene(fallbackScene: TerrainScene): Promise<
   } catch {
     return fallbackScene;
   }
+}
+
+function resetHydratedDefaultNewSeekScenes(scenesByTabId: Record<string, TerrainScene>): {
+  changed: boolean;
+  scenesByTabId: Record<string, TerrainScene>;
+} {
+  let changed = false;
+  const nextScenesByTabId: Record<string, TerrainScene> = {};
+
+  for (const [tabId, scene] of Object.entries(scenesByTabId)) {
+    if (isDefaultNewSeekScene(scene) && shouldResetDefaultNewSeekScene(scene)) {
+      changed = true;
+      nextScenesByTabId[tabId] = createDefaultNewSeekScene({
+        timestamp: new Date().toISOString(),
+      });
+      continue;
+    }
+
+    nextScenesByTabId[tabId] = scene;
+  }
+
+  return {
+    changed,
+    scenesByTabId: changed ? nextScenesByTabId : scenesByTabId,
+  };
+}
+
+function shouldResetDefaultNewSeekScene(scene: TerrainScene): boolean {
+  return (
+    scene.nodes.length > 0 ||
+    scene.relations.length > 0 ||
+    scene.cartographer_outputs.length > 0 ||
+    (scene.scout_observations?.length ?? 0) > 0 ||
+    scene.viewport.layer !== "L0" ||
+    scene.viewport.x !== 0 ||
+    scene.viewport.y !== 0 ||
+    scene.viewport.zoom !== 1
+  );
 }
 
 async function registerRuntimeScenes(scenesByTabId: Record<string, TerrainScene>, activeTabId: string): Promise<void> {
@@ -1828,6 +2015,7 @@ async function registerRuntimeScenes(scenesByTabId: Record<string, TerrainScene>
 }
 
 function createPendingDirectUrlObservation(input: {
+  autoCandidateVerification?: boolean;
   createdAt: string;
   tabId: string;
   targetNodeIds: string[];
@@ -1841,12 +2029,15 @@ function createPendingDirectUrlObservation(input: {
     layer: "L3",
     position_hint: { x: 0, y: 0 },
     discovery_mode: "direct_url",
+    provider_id: input.autoCandidateVerification ? AUTO_CANDIDATE_VERIFICATION_PROVIDER_ID : undefined,
     confidence: 0.36,
     query: input.url,
     title: `Observing ${input.url}`,
     target_node_ids: input.targetNodeIds,
     url: input.url,
-    snippet: "Playwright Scout is observing this URL before source-backed terrain is created.",
+    snippet: input.autoCandidateVerification
+      ? "SeekStar is verifying this AI source candidate before it can become a source-backed tile."
+      : "Playwright Scout is observing this URL before source-backed terrain is created.",
     created_at: input.createdAt,
     updated_at: input.createdAt,
   };
@@ -1855,6 +2046,10 @@ function createPendingDirectUrlObservation(input: {
 function shouldBootstrapCartographerTerrain(scene: TerrainScene): boolean {
   if (scene.sources.length > 0 || isDirectHttpUrl(scene.metadata.title)) {
     return false;
+  }
+
+  if (isDefaultNewSeekScene(scene)) {
+    return true;
   }
 
   if (scene.nodes.some((node) => node.source_state === "cartographer_primary" || node.tags?.includes("cartographer"))) {
@@ -1871,6 +2066,25 @@ function shouldBootstrapCartographerTerrain(scene: TerrainScene): boolean {
   return Boolean(seed) && !isDirectHttpUrl(seed);
 }
 
+function findNextAutoVerifiableCandidate(scene: TerrainScene, queuedIds: Set<string>): ScoutObservation | undefined {
+  const observations = scene.scout_observations ?? [];
+
+  if (observations.some((observation) => observation.provider_id === AUTO_CANDIDATE_VERIFICATION_PROVIDER_ID && observation.status === "pending")) {
+    return undefined;
+  }
+
+  return observations
+    .filter(
+      (observation) =>
+        observation.layer === "L3" &&
+        observation.status === "source_candidate" &&
+        Boolean(observation.url) &&
+        !queuedIds.has(observation.id) &&
+        isDirectHttpUrl(observation.url ?? ""),
+    )
+    .sort((left, right) => (right.confidence ?? 0) - (left.confidence ?? 0))[0];
+}
+
 function createHyperlinkOrphanSeed(
   scene: TerrainScene,
   parentBacklink: NonNullable<TerrainScene["tabs"][number]["parent_backlink"]>,
@@ -1880,6 +2094,95 @@ function createHyperlinkOrphanSeed(
   const parentContext = parentLabel && parentLabel !== "Hyperlink" ? parentLabel : undefined;
 
   return parentContext ? `${sourceTitle} in context of ${parentContext}` : sourceTitle;
+}
+
+function createRecursiveSeedBootstrapSeed(seedTitle: string, node: TerrainNode, source?: SourceRef): string {
+  const sourceUrl = node.source_url ?? source?.url;
+  const sourceId = node.source_id ?? source?.id;
+  const locator = node.source_range?.locator;
+  const excerpt = node.quote ?? node.summary ?? source?.snippet;
+  const context = [
+    `recursive_seed=${seedTitle}`,
+    sourceUrl ? `source_url=${sourceUrl}` : undefined,
+    sourceId ? `source_id=${sourceId}` : undefined,
+    locator ? `locator=${locator}` : undefined,
+    typeof node.source_range?.start === "number" && typeof node.source_range.end === "number"
+      ? `offset=${node.source_range.start}-${node.source_range.end}`
+      : undefined,
+    excerpt ? `excerpt=${excerpt.slice(0, 360)}` : undefined,
+  ].filter(Boolean);
+
+  return context.join("; ");
+}
+
+function createRecursiveSeedBacklinkExcerpt(node: TerrainNode, source?: SourceRef): string | undefined {
+  const sourceUrl = node.source_url ?? source?.url;
+  const locator = node.source_range?.locator;
+  const range =
+    typeof node.source_range?.start === "number" && typeof node.source_range.end === "number"
+      ? `${node.source_range.start}-${node.source_range.end}`
+      : undefined;
+  const text = node.quote ?? node.summary ?? source?.snippet;
+  const parts = [
+    text,
+    sourceUrl ? `source: ${sourceUrl}` : undefined,
+    locator ? `locator: ${locator}` : undefined,
+    range ? `offset: ${range}` : undefined,
+  ].filter((part): part is string => Boolean(part?.trim()));
+
+  return parts.length > 0 ? parts.join("\n") : undefined;
+}
+
+function traceExplorationSession(event: string, payload?: unknown): void {
+  try {
+    if (window.localStorage.getItem("seekstar.trace") === "0") {
+      return;
+    }
+
+    if (!import.meta.env.DEV && window.localStorage.getItem("seekstar.trace") !== "1") {
+      return;
+    }
+  } catch {
+    if (!import.meta.env.DEV) {
+      return;
+    }
+  }
+
+  const suffix = payload === undefined ? "" : ` ${stringifyExplorationTracePayload(payload)}`;
+  console.info(`[SeekStar][exploration-session] ${event}${suffix}`);
+}
+
+function stringifyExplorationTracePayload(payload: unknown): string {
+  try {
+    return JSON.stringify(payload, (_key, value: unknown) => {
+      if (typeof value === "string" && value.length > 800) {
+        return `${value.slice(0, 800)}...<truncated ${value.length - 800} chars>`;
+      }
+
+      return value;
+    });
+  } catch (error) {
+    return JSON.stringify({
+      trace_error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function summarizeExplorationScene(scene: TerrainScene): Record<string, unknown> {
+  return {
+    active_tab_id: scene.active_tab_id,
+    metadata_title: scene.metadata.title,
+    node_count: scene.nodes.length,
+    observation_count: scene.scout_observations?.length ?? 0,
+    relation_count: scene.relations.length,
+    source_count: scene.sources.length,
+    viewport: {
+      layer: scene.viewport.layer,
+      x: Math.round(scene.viewport.x),
+      y: Math.round(scene.viewport.y),
+      zoom: Number(scene.viewport.zoom.toFixed(3)),
+    },
+  };
 }
 
 function isCartographerExpandableLayer(layer: LayerId): layer is CartographerLevelBandId {
@@ -1906,6 +2209,7 @@ function settleStaleDirectUrlPendingScenes(scenesByTabId: Record<string, Terrain
         changed = true;
         nextScene = createDirectUrlIntakeFailureResult({
           pendingObservationId: observation.id,
+          providerId: observation.provider_id,
           scene: nextScene,
           tabId,
           targetNodeIds: observation.target_node_ids,
@@ -1926,6 +2230,7 @@ function settleStaleDirectUrlPendingScenes(scenesByTabId: Record<string, Terrain
 
 function createDirectUrlIntakeFailureResult(input: {
   pendingObservationId?: string;
+  providerId?: string;
   reason: string;
   scene: TerrainScene;
   tabId: string;
@@ -1941,15 +2246,21 @@ function createDirectUrlIntakeFailureResult(input: {
     failureReason: input.reason,
     timestamp,
   });
+  const taggedFailedObservation = input.providerId
+    ? {
+        ...failedObservation,
+        provider_id: input.providerId,
+      }
+    : failedObservation;
   const failedResult = applyExplorationEvent(settleScoutObservation(input.scene, input.pendingObservationId, "duplicate"), {
     type: "scout.observations.appended",
-    observations: [failedObservation],
+    observations: [taggedFailedObservation],
     description: `${input.scene.metadata.title} could not observe ${input.url} through Scout.`,
   });
 
   return {
-    observation: failedObservation,
-    observations: [failedObservation],
+    observation: taggedFailedObservation,
+    observations: [taggedFailedObservation],
     scene: failedResult.scene,
   };
 }

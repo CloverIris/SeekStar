@@ -2,15 +2,19 @@ import { ipcMain } from "electron";
 import {
   AiCartographerService,
   buildCartographerMessages,
+  resolveApiKey,
   type AiAssistantInput,
   type AiAssistantOutput,
   type AiModelMessage,
+  type AiModelTelemetry,
   type CartographerGenerationInput,
   type CartographerGenerationMode,
   type CartographerGenerationOutput,
+  type CartographerGenerationStatus,
 } from "@seekstar/ai-service";
-import { createLevelChunkKey, runLevelRuntime, type LevelBandId } from "@seekstar/level-runtime";
+import { createLevelChunkKey, runLevelRuntime, type LevelBandId, type LevelRuntimeOutput } from "@seekstar/level-runtime";
 import { loadSettings, resolveActiveAiProviderConfig, resolveCartographerLevelRuntimeSettings } from "./appSettingsStore.js";
+import type { SeekStarSettings } from "./appSettingsStore.js";
 import { appendAiCostLedgerRecord } from "./aiCostLedgerStore.js";
 
 export interface AiCartographerPromptPreviewRequest {
@@ -37,8 +41,31 @@ export interface AiCartographerPromptPreviewResult {
   seed: string;
 }
 
+export interface AiAdapterTestRequest {
+  provider_id?: string;
+  seed?: string;
+  settings?: SeekStarSettings;
+}
+
+export interface AiAdapterTestResult {
+  diagnostics: CartographerGenerationOutput["diagnostics"];
+  elapsed_ms: number;
+  generated_at: string;
+  level_id: LevelBandId;
+  model?: string;
+  node_count: number;
+  provider_id?: string;
+  relation_count: number;
+  request_preview: string;
+  response_preview: string;
+  source_candidate_count: number;
+  status: CartographerGenerationStatus;
+  telemetry?: AiModelTelemetry;
+}
+
 export function registerAiAssistantBridge(): void {
   ipcMain.removeHandler("ai:assist");
+  ipcMain.removeHandler("ai:test-adapter");
   ipcMain.removeHandler("ai:preview-cartographer-prompt");
   ipcMain.handle("ai:preview-cartographer-prompt", async (_event, input): Promise<AiCartographerPromptPreviewResult> => {
     const settings = await loadSettings();
@@ -95,6 +122,88 @@ export function registerAiAssistantBridge(): void {
       request,
       seed: preview.seed,
     };
+  });
+  ipcMain.handle("ai:test-adapter", async (_event, input): Promise<AiAdapterTestResult> => {
+    const startedAt = Date.now();
+    const request = parseAdapterTestRequest(input);
+    const baseSettings = request.settings ?? await loadSettings();
+    const settings = request.provider_id ? withActiveAdapterProvider(baseSettings, request.provider_id) : baseSettings;
+    const provider = resolveActiveAiProviderConfig(settings);
+    const runtimeSettings = resolveCartographerLevelRuntimeSettings(settings);
+    const seed = request.seed || "SeekStar adapter connectivity test";
+    const service = new AiCartographerService(provider);
+    let capturedInput: CartographerGenerationInput | undefined;
+
+    traceAiBridge("adapter_test.start", {
+      key_source: resolveApiKey(provider).source ?? "missing",
+      provider: {
+        base_url: provider.base_url,
+        id: provider.id,
+        kind: provider.kind,
+        model: provider.model,
+      },
+      seed,
+    });
+
+    const output = await runLevelRuntime(
+      {
+        chunk: createLevelChunkKey(0, 0, 0),
+        context: {
+          adapter_test: true,
+          requested_output: "Return 2 concise L0 nodes and zero source_candidates unless a canonical URL is essential.",
+        },
+        level_id: "L0",
+        mode: "bootstrap_seed",
+        seed,
+        settings: runtimeSettings,
+      },
+      {
+        generate: async (generationInput, generateOptions): Promise<CartographerGenerationOutput> => {
+          capturedInput = generationInput;
+          return service.generate(generationInput, generateOptions);
+        },
+      },
+    );
+
+    await appendAiCostLedgerRecord({
+      level_id: output.level_id,
+      mode: output.mode,
+      model: output.model,
+      provider_id: output.provider_id,
+      seed,
+      source: "cartographer",
+      status: output.status,
+      telemetry: output.telemetry,
+    });
+
+    const result: AiAdapterTestResult = {
+      diagnostics: output.diagnostics,
+      elapsed_ms: Date.now() - startedAt,
+      generated_at: output.generated_at,
+      level_id: output.level_id,
+      model: output.model,
+      node_count: output.nodes.length,
+      provider_id: output.provider_id,
+      relation_count: output.relations.length,
+      request_preview: createAdapterRequestPreview(capturedInput),
+      response_preview: createAdapterResponsePreview(output),
+      source_candidate_count: output.source_candidates.length,
+      status: output.status,
+      telemetry: output.telemetry,
+    };
+
+    traceAiBridge("adapter_test.done", {
+      diagnostics: result.diagnostics.slice(0, 4),
+      elapsed_ms: result.elapsed_ms,
+      model: result.model,
+      node_count: result.node_count,
+      provider_id: result.provider_id,
+      relation_count: result.relation_count,
+      source_candidate_count: result.source_candidate_count,
+      status: result.status,
+    });
+
+    return result;
   });
   ipcMain.handle("ai:assist", async (_event, input): Promise<AiAssistantOutput> => {
     const settings = await loadSettings();
@@ -195,6 +304,102 @@ function createPromptPreviewRevision(input: CartographerGenerationInput): string
   }
 
   return hash.toString(36);
+}
+
+function parseAdapterTestRequest(value: unknown): AiAdapterTestRequest {
+  const candidate = typeof value === "object" && value !== null ? (value as AiAdapterTestRequest) : {};
+
+  return {
+    provider_id: normalizeOptionalString(candidate.provider_id),
+    seed: normalizeOptionalString(candidate.seed)?.slice(0, 160),
+    settings: typeof candidate.settings === "object" && candidate.settings !== null ? candidate.settings : undefined,
+  };
+}
+
+function withActiveAdapterProvider(settings: SeekStarSettings, providerId: string): SeekStarSettings {
+  return {
+    ...settings,
+    active_ai_provider_id: providerId,
+    ai_routes: settings.ai_routes.map((route) => ({
+      ...route,
+      provider_id: providerId,
+    })),
+  };
+}
+
+function createAdapterRequestPreview(input: CartographerGenerationInput | undefined): string {
+  if (!input) {
+    return "No Cartographer request was captured before the adapter returned.";
+  }
+
+  return truncateBridgePreview(
+    JSON.stringify(
+      {
+        messages: buildCartographerMessages(input),
+        request: input,
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+function createAdapterResponsePreview(output: LevelRuntimeOutput): string {
+  return truncateBridgePreview(
+    JSON.stringify(
+      {
+        diagnostics: output.diagnostics,
+        nodes: output.nodes.slice(0, 6),
+        relations: output.relations.slice(0, 6),
+        source_candidates: output.source_candidates.slice(0, 6),
+        status: output.status,
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+function traceAiBridge(event: string, payload?: unknown): void {
+  if (!isSeekStarTraceEnabled()) {
+    return;
+  }
+
+  const suffix = payload === undefined ? "" : ` ${stringifyBridgeTracePayload(payload)}`;
+  console.info(`[SeekStar][ai-bridge] ${event}${suffix}`);
+}
+
+function isSeekStarTraceEnabled(): boolean {
+  if (process.env.SEEKSTAR_TRACE === "0" || process.env.SEEKSTAR_TRACE === "false") {
+    return false;
+  }
+
+  return (
+    process.env.SEEKSTAR_TRACE === "1" ||
+    process.env.SEEKSTAR_TRACE === "true" ||
+    process.env.npm_lifecycle_event === "dev" ||
+    process.env.NODE_ENV === "development"
+  );
+}
+
+function stringifyBridgeTracePayload(payload: unknown): string {
+  try {
+    return JSON.stringify(payload, (_key, value: unknown) => {
+      if (typeof value === "string") {
+        return truncateBridgePreview(value);
+      }
+
+      return value;
+    });
+  } catch (error) {
+    return JSON.stringify({
+      trace_error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function truncateBridgePreview(text: string, maxLength = 1_500): string {
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...<truncated ${text.length - maxLength} chars>` : text;
 }
 
 function parseAssistantInput(value: unknown): AiAssistantInput {

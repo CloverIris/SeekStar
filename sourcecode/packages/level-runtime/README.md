@@ -11,7 +11,9 @@ node packages/level-runtime/dist/cli.js profiles
 node packages/level-runtime/dist/cli.js module --level L3
 ```
 
-Source candidates emitted by this package are `cartographer_unverified_source`; DataService must validate them before any L3 tile becomes `source_backed`.
+Source candidates emitted by this package are `cartographer_unverified_source`; DataService must validate them before any L3 tile becomes `source_backed`. A generated L3 `webpage` or `document` draft is not a live tile surface by itself.
+
+The runtime also owns prompt and layout compression before AI generation. For product calls it should pass only the active level module, target count, source-candidate policy, layout family, compact chunk policy, focus anchor, nearby anchors, and minimum scene summary needed for the band. It should not forward the entire prompt profile or all module definitions to every request.
 
 `@seekstar/constellation-engine` consumes this output through `applyLevelRuntimeOutputToScene`. That bridge keeps Level Runtime independent from Electron while allowing the current Pixi projection path to display AI-generated terrain and candidate URL fields during migration.
 
@@ -35,9 +37,9 @@ The Electron main process consumes this package through `CartographerChunkCoordi
 
 This package must remain free of Electron, Pixi, React, Playwright, and filesystem storage assumptions. Desktop can request chunks; Level Runtime only returns structured terrain drafts and diagnostics.
 
-The first renderer consumer is `useExplorationSession`: for default/new keyword seeds it requests L0-L3 chunks through the bridge and persists the coordinator-applied scene. URL intake and candidate observation remain DataService validation paths, so Level Runtime still never creates source-backed tiles directly.
+The first renderer consumer is `useExplorationSession`: for default opening-sky seeds it now treats Supra Macro plus L0 as the first visible terrain, then asks for L1/L2/L3 chunks on demand from focus and viewport movement. URL intake and candidate observation remain DataService validation paths, so Level Runtime still never creates source-backed tiles directly.
 
-P6.11 makes the desktop bridge resolve `AiCartographerService` from App Framework settings before calling `runLevelRuntime`. The default deterministic provider remains useful for development, but real OpenAI-compatible providers can now be selected without making Level Runtime depend on Electron settings, key storage, or renderer state.
+P6.11 makes the desktop bridge resolve `AiCartographerService` from App Framework settings before calling `runLevelRuntime`. Product calls use real OpenAI-compatible providers without making Level Runtime depend on Electron settings, key storage, or renderer state. Deterministic generation belongs in test fixtures, not product fallback.
 
 P6.23 adds the first visible chunk lifecycle subscription in desktop: `useExplorationSession` records active, queued, preloaded, cached, and failed chunks per tab, and `TerrainCanvas` renders a compact current-chunk/preload-ring panel. This remains a renderer/App Framework concern. Level Runtime still emits `chunk_hints`; it does not own UI state or persistence beyond structured output.
 
@@ -67,11 +69,13 @@ P6.46 keeps cost accounting above this package while preserving traceability. `r
 
 P6.47 adds chunk-policy versioning to the runtime contract. `LevelRuntimeSettings.chunk_policy` carries chunk width/height, preload ring, manual range, debounce, and a deterministic policy revision. Runtime cache keys include that policy revision, outputs echo the policy for downstream layout, and module smoke verifies that changing chunk dimensions produces a different cache key. This prevents custom chunk settings from reusing stale generated terrain.
 
-P6.58 moves L0/L1 spatial ownership fully into Level Runtime. AI providers may still return titles, summaries, tags, and semantic hints, but `bubble_gallery` modules now receive deterministic continuous gallery positions and sparse local adjacency. This prevents mock or real providers from turning Star Gallery/Topic Field chunks into separate radial islands. Chunk coordinates still shift the generated positions later in Constellation Engine, so neighboring chunks form one pan-ready offscreen field rather than visually isolated spirals.
+P6.58 moves L0/L1 spatial ownership fully into Level Runtime. AI providers may still return titles, summaries, tags, and semantic hints, but `bubble_gallery` modules now receive deterministic continuous gallery positions and sparse local adjacency. This prevents provider-authored shape hints from turning Star Gallery/Topic Field chunks into separate radial islands. Chunk coordinates still shift the generated positions later in Constellation Engine, so neighboring chunks form one pan-ready offscreen field rather than visually isolated spirals.
 
 P6.59 removes the old radial fallback entirely for the MVP path. Level Runtime no longer accepts provider-supplied `position_hint` as canvas truth; it derives every node position from the active layout family. This keeps per-layer CLI debugging deterministic: AI output answers "what should exist here," while Level Runtime answers "where should it live in the telescope field."
 
 P6.60 bumps the default profile to `seekstar-default-p6-gallery-v3` and makes the renderer destructive about old L0/L1 layouts: persisted macro-layer positions and macro relations are ignored by Pixi projection, then rendered as a continuous Apple-Watch-like bubble gallery. The default chunk debug HUD is removed from the canvas; chunk status remains infrastructure, not product UI.
+
+P6.63 adds the continuous-telescope and cost discipline constraints. L0/L1 may use limited adjacent prefetch for smooth macro exploration, but L2/L3 should be on-demand by default. Lower-band requests should carry focus and neighbor anchors so zooming feels like changing focal length in one semantic terrain, not opening nested boxes. L3 source candidates remain queue/status records until DataService converts them into source-backed tile surfaces.
 
 ## Band Profiles
 

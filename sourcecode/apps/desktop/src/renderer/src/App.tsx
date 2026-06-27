@@ -12,10 +12,11 @@ import { ObservatorySidebar } from "./components/ObservatorySidebar";
 import { TerrainCanvas } from "./components/TerrainCanvas";
 import type { TileAbsorptionRequest } from "./components/TerrainCanvas";
 import { CommandComposer, SelectionActionCard, StatusStrip, WorkbenchHeader } from "./components/WorkbenchChrome";
-import { InspectorSidebar, type AssistantActionExecutionResult, type AssistantOperationUndoContext, type AssistantSceneRollbackPatch } from "./components/inspector/InspectorSidebar";
+import { AiMapControlSidebar, type AssistantActionExecutionResult, type AssistantOperationUndoContext, type AssistantSceneRollbackPatch } from "./components/ai-map-control/AiMapControlSidebar";
 import { SettingsPage } from "./components/settings/SettingsPage";
+import { createCartographerChunkKeyForViewport, type CartographerRuntimeStatus } from "./exploration/cartographerRuntimeClient";
 import {
-  getActiveLayer,
+  getActiveLayerBreadcrumb,
   getActiveLayerLabel,
   getActiveTab,
   getAgentJobState,
@@ -107,6 +108,7 @@ export function App(): ReactElement {
   const commandInputRef = useRef<HTMLInputElement>(null);
   const dockHostRef = useRef<HTMLElement | null>(null);
   const activeTabIdRef = useRef(activeTabId);
+  const autoLayerTerrainRequestsRef = useRef<Set<string>>(new Set());
   const runtimeWorkspaceSyncInFlightRef = useRef(false);
   const lastMissingRuntimeSceneKeyRef = useRef("");
 
@@ -115,10 +117,6 @@ export function App(): ReactElement {
   }, [activeTabId]);
 
   useEffect(() => {
-    if (!runtimeTabId) {
-      return undefined;
-    }
-
     return window.seekstar.tiles.onLinkActivated((event) => {
       if (event.tabId !== activeTabIdRef.current) {
         return;
@@ -132,7 +130,7 @@ export function App(): ReactElement {
         url: event.url,
       });
     });
-  }, [createHyperlinkTab, runtimeTabId]);
+  }, [createHyperlinkTab]);
 
   useEffect(() => {
     let cancelled = false;
@@ -278,19 +276,13 @@ export function App(): ReactElement {
   }, [splashFading, splashVisible]);
 
   const activeTab = getActiveTab(scene);
-  const activeLayer = getActiveLayer(scene);
   const activeLayerLabel = getActiveLayerLabel(scene);
   const assistantActionPermissionMode = settings?.assistant_action_permission_mode ?? "ask_each_time";
   const assistantActionPermissionRules = settings?.assistant_action_permission_rules ?? createDefaultAssistantActionPermissionRules();
   const cartographerChunkScheduling = settings?.cartographer_chunk_scheduling ?? createDefaultCartographerChunkSchedulingSettings();
   const chunkAutoDiscoveryEnabled = chunkAutoDiscoveryOverride ?? cartographerChunkScheduling.auto_expand_enabled;
   const commandKind = isDirectHttpUrl(commandValue.trim()) ? "url" : "keyword";
-  const shouldShowWorkbenchPrompt =
-    selectedNodeIds.length === 0 &&
-    scene.viewport.layer === "L0" &&
-    scene.sources.length === 0 &&
-    (scene.scout_observations ?? []).length === 0 &&
-    !isDirectHttpUrl(activeTab.seed);
+  const openingSkyStatus = resolveOpeningSkyStatus(scene, activeTab, cartographerStatus);
   const selectedNodes = useMemo(
     () => selectedNodeIds.map((nodeId) => scene.nodes.find((node) => node.id === nodeId)).filter((node): node is TerrainNode => Boolean(node)),
     [scene.nodes, selectedNodeIds],
@@ -301,7 +293,7 @@ export function App(): ReactElement {
   const highlightedNodeIds = useMemo(() => searchResults.map((result) => result.nodeId), [searchResults]);
   const activeBasketItems = basketByTabId[activeTabId] ?? [];
   const jobState = getAgentJobState(scene.agent_jobs.map((job) => job.status));
-  const visibleNodeCount = scene.nodes.filter((node) => node.layer === scene.viewport.layer).length || scene.nodes.length;
+  const visibleNodeCount = scene.nodes.filter((node) => node.layer === scene.viewport.layer).length;
   const runtimeTabsById = useMemo(() => new Map((tabRuntimeSnapshot?.tabs ?? []).map((tab) => [tab.id, tab])), [tabRuntimeSnapshot]);
   const folderCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -314,6 +306,39 @@ export function App(): ReactElement {
 
     return counts;
   }, [tabRuntimeSnapshot]);
+
+  useEffect(() => {
+    if (!workspaceHydrated || !shouldAutoGenerateLayerTerrain(scene, cartographerStatus)) {
+      return;
+    }
+
+    const chunk = createCartographerChunkKeyForViewport(
+      scene.viewport,
+      cartographerChunkScheduling.chunk_width,
+      cartographerChunkScheduling.chunk_height,
+    );
+    const requestKey = [
+      activeTabId,
+      scene.id,
+      scene.metadata.updated_at,
+      scene.viewport.layer,
+      chunk.key,
+    ].join(":");
+
+    if (autoLayerTerrainRequestsRef.current.has(requestKey)) {
+      return;
+    }
+
+    autoLayerTerrainRequestsRef.current.add(requestKey);
+    void handleAssistantChunkExpansion(scene.viewport, cartographerChunkScheduling).catch(() => undefined);
+  }, [
+    activeTabId,
+    cartographerChunkScheduling,
+    cartographerStatus,
+    handleAssistantChunkExpansion,
+    scene,
+    workspaceHydrated,
+  ]);
   const orderedScenes = useMemo(() => {
     const scenes = Object.values(scenesByTabId);
     const ordered = (tabRuntimeSnapshot?.tabs ?? [])
@@ -520,6 +545,13 @@ export function App(): ReactElement {
 
     if (node && selectedNodeIds.length === 1 && selectedNodeIds[0] === nodeId && node.zoom_target) {
       handleLayerSelect(node.zoom_target.layer, node.zoom_target.node_id);
+      return;
+    }
+
+    if (node && isDeepLensRecursiveSeedNode(node)) {
+      void handleUseNodeAsSeedTab(node);
+      setTileActionNodeId(undefined);
+      setRightSidebarCollapsed(false);
       return;
     }
 
@@ -792,15 +824,6 @@ export function App(): ReactElement {
 
   async function handleScoutSourceLinksWithUi(node: TerrainNode, source: SourceRef): Promise<void> {
     await handleScoutSourceLinks(node, source);
-    setRightSidebarCollapsed(false);
-  }
-
-  function handleScoutObservationSelect(observationId: string): void {
-    setSelectedObservationId(observationId);
-    setSelectedNodeIds([]);
-    setSelectedRelationId(undefined);
-    setViewportFocusNodeId(undefined);
-    setIsSelectionActionCardOpen(false);
     setRightSidebarCollapsed(false);
   }
 
@@ -1252,7 +1275,7 @@ export function App(): ReactElement {
           <div className="workbench-body">
             <WorkbenchHeader
               activeTab={activeTab}
-              breadcrumb={activeLayer?.breadcrumb ?? [activeTab.seed, activeLayerLabel]}
+              breadcrumb={getActiveLayerBreadcrumb(scene)}
               jobState={jobState}
               layer={scene.viewport.layer}
               layerLabel={activeLayerLabel}
@@ -1293,7 +1316,6 @@ export function App(): ReactElement {
                   setRightSidebarCollapsed(false);
                 }}
                 onNodeSelect={handleNodeSelect}
-                onObservationSelect={handleScoutObservationSelect}
                 onRelationSelect={handleRelationSelect}
                 onSelectionChange={handleSceneSelection}
                 onTileAbsorptionComplete={(nodeId, trigger) => {
@@ -1302,17 +1324,12 @@ export function App(): ReactElement {
                 onViewportChange={handleSceneViewport}
                 scene={scene}
                 selectedNodeIds={selectedNodeIds}
-                selectedObservationId={selectedObservationId}
                 selectedRelationId={selectedRelationId}
                 tileAbsorptionRequest={tileAbsorptionRequest}
                 tileFieldTargetCount={settings?.tile_field_target_count}
                 viewport={scene.viewport}
               />
-              {shouldShowWorkbenchPrompt ? (
-                <div className="workbench-prompt" aria-hidden="true">
-                  <h1>What should we explore in {activeTab.title}?</h1>
-                </div>
-              ) : null}
+              {openingSkyStatus ? <OpeningSkyStatus status={openingSkyStatus} /> : null}
               {isSelectionActionCardOpen && selectedNodes.length > 0 ? (
                 <SelectionActionCard
                   nodeCount={selectedNodes.length}
@@ -1359,8 +1376,8 @@ export function App(): ReactElement {
         )}
 
         {!isShellWindow ? (
-        <SidebarRail collapsed={rightSidebarCollapsed} label="Inspector" side="right">
-          <InspectorSidebar
+        <SidebarRail collapsed={rightSidebarCollapsed} label="AI Map Control" side="right">
+          <AiMapControlSidebar
             activeTab={activeTab}
             assistantActionPermissionMode={assistantActionPermissionMode}
             assistantActionPermissionRules={assistantActionPermissionRules}
@@ -1406,6 +1423,111 @@ function isAbsorbableCanvasTile(node: TerrainNode): boolean {
       node.source_state === "source_backed" &&
       node.source_url &&
       (node.type === "webpage" || node.type === "document"),
+  );
+}
+
+function isDeepLensRecursiveSeedNode(node: TerrainNode): boolean {
+  return Boolean(
+    node.can_create_seed &&
+      node.tags?.includes("deep-lens") &&
+      (node.type === "section" || node.type === "paragraph" || node.type === "phrase" || node.type === "word"),
+  );
+}
+
+interface OpeningSkyStatusModel {
+  body: string;
+  title: string;
+  tone: "error" | "generating" | "idle";
+}
+
+function OpeningSkyStatus({ status }: { status: OpeningSkyStatusModel }): ReactElement {
+  return (
+    <aside className={`opening-sky-status opening-sky-status-${status.tone}`} aria-live="polite">
+      <span>AI Opening Sky</span>
+      <strong>{status.title}</strong>
+      <p>{status.body}</p>
+    </aside>
+  );
+}
+
+function resolveOpeningSkyStatus(
+  scene: TerrainScene,
+  activeTab: ExplorationTab,
+  cartographerStatus: CartographerRuntimeStatus,
+): OpeningSkyStatusModel | undefined {
+  const hasTerrain = scene.nodes.some((node) => node.source_state === "cartographer_primary" || node.source_state === "source_backed" || node.tags?.includes("cartographer"));
+
+  if (
+    activeTab.source_mode !== "opening_sky" ||
+    scene.viewport.layer !== "L0" ||
+    scene.sources.length > 0 ||
+    hasTerrain ||
+    isDirectHttpUrl(activeTab.seed)
+  ) {
+    return undefined;
+  }
+
+  if (cartographerStatus.phase === "error") {
+    return {
+      body: cartographerStatus.message || "DeepSeek API key or provider configuration needs attention before SeekStar can generate the opening sky.",
+      title: "AI opening sky needs configuration",
+      tone: "error",
+    };
+  }
+
+  if (cartographerStatus.phase === "generating") {
+    return {
+      body: cartographerStatus.message || "SeekStar is asking the Cartographer for fresh fields, unknown edges, and source directions.",
+      title: "正在生成今晚星空",
+      tone: "generating",
+    };
+  }
+
+  return {
+    body: "SeekStar is preparing the first AI-generated star field. The command bar is only an auxiliary entrance.",
+    title: "正在揭开望远镜盖子",
+    tone: "idle",
+  };
+}
+
+function shouldAutoGenerateLayerTerrain(scene: TerrainScene, cartographerStatus: CartographerRuntimeStatus): boolean {
+  const layer = scene.viewport.layer;
+
+  if (!isOnDemandCartographerLayer(layer)) {
+    return false;
+  }
+
+  if (cartographerStatus.phase === "generating" && cartographerStatus.levelId === layer) {
+    return false;
+  }
+
+  if (scene.nodes.some((node) => node.layer === layer && isGeneratedTerrainNode(node))) {
+    return false;
+  }
+
+  return !(scene.scout_observations ?? []).some(
+    (observation) => observation.layer === layer && isActiveLayerObservation(observation),
+  );
+}
+
+function isOnDemandCartographerLayer(layer: LayerId): boolean {
+  return layer === "L1" || layer === "L2" || layer === "L3";
+}
+
+function isGeneratedTerrainNode(node: TerrainNode): boolean {
+  return (
+    node.source_state === "cartographer_primary" ||
+    node.source_state === "source_backed" ||
+    node.tags?.includes("cartographer") === true
+  );
+}
+
+function isActiveLayerObservation(observation: ScoutObservation): boolean {
+  return (
+    observation.status === "pending" ||
+    observation.status === "source_candidate" ||
+    observation.status === "observed" ||
+    observation.status === "converted"
   );
 }
 

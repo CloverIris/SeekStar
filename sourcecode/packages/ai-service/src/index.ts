@@ -1,7 +1,7 @@
 import type { AgentJob, CartographerOutput, NodeType, SourceState, SourceType, TerrainNode, TerrainScene } from "@seekstar/core-schema";
 
 export type AiServiceStatus = "available" | "missing_key" | "disabled" | "error";
-export type AiProviderKind = "openai_compatible" | "mock";
+export type AiProviderKind = "openai_compatible";
 export type AiModelResponseStatus = "completed" | "missing_key" | "provider_error" | "invalid_json" | "timeout" | "cancelled";
 export type CartographerGenerationMode =
   | "bootstrap_seed"
@@ -37,6 +37,7 @@ export interface AiProviderConfig {
   base_url?: string;
   model?: string;
   api_key_ref?: AiApiKeyRef;
+  api_key_value?: string;
   api_key_env?: string;
   input_cost_per_million_tokens_usd?: number;
   output_cost_per_million_tokens_usd?: number;
@@ -238,6 +239,23 @@ export interface AiService {
 
 const DEFAULT_OPENAI_COMPATIBLE_BASE_URL = "https://api.openai.com/v1";
 const DEFAULT_OPENAI_COMPATIBLE_MODEL = "gpt-4o-mini";
+const AI_TRACE_PREVIEW_LIMIT = 360;
+
+function resolveCartographerMaxTokens(levelId: string): number {
+  switch (levelId) {
+    case "L0":
+      return 1_800;
+    case "L1":
+      return 1_600;
+    case "L2":
+      return 1_200;
+    case "L3":
+    case "supra_macro":
+      return 1_000;
+    default:
+      return 1_000;
+  }
+}
 
 export class AiCartographerService implements AiService {
   private readonly provider: AiModelProvider;
@@ -245,14 +263,10 @@ export class AiCartographerService implements AiService {
 
   constructor(config: Partial<AiProviderConfig> = {}) {
     this.config = resolveAiProviderConfig(config);
-    this.provider = this.config.kind === "mock" ? new MockAiModelProvider(this.config) : new OpenAiCompatibleProvider(this.config);
+    this.provider = new OpenAiCompatibleProvider(this.config);
   }
 
   async status(): Promise<AiServiceStatus> {
-    if (this.config.kind === "mock") {
-      return "available";
-    }
-
     return resolveApiKey(this.config).key ? "available" : "missing_key";
   }
 
@@ -261,7 +275,19 @@ export class AiCartographerService implements AiService {
   }
 
   async generate(input: CartographerGenerationInput, options: AiRequestOptions = {}): Promise<CartographerGenerationOutput> {
-    return this.provider.generate(input, options);
+    traceAiService("cartographer.generate.start", {
+      input: summarizeGenerationInput(input),
+      provider: summarizeProviderConfig(this.config),
+    });
+
+    const output = await this.provider.generate(input, options);
+
+    traceAiService("cartographer.generate.done", {
+      output: summarizeGenerationOutput(output),
+      provider: summarizeProviderConfig(this.config),
+    });
+
+    return output;
   }
 
   async assist(input: AiAssistantInput, options: AiRequestOptions = {}): Promise<AiAssistantOutput> {
@@ -338,30 +364,6 @@ interface AiModelProvider {
   assist(input: AiAssistantInput, options?: AiRequestOptions): Promise<AiAssistantOutput>;
 }
 
-export class MockAiModelProvider implements AiModelProvider {
-  private readonly config: AiProviderConfig;
-
-  constructor(config: Partial<AiProviderConfig> = {}) {
-    this.config = resolveAiProviderConfig({ ...config, kind: "mock" });
-  }
-
-  async generate(input: CartographerGenerationInput, options: AiRequestOptions = {}): Promise<CartographerGenerationOutput> {
-    if (isAbortSignalCancelled(options.signal)) {
-      return createCancelledGenerationOutput(input, this.config);
-    }
-
-    return normalizeCartographerGenerationOutput(createMockCartographerOutput(input), input, this.config);
-  }
-
-  async assist(input: AiAssistantInput, options: AiRequestOptions = {}): Promise<AiAssistantOutput> {
-    if (isAbortSignalCancelled(options.signal)) {
-      return createCancelledAssistantOutput(input, this.config);
-    }
-
-    return normalizeAssistantOutput(createMockAssistantOutput(input, this.config), input, this.config);
-  }
-}
-
 export class OpenAiCompatibleProvider implements AiModelProvider {
   private readonly config: AiProviderConfig;
 
@@ -375,8 +377,21 @@ export class OpenAiCompatibleProvider implements AiModelProvider {
     }
 
     const key = resolveApiKey(this.config);
+    const messages = buildCartographerMessages(input);
+
+    traceAiService("cartographer.provider.prepare", {
+      input: summarizeGenerationInput(input),
+      key_source: key.source ?? "missing",
+      message_preview: summarizeMessages(messages),
+      provider: summarizeProviderConfig(this.config),
+    });
 
     if (!key.key) {
+      traceAiService("cartographer.provider.missing_key", {
+        input: summarizeGenerationInput(input),
+        provider: summarizeProviderConfig(this.config),
+      });
+
       return createFailedGenerationOutput(input, "missing_key", [
         {
           severity: "error",
@@ -390,17 +405,22 @@ export class OpenAiCompatibleProvider implements AiModelProvider {
     const modelResponse = await requestOpenAiCompatibleModel(
       {
         provider: this.config,
-        messages: buildCartographerMessages(input),
+        messages,
         response_format: "json_object",
         signal: options.signal,
         temperature: 0.4,
-        max_tokens: 1800,
+        max_tokens: resolveCartographerMaxTokens(input.level_id),
         timeout_ms: this.config.timeout_ms,
       },
       key.key,
     );
 
     if (modelResponse.status !== "completed") {
+      traceAiService("cartographer.provider.failed", {
+        input: summarizeGenerationInput(input),
+        response: summarizeModelResponse(modelResponse),
+      });
+
       return {
         ...createFailedGenerationOutput(
           input,
@@ -415,11 +435,22 @@ export class OpenAiCompatibleProvider implements AiModelProvider {
     const validation = validateCartographerGenerationOutput(modelResponse.json, input, this.config);
 
     if (!validation.valid) {
+      traceAiService("cartographer.provider.invalid_output", {
+        diagnostics: validation.diagnostics,
+        input: summarizeGenerationInput(input),
+        response: summarizeModelResponse(modelResponse),
+      });
+
       return {
         ...createFailedGenerationOutput(input, "invalid_output", validation.diagnostics, this.config),
         telemetry: modelResponse.telemetry,
       };
     }
+
+    traceAiService("cartographer.provider.valid_output", {
+      output: summarizeGenerationOutput(validation.output),
+      response: summarizeModelResponse(modelResponse),
+    });
 
     return {
       ...validation.output,
@@ -511,14 +542,13 @@ export function buildCartographerContext(
 }
 
 export function resolveAiProviderConfig(config: Partial<AiProviderConfig> = {}): AiProviderConfig {
-  const kind = config.kind ?? "openai_compatible";
-
   return {
-    id: config.id ?? (kind === "mock" ? "mock-cartographer" : "openai-compatible"),
-    kind,
+    id: config.id ?? "openai-compatible",
+    kind: "openai_compatible",
     base_url: config.base_url ?? DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
-    model: config.model ?? (kind === "mock" ? "mock-cartographer-v1" : DEFAULT_OPENAI_COMPATIBLE_MODEL),
+    model: config.model ?? DEFAULT_OPENAI_COMPATIBLE_MODEL,
     api_key_ref: config.api_key_ref,
+    api_key_value: config.api_key_value,
     api_key_env: config.api_key_env,
     input_cost_per_million_tokens_usd: normalizeCostRate(config.input_cost_per_million_tokens_usd),
     output_cost_per_million_tokens_usd: normalizeCostRate(config.output_cost_per_million_tokens_usd),
@@ -533,6 +563,10 @@ function normalizeCostRate(value: unknown): number | undefined {
 }
 
 export function resolveApiKey(config: AiProviderConfig): { key?: string; source?: string } {
+  if (config.api_key_value?.trim()) {
+    return { key: config.api_key_value.trim(), source: "settings" };
+  }
+
   const configuredEnv = config.api_key_ref?.kind === "env" ? config.api_key_ref.name : config.api_key_env;
   const candidates = [configuredEnv, "SEEKSTAR_AI_API_KEY", "OPENAI_API_KEY"].filter((candidate): candidate is string => Boolean(candidate));
 
@@ -863,6 +897,17 @@ async function requestOpenAiCompatibleModel(request: AiModelRequest, apiKey: str
     return createCancelledModelResponse(provider, startedAt, startedAt, 1);
   }
 
+  traceAiService("model.request.start", {
+    attempts,
+    endpoint,
+    max_tokens: request.max_tokens,
+    message_preview: summarizeMessages(request.messages),
+    provider: summarizeProviderConfig(provider),
+    response_format: request.response_format,
+    temperature: request.temperature,
+    timeout_ms: request.timeout_ms ?? provider.timeout_ms,
+  });
+
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
@@ -909,18 +954,49 @@ async function requestOpenAiCompatibleModel(request: AiModelRequest, apiKey: str
         externalAbortListener = undefined;
       }
 
+      traceAiService("model.request.http_status", {
+        attempt,
+        ok: response.ok,
+        provider_id: provider.id,
+        status: response.status,
+        status_text: response.statusText,
+      });
+
       if (!response.ok) {
         const body = await response.text().catch(() => "");
+        traceAiService("model.request.http_error", {
+          attempt,
+          body: truncateTraceText(body),
+          provider_id: provider.id,
+          status: response.status,
+        });
         throw new Error(`HTTP ${response.status}: ${body.slice(0, 240)}`);
       }
 
       const payload = (await response.json()) as unknown;
       const text = extractOpenAiText(payload);
       const parsed = parseJsonObject(text);
+      const usage = extractOpenAiUsage(payload);
+
+      traceAiService("model.response.summary", {
+        attempt,
+        provider_id: provider.id,
+        text_length: text.length,
+        text_preview: isSeekStarVerboseTraceEnabled() ? truncateTraceText(text) : undefined,
+        usage,
+      });
+
+      if (isSeekStarVerboseTraceEnabled()) {
+        traceAiService("model.response.text", {
+          attempt,
+          provider_id: provider.id,
+          text: truncateTraceText(text),
+          usage,
+        });
+      }
 
       if (!parsed.ok) {
         const completedAt = new Date().toISOString();
-        const usage = extractOpenAiUsage(payload);
 
         return {
           status: "invalid_json",
@@ -947,7 +1023,6 @@ async function requestOpenAiCompatibleModel(request: AiModelRequest, apiKey: str
         };
       }
       const completedAt = new Date().toISOString();
-      const usage = extractOpenAiUsage(payload);
 
       return {
         status: "completed",
@@ -977,6 +1052,15 @@ async function requestOpenAiCompatibleModel(request: AiModelRequest, apiKey: str
       const isLastAttempt = attempt === attempts;
       const aborted = error instanceof Error && error.name === "AbortError";
       const cancelled = aborted && !timedOut && isAbortSignalCancelled(request.signal);
+
+      traceAiService("model.request.error", {
+        attempt,
+        cancelled,
+        is_last_attempt: isLastAttempt,
+        message: error instanceof Error ? error.message : String(error),
+        provider_id: provider.id,
+        timed_out: timedOut,
+      });
 
       if (cancelled) {
         return createCancelledModelResponse(provider, startedAt, new Date().toISOString(), attempt);
@@ -1170,211 +1254,6 @@ export function buildAssistantMessages(input: AiAssistantInput): AiModelMessage[
   ];
 }
 
-function createMockCartographerOutput(input: CartographerGenerationInput): CartographerGenerationOutput {
-  const generatedAt = new Date().toISOString();
-  const count = getMockCount(input.level_id);
-  const seed = input.seed.trim() || "New Seek";
-  const baseTitles = createMockTitles(seed, input.level_id, input.mode, count);
-  const nodes = baseTitles.map((title, index): CartographerGeneratedNode => ({
-      id: `mock-${slugify(input.level_id)}-${slugify(seed)}-${index + 1}`,
-      title,
-      summary: `${title} as ${input.level_id} cartographer terrain for ${seed}.`,
-      node_type: getNodeTypeForLevel(input.level_id),
-      source_state: "cartographer_primary",
-      confidence: 0.74,
-      importance: index === 0 ? 0.9 : 0.62,
-      tags: [input.level_id, input.mode],
-      level_id: input.level_id,
-      can_create_seed: true,
-  }));
-
-  const relations = nodes.slice(1).map((node): CartographerGeneratedRelation => ({
-    from: nodes[0]?.id ?? node.id ?? "center",
-    to: node.id ?? node.title,
-    type: "semantic_similarity",
-    confidence: 0.58,
-    explanation: `Mock cartographer adjacency around ${seed}.`,
-  }));
-
-  const sourceCandidates =
-    input.level_id === "L3" || input.mode === "decompose_down" || input.mode === "replace_failed_source"
-      ? [
-          {
-            id: input.mode === "replace_failed_source" ? `mock-source-${slugify(seed)}-replacement` : `mock-source-${slugify(seed)}-official`,
-            title: input.mode === "replace_failed_source" ? `${seed} replacement source` : `${seed} official documentation`,
-            url: `https://www.google.com/search?q=${encodeURIComponent(
-              input.mode === "replace_failed_source" ? `${seed} replacement source candidate` : `${seed} official documentation`,
-            )}`,
-            snippet:
-              input.mode === "replace_failed_source"
-                ? `Replacement candidate URL for observing source-backed material about ${seed}.`
-                : `Candidate URL for observing source-backed material about ${seed}.`,
-            provider_id: "mock-cartographer",
-            source_type: "webpage" as SourceType,
-            confidence: input.mode === "replace_failed_source" ? 0.46 : 0.42,
-            reason:
-              input.mode === "replace_failed_source"
-                ? "Mock provider returns a distinct unverified replacement URL after source probing fails."
-                : "Mock provider keeps source URLs unverified for DataService probing.",
-          },
-        ]
-      : [];
-
-  return {
-    status: "ok",
-    mode: input.mode,
-    level_id: input.level_id,
-    seed,
-    nodes,
-    relations,
-    source_candidates: sourceCandidates,
-    diagnostics: [
-      {
-        severity: "info",
-        code: "ai.mock_provider",
-        message: "Deterministic mock Cartographer output. Use only for tests and CLI debugging.",
-        provider_id: "mock-cartographer",
-      },
-    ],
-    provider_id: "mock-cartographer",
-    model: "mock-cartographer-v1",
-    telemetry: {
-      attempts: 1,
-      completed_at: generatedAt,
-      duration_ms: 0,
-      estimated_cost_usd: 0,
-      started_at: generatedAt,
-      usage: {
-        input_tokens: 0,
-        output_tokens: 0,
-        total_tokens: 0,
-      },
-    },
-    generated_at: generatedAt,
-  };
-}
-
-function createMockAssistantOutput(input: AiAssistantInput, providerConfig: AiProviderConfig): AiAssistantOutput {
-  const generatedAt = new Date().toISOString();
-  const selectedTitle = input.selected_nodes?.[0]?.title;
-  const focusText = selectedTitle ? ` around "${selectedTitle}"` : input.seed ? ` around "${input.seed}"` : "";
-  const actionType = input.available_operations?.includes("request_chunk")
-    ? "request_chunk"
-    : input.available_operations?.includes("focus_node")
-      ? "focus_node"
-      : "none";
-
-  return {
-    status: "ok",
-    intent: input.intent,
-    answer: `Mock map assistant response for ${input.intent}${focusText}. ${input.prompt}`,
-    actions: [
-      {
-        type: actionType,
-        label: actionType === "none" ? "No app action" : `Suggested ${actionType}`,
-        target_id: input.selected_nodes?.[0]?.id,
-        level_id: input.current_level,
-        seed: input.seed,
-      },
-    ],
-    diagnostics: [
-      {
-        severity: "info",
-        code: "assistant.mock_provider",
-        message: "Deterministic mock assistant output. Use only for tests and CLI debugging.",
-        provider_id: providerConfig.id,
-      },
-    ],
-    provider_id: providerConfig.id,
-    model: providerConfig.model,
-    telemetry: {
-      attempts: 1,
-      completed_at: generatedAt,
-      duration_ms: 0,
-      estimated_cost_usd: 0,
-      started_at: generatedAt,
-      usage: {
-        input_tokens: 0,
-        output_tokens: 0,
-        total_tokens: 0,
-      },
-    },
-    generated_at: generatedAt,
-  };
-}
-
-function normalizeCartographerGenerationOutput(
-  output: CartographerGenerationOutput,
-  input: CartographerGenerationInput,
-  providerConfig: AiProviderConfig,
-): CartographerGenerationOutput {
-  const validation = validateCartographerGenerationOutput(output, input, providerConfig);
-
-  return validation.valid ? validation.output : createFailedGenerationOutput(input, "invalid_output", validation.diagnostics, providerConfig);
-}
-
-function normalizeAssistantOutput(output: AiAssistantOutput, input: AiAssistantInput, providerConfig: AiProviderConfig): AiAssistantOutput {
-  const validation = validateAssistantOutput(output, input, providerConfig);
-
-  return validation.valid ? validation.output : createFailedAssistantOutput(input, "invalid_output", validation.diagnostics, providerConfig);
-}
-
-function createMockTitles(seed: string, levelId: string, mode: CartographerGenerationMode, count: number): string[] {
-  const normalizedSeed = seed.trim() || "New Seek";
-  const levelVocabulary: Record<string, string[]> = {
-    supra_macro: ["civilization context", "knowledge systems", "material substrate", "human practice", "future frontier"],
-    L0: ["Computing", "Natural sciences", "Engineering", "Mathematics", "Social systems", "Design", "Medicine", "History"],
-    L1: ["Architecture", "Core concepts", "Tooling", "Research threads", "Learning paths", "Applications"],
-    L2: ["Official docs", "Canonical references", "Community hubs", "Paper trails", "Open repositories", "Tutorial families"],
-    L3: ["Primary webpage", "Reference article", "Documentation tile", "Repository tile", "Paper tile", "Image/document tile"],
-    deep_lens: ["section", "paragraph", "sentence", "phrase", "term", "character"],
-    recursive_seed: ["upward parent", "same-band neighbor", "downward detail", "source trail"],
-  };
-  const vocabulary = levelVocabulary[levelId] ?? levelVocabulary.L0;
-  const suffix = mode === "expand_horizontal" ? "neighbor" : mode === "summarize_up" ? "parent" : mode === "decompose_down" ? "detail" : "seed";
-
-  return Array.from({ length: count }, (_, index) => {
-    const cycle = Math.floor(index / vocabulary.length);
-    const titleSuffix = cycle > 0 ? ` ${cycle + 1}` : "";
-
-    return `${normalizedSeed} ${vocabulary[index % vocabulary.length]}${titleSuffix} ${suffix}`;
-  });
-}
-
-function getMockCount(levelId: string): number {
-  const counts: Record<string, number> = {
-    supra_macro: 12,
-    L0: 24,
-    L1: 18,
-    L2: 12,
-    L3: 8,
-    deep_lens: 12,
-    recursive_seed: 6,
-  };
-
-  return counts[levelId] ?? 8;
-}
-
-function getNodeTypeForLevel(levelId: string): NodeType {
-  if (levelId === "L0" || levelId === "supra_macro") {
-    return "domain";
-  }
-
-  if (levelId === "L1") {
-    return "topic";
-  }
-
-  if (levelId === "L2") {
-    return "source";
-  }
-
-  if (levelId === "L3") {
-    return "webpage";
-  }
-
-  return "concept";
-}
-
 function extractOpenAiText(payload: unknown): string {
   if (!isRecord(payload) || !Array.isArray(payload.choices)) {
     return "";
@@ -1524,14 +1403,6 @@ function toUnitNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : fallback;
 }
 
-function slugify(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48);
-}
-
 async function sleep(ms: number, signal?: AbortSignal): Promise<boolean> {
   if (ms <= 0) {
     return !isAbortSignalCancelled(signal);
@@ -1556,4 +1427,119 @@ async function sleep(ms: number, signal?: AbortSignal): Promise<boolean> {
 
 function isAbortSignalCancelled(signal: AbortSignal | undefined): boolean {
   return Boolean(signal?.aborted);
+}
+
+function traceAiService(event: string, payload?: unknown): void {
+  if (!isSeekStarTraceEnabled()) {
+    return;
+  }
+
+  const suffix = payload === undefined ? "" : ` ${stringifyTracePayload(payload)}`;
+  console.info(`[SeekStar][ai-service] ${event}${suffix}`);
+}
+
+function isSeekStarTraceEnabled(): boolean {
+  if (process.env.SEEKSTAR_TRACE === "0" || process.env.SEEKSTAR_TRACE === "false") {
+    return false;
+  }
+
+  return (
+    process.env.SEEKSTAR_TRACE === "1" ||
+    process.env.SEEKSTAR_TRACE === "true" ||
+    process.env.npm_lifecycle_event === "dev" ||
+    process.env.NODE_ENV === "development"
+  );
+}
+
+function isSeekStarVerboseTraceEnabled(): boolean {
+  return process.env.SEEKSTAR_TRACE_VERBOSE === "1" || process.env.SEEKSTAR_TRACE_VERBOSE === "true";
+}
+
+function stringifyTracePayload(payload: unknown): string {
+  try {
+    return JSON.stringify(payload, (_key, value: unknown) => {
+      if (typeof value === "string") {
+        return truncateTraceText(value);
+      }
+
+      return value;
+    });
+  } catch (error) {
+    return JSON.stringify({
+      trace_error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function summarizeProviderConfig(provider: Partial<AiProviderConfig>): Record<string, unknown> {
+  const resolved = resolveAiProviderConfig(provider);
+  const key = resolveApiKey(resolved);
+
+  return {
+    base_url: resolved.base_url,
+    id: resolved.id,
+    key_source: key.source ?? "missing",
+    kind: resolved.kind,
+    model: resolved.model,
+    timeout_ms: resolved.timeout_ms,
+  };
+}
+
+function summarizeGenerationInput(input: CartographerGenerationInput): Record<string, unknown> {
+  return {
+    chunk: input.chunk,
+    context_keys: input.context ? Object.keys(input.context).slice(0, 24) : [],
+    focus: input.focus
+      ? {
+          id: input.focus.id,
+          level_id: input.focus.level_id,
+          title: input.focus.title,
+        }
+      : undefined,
+    level_id: input.level_id,
+    mode: input.mode,
+    seed: input.seed,
+    settings_keys: input.settings ? Object.keys(input.settings).slice(0, 24) : [],
+  };
+}
+
+function summarizeGenerationOutput(output: CartographerGenerationOutput): Record<string, unknown> {
+  return {
+    diagnostics: output.diagnostics.slice(0, 4),
+    generated_at: output.generated_at,
+    level_id: output.level_id,
+    mode: output.mode,
+    model: output.model,
+    node_count: output.nodes.length,
+    provider_id: output.provider_id,
+    relation_count: output.relations.length,
+    seed: output.seed,
+    source_candidate_count: output.source_candidates.length,
+    status: output.status,
+    telemetry: output.telemetry,
+  };
+}
+
+function summarizeModelResponse(response: AiModelResponse): Record<string, unknown> {
+  return {
+    completed_at: response.completed_at,
+    diagnostics: response.diagnostics.slice(0, 4),
+    model: response.model,
+    provider_id: response.provider_id,
+    status: response.status,
+    telemetry: response.telemetry,
+    text: response.text,
+    usage: response.usage,
+  };
+}
+
+function summarizeMessages(messages: AiModelMessage[]): Array<{ content: string; role: AiModelMessage["role"] }> {
+  return messages.map((message) => ({
+    content: truncateTraceText(message.content),
+    role: message.role,
+  }));
+}
+
+function truncateTraceText(text: string, maxLength = AI_TRACE_PREVIEW_LIMIT): string {
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...<truncated ${text.length - maxLength} chars>` : text;
 }

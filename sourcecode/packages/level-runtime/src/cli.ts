@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
 import {
+  AiCartographerService,
+  type AiProviderConfig,
+} from "@seekstar/ai-service";
+import {
   listLevelRuntimeProfiles,
   resolveLevelModuleDefinition,
   resolveLevelRuntimeProfile,
@@ -24,7 +28,7 @@ async function run(commandName: string | undefined, argsList: string[]): Promise
   if (!commandName || commandName === "help" || commandName === "--help") {
     return {
       commands: [
-        "run --input input.json|-",
+        "run --input input.json|- [--provider deepseek|openai-compatible] [--base-url url] [--model model] [--api-key-env ENV] [--api-key-value KEY]",
         "validate --input output.json|-",
         "profiles",
         "profile --id seekstar-default-p6-gallery-v3",
@@ -55,7 +59,16 @@ async function run(commandName: string | undefined, argsList: string[]): Promise
 
   if (commandName === "run") {
     const input = readJson<LevelRuntimeInput>(required(options, "input"));
-    const output = await runLevelRuntime(input);
+    const providerConfig = parseProviderConfig(options);
+    const service = providerConfig ? new AiCartographerService(providerConfig) : undefined;
+    const output = await runLevelRuntime(
+      input,
+      service
+        ? {
+            generate: (generationInput, runtimeOptions) => service.generate(generationInput, runtimeOptions),
+          }
+        : undefined,
+    );
     const validation = validateLevelRuntimeOutput(output);
 
     return {
@@ -109,6 +122,29 @@ function parseArgs(argsList: string[]): Record<string, string> {
   }
 
   return parsed;
+}
+
+function parseProviderConfig(options: Record<string, string>): Partial<AiProviderConfig> | undefined {
+  const provider = options.provider;
+
+  if (!provider && !options["base-url"] && !options.model && !options["api-key-env"] && !options["api-key-value"]) {
+    return undefined;
+  }
+
+  if (provider && provider !== "deepseek" && provider !== "openai-compatible") {
+    throw new Error(`Unsupported Level Runtime provider "${provider}". Use deepseek or openai-compatible.`);
+  }
+
+  const deepSeek = provider === "deepseek";
+
+  return {
+    id: options["provider-id"] ?? (deepSeek ? "deepseek-openai-compatible" : "openai-compatible"),
+    kind: "openai_compatible",
+    base_url: options["base-url"] ?? (deepSeek ? "https://api.deepseek.com" : undefined),
+    model: options.model ?? (deepSeek ? "deepseek-v4-flash" : undefined),
+    api_key_ref: options["api-key-env"] ? { kind: "env", name: options["api-key-env"] } : undefined,
+    api_key_value: options["api-key-value"],
+  };
 }
 
 function required(options: Record<string, string>, key: string): string {

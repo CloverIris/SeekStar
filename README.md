@@ -156,18 +156,28 @@ SeekStar 目前处于 MVP 核心开发阶段。
 * Constellation Engine 对象池、事件与 Pixi projection；
 * Playwright Scout/DataService；
 * AI Service、Level Runtime 与 Storage/Cache Service 边界；
+* DeepSeek OpenAI-compatible real provider 与 API Adapter 设置/测试页；
 * 暗色蓝调 UI 风格；
 * 基础文档与架构约束。
 
 当前版本不再维护旧 preview / fallback 路径：
 
-* 默认入口是 `New Seek`，L0 为领域 / Star Gallery / seed pool；
+* 默认入口是 `New Seek`，打开后走 AI `default_tonight_sky` opening sky，首屏只生成 Supra Macro + L0 Star Gallery，不再要求用户先输入关键词；
 * 用户可见主线是 Supra Macro、L0 Star Gallery、L1 Topic Field、L2 Source Orientation、L3 Tile Field、Deep Lens 与 Recursive Seed；
 * L0-L11 12Level 只保留为内部地址词汇和迁移参考，不再作为可见 UI 楼梯；
-* AI Cartographer 是 L0-L3 和递归 seed 的主要地形生产者，`cartographer_primary` 是正常地图材料；
+* AI Cartographer 是 L0-L2、L3 候选队列和递归 seed 的主要地形生产者，`cartographer_primary` 是正常地图材料，但不能把 L3 未验证网页节点伪装成真实 tile；
 * Playwright Scout/DataService 是现实探针和 AI 工具边界，只负责 observation / source snapshot / source candidate validation；
+* L3 source candidate 只进入验证队列、状态提示和 Source review；DataService 成功后才进入 source-backed Tile Field；
 * 失败 URL 候选不进入主画布，进入恢复/诊断队列并可请求 AI 替代；
 * AI 输出必须经 AI Service / Level Runtime 返回结构化结果并通过 schema 校验，不再由 UI 伪造。
+
+下一冲刺仍需完成的产品闭环：
+
+* L3 只显示 source-backed tile surface，彻底移除 AI `webpage` 概念卡片伪 tile；
+* Deep Lens paragraph / phrase / word 到 recursive seed 的稳定闭环；
+* 连续望远镜模型的写回：L1/L2/L3 横向探索后拉远，应从当前位置附近的上层语义浮出；
+* AI 调用降耗：L0/L1 限预取，L2/L3 按需生成，每次请求只发送当前层 module 和附近锚点；
+* 真实 DeepSeek 手测闭环：opening sky → 横向扩展 → L3 验证 → tile 吸附 → Deep Lens → grain 新 seed。
 
 ---
 
@@ -331,7 +341,7 @@ SeekStar 的视觉方向是：
 目标：先开发出真正能用的 SeekStar，而不是继续维护旧原型。
 
 * 破坏性清理旧 preview / fallback / mock / 假按钮 / debug 面板 / 旧缓存；
-* AI Cartographer 成为 L0-L3、Supra Macro 与递归 seed 的主地形生产者；
+* AI Cartographer 成为 Supra Macro、L0、L1、L2 与递归 seed 的主地形生产者，并只为 L3 提出待验证 source candidates；
 * Level Runtime 负责每个焦段的 schema、prompt、布局、chunk、CLI 测试；
 * DataService/Playwright 成为 AI 和用户的现实探针，只验证和加载来源；
 * L3 URL/PDF/图片/网页候选验证成功才进入 source-backed Tile Field；

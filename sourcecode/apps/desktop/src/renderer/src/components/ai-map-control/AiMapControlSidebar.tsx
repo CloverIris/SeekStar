@@ -20,7 +20,7 @@ import { formatSourceState, formatTimestamp, getActiveLayer, getJobStatusCounts,
 import type { SearchResult } from "../../search/localSceneSearch";
 import type { SelectionBasketItem } from "../../selection/selectionBasket";
 import { SearchResultsPanel } from "../SearchResultsPanel";
-export function InspectorSidebar({
+export function AiMapControlSidebar({
   activeTab,
   basketItems,
   onBacklinkFocus,

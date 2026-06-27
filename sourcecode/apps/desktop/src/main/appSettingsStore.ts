@@ -35,6 +35,7 @@ export interface SeekStarSettings {
   tile_live_surface_limit: number;
   tile_field_target_count: number;
   tile_thumbnail_prewarm_concurrency: number;
+  domain_hint_mode: "guided" | "pure_ai";
   active_domain_lexicon_id: string;
   domain_lexicons: DomainLexicon[];
   content_providers: ContentProviderSettings[];
@@ -58,6 +59,7 @@ export interface AiCartographerProviderSettings {
   enabled: boolean;
   base_url?: string;
   model?: string;
+  api_key_value?: string;
   api_key_env_var?: string;
   input_cost_per_million_tokens_usd?: number;
   output_cost_per_million_tokens_usd?: number;
@@ -119,8 +121,8 @@ export interface AppSettingsStoreOptions {
 }
 
 const SETTINGS_FILE_NAME = "seekstar-settings.json";
-const DEFAULT_AI_PROVIDER_ID = "mock-cartographer";
 const DEEPSEEK_AI_PROVIDER_ID = "deepseek-openai-compatible";
+const DEFAULT_AI_PROVIDER_ID = DEEPSEEK_AI_PROVIDER_ID;
 const DEFAULT_AI_ROUTE_ID = "cartographer-route-default";
 const CARTOGRAPHER_LEVEL_ORDER: LevelBandId[] = ["supra_macro", "L0", "L1", "L2", "L3", "deep_lens", "recursive_seed"];
 let settingsSaveChain: Promise<void> = Promise.resolve();
@@ -135,22 +137,10 @@ export const DEFAULT_ASSISTANT_ACTION_PERMISSION_RULES: AssistantActionPermissio
 
 export const DEFAULT_AI_PROVIDER_SETTINGS: AiCartographerProviderSettings[] = [
   {
-    id: DEFAULT_AI_PROVIDER_ID,
-    label: "Built-in Cartographer test provider",
-    kind: "mock",
-    enabled: true,
-    model: "mock-cartographer-v1",
-    timeout_ms: 10_000,
-    retry_attempts: 1,
-    retry_backoff_ms: 100,
-    health_status: "ready",
-    health_message: "Deterministic local terrain generator for development and module smoke tests.",
-  },
-  {
     id: DEEPSEEK_AI_PROVIDER_ID,
     label: "DeepSeek API",
     kind: "openai_compatible",
-    enabled: false,
+    enabled: true,
     base_url: "https://api.deepseek.com",
     model: "deepseek-v4-flash",
     api_key_env_var: "DEEPSEEK_API_KEY",
@@ -159,8 +149,8 @@ export const DEFAULT_AI_PROVIDER_SETTINGS: AiCartographerProviderSettings[] = [
     timeout_ms: 60_000,
     retry_attempts: 1,
     retry_backoff_ms: 500,
-    health_status: "disabled",
-    health_message: "OpenAI-compatible DeepSeek adapter. Set DEEPSEEK_API_KEY and activate this provider for real Cartographer terrain.",
+    health_status: "missing_key",
+    health_message: "OpenAI-compatible DeepSeek adapter. Paste an API key in Settings or set DEEPSEEK_API_KEY.",
   },
   {
     id: "openai-compatible-env",
@@ -227,6 +217,7 @@ export const defaultSettings: SeekStarSettings = {
   tile_field_target_count: 25,
   tile_thumbnail_prewarm_concurrency: 2,
   active_domain_lexicon_id: DEFAULT_DOMAIN_LEXICON_ID,
+  domain_hint_mode: "guided",
   domain_lexicons: cloneDomainLexicons(DEFAULT_DOMAIN_LEXICONS),
   content_providers: cloneContentProviderSettings(DEFAULT_CONTENT_PROVIDER_SETTINGS),
   active_ai_provider_id: DEFAULT_AI_PROVIDER_ID,
@@ -314,6 +305,7 @@ function normalizeSettings(value: unknown): SeekStarSettings {
       defaultSettings.tile_thumbnail_prewarm_concurrency,
     ),
     active_domain_lexicon_id: activeDomainLexiconId,
+    domain_hint_mode: normalizeDomainHintMode(candidate.domain_hint_mode),
     domain_lexicons: lexicons,
     content_providers: normalizeContentProviderSettings(candidate.content_providers),
     active_ai_provider_id: activeAiProviderId,
@@ -346,6 +338,7 @@ export function resolveAiProviderConfigForRoute(
     base_url: activeProvider.base_url,
     model: route?.model_override ?? activeProvider.model,
     api_key_ref: activeProvider.api_key_env_var ? { kind: "env", name: activeProvider.api_key_env_var } : undefined,
+    api_key_value: activeProvider.api_key_value,
     input_cost_per_million_tokens_usd: activeProvider.input_cost_per_million_tokens_usd,
     output_cost_per_million_tokens_usd: activeProvider.output_cost_per_million_tokens_usd,
     timeout_ms: activeProvider.timeout_ms,
@@ -533,8 +526,9 @@ function normalizeAiProviderSettings(value: unknown): AiCartographerProviderSett
 
   const providers = DEFAULT_AI_PROVIDER_SETTINGS.map((fallback): AiCartographerProviderSettings => {
     const candidate = incomingById.get(fallback.id);
-    const kind = candidate?.kind === "openai_compatible" || candidate?.kind === "mock" ? candidate.kind : fallback.kind;
+    const kind = "openai_compatible";
     const enabled = candidate?.enabled ?? fallback.enabled;
+    const apiKeyValue = normalizeOptionalString(candidate?.api_key_value);
     const apiKeyEnv = normalizeOptionalString(candidate?.api_key_env_var) ?? fallback.api_key_env_var;
 
     return {
@@ -544,6 +538,7 @@ function normalizeAiProviderSettings(value: unknown): AiCartographerProviderSett
       enabled,
       base_url: normalizeOptionalString(candidate?.base_url) ?? fallback.base_url,
       model: normalizeOptionalString(candidate?.model) ?? fallback.model,
+      api_key_value: apiKeyValue,
       api_key_env_var: apiKeyEnv,
       input_cost_per_million_tokens_usd: normalizeOptionalCostRate(candidate?.input_cost_per_million_tokens_usd, fallback.input_cost_per_million_tokens_usd),
       output_cost_per_million_tokens_usd: normalizeOptionalCostRate(candidate?.output_cost_per_million_tokens_usd, fallback.output_cost_per_million_tokens_usd),
@@ -551,7 +546,7 @@ function normalizeAiProviderSettings(value: unknown): AiCartographerProviderSett
       retry_attempts: clampNumber(candidate?.retry_attempts, 0, 5, fallback.retry_attempts),
       retry_backoff_ms: clampNumber(candidate?.retry_backoff_ms, 50, 10_000, fallback.retry_backoff_ms),
       health_status: enabled
-        ? kind === "openai_compatible" && !apiKeyEnv
+        ? !apiKeyValue && !apiKeyEnv
           ? "missing_key"
           : candidate?.health_status === "error"
             ? "error"
@@ -563,9 +558,14 @@ function normalizeAiProviderSettings(value: unknown): AiCartographerProviderSett
 
   const customProviders = [...incomingById.values()]
     .filter((candidate) => candidate.id && !DEFAULT_AI_PROVIDER_SETTINGS.some((provider) => provider.id === candidate.id))
+    .filter((candidate) => {
+      const kind = (candidate as { kind?: unknown }).kind;
+      return kind === undefined || kind === "openai_compatible";
+    })
     .map((candidate): AiCartographerProviderSettings => {
-      const kind = candidate.kind === "mock" ? "mock" : "openai_compatible";
+      const kind = "openai_compatible";
       const enabled = candidate.enabled ?? false;
+      const apiKeyValue = normalizeOptionalString(candidate.api_key_value);
       const apiKeyEnv = normalizeOptionalString(candidate.api_key_env_var);
 
       return {
@@ -575,13 +575,14 @@ function normalizeAiProviderSettings(value: unknown): AiCartographerProviderSett
         enabled,
         base_url: normalizeOptionalString(candidate.base_url) ?? "https://api.openai.com/v1",
         model: normalizeOptionalString(candidate.model) ?? "gpt-4o-mini",
+        api_key_value: apiKeyValue,
         api_key_env_var: apiKeyEnv,
         input_cost_per_million_tokens_usd: normalizeOptionalCostRate(candidate.input_cost_per_million_tokens_usd),
         output_cost_per_million_tokens_usd: normalizeOptionalCostRate(candidate.output_cost_per_million_tokens_usd),
         timeout_ms: clampNumber(candidate.timeout_ms, 5_000, 180_000, 30_000),
         retry_attempts: clampNumber(candidate.retry_attempts, 0, 5, 1),
         retry_backoff_ms: clampNumber(candidate.retry_backoff_ms, 50, 10_000, 250),
-        health_status: enabled ? (kind === "openai_compatible" && !apiKeyEnv ? "missing_key" : "ready") : "disabled",
+        health_status: enabled ? (!apiKeyValue && !apiKeyEnv ? "missing_key" : "ready") : "disabled",
         health_message: normalizeOptionalString(candidate.health_message),
       };
     });
@@ -601,6 +602,10 @@ function normalizeActiveAiProviderId(value: unknown, providers: readonly AiCarto
 
 function normalizeAssistantActionPermissionMode(value: unknown): AssistantActionPermissionMode {
   return value === "allow_low_risk" || value === "block_all" || value === "ask_each_time" ? value : "ask_each_time";
+}
+
+function normalizeDomainHintMode(value: unknown): SeekStarSettings["domain_hint_mode"] {
+  return value === "pure_ai" ? "pure_ai" : "guided";
 }
 
 function normalizeAssistantActionPermissionRules(value: unknown): AssistantActionPermissionRule[] {
