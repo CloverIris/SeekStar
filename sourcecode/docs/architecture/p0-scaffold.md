@@ -44,7 +44,7 @@ sourcecode/
 - `@seekstar/constellation-engine` for event mutation, object pools, Scout planning, lens mapping, and Pixi projection
 - `@seekstar/scout-service`, `@seekstar/ai-service`, and `@seekstar/storage-service` as service contracts
 - `useExplorationSession` as desktop glue, not the owner of core semantics
-- `docs/architecture/p5-9-service-contracts-and-constellation-engine.md`
+- `docs/archive/p5-implementation-history/p5-9-service-contracts-and-constellation-engine.md`
 
 ## What Still Does Not Exist
 

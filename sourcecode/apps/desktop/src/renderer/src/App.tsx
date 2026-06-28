@@ -5,7 +5,7 @@ import type { AiAssistantAction } from "@seekstar/ai-service";
 import { isDirectHttpUrl, type CanvasTool, type SourceIngestionInput } from "@seekstar/constellation-engine";
 import type { SeekStarSettings } from "../../main/appSettingsStore";
 import type { TabRuntimeSnapshot } from "../../main/tabRuntimeManager";
-import type { ChangeEvent, KeyboardEvent, ReactElement } from "react";
+import type { CSSProperties, ChangeEvent, KeyboardEvent, PointerEvent as ReactPointerEvent, ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DetachedTabTitleBar, ShellDockWorkbench, SidebarRail, WindowTitleBar } from "./components/AppChrome";
 import { ObservatorySidebar } from "./components/ObservatorySidebar";
@@ -34,7 +34,10 @@ export function App(): ReactElement {
   const isDockedTabView = Boolean(runtimeTabId && runtimeSurface === "docked");
   const isDetachedTabWindow = Boolean(runtimeTabId && !isDockedTabView);
   const isShellWindow = !runtimeTabId;
-  const exploration = useExplorationSession({ runtimeTabId });
+  const exploration = useExplorationSession({
+    enableCartographerAutomation: !isShellWindow,
+    runtimeTabId,
+  });
   const {
     scene,
     activeTabId,
@@ -44,6 +47,7 @@ export function App(): ReactElement {
     cartographerChunkRecords,
     cartographerStatus,
     persistenceStatus,
+    workspaceLoadError,
     workspaceHydrated,
     hydratedSelection,
     syncWorkspaceFromStore,
@@ -72,6 +76,7 @@ export function App(): ReactElement {
     handleScoutSourceLinks,
     handleCanvasFrontierDiscovery,
     handleAssistantChunkExpansion,
+    handleFocusedLayerGeneration,
     handleCartographerChunkDirectionExpand,
     handleCartographerChunkRefresh,
     handleCartographerTransactionCancel,
@@ -92,6 +97,7 @@ export function App(): ReactElement {
   const [viewportFocusNodeId, setViewportFocusNodeId] = useState<string | undefined>();
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
   const [rightSidebarCollapsed, setRightSidebarCollapsed] = useState(false);
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(340);
   const [splashVisible, setSplashVisible] = useState(true);
   const [splashFading, setSplashFading] = useState(false);
   const [activeCanvasTool, setActiveCanvasTool] = useState<CanvasTool>("pointer");
@@ -109,8 +115,18 @@ export function App(): ReactElement {
   const dockHostRef = useRef<HTMLElement | null>(null);
   const activeTabIdRef = useRef(activeTabId);
   const autoLayerTerrainRequestsRef = useRef<Set<string>>(new Set());
+  const autoLayerTerrainTimerRef = useRef<number | undefined>(undefined);
+  const lastViewportTraceKeyRef = useRef("");
   const runtimeWorkspaceSyncInFlightRef = useRef(false);
   const lastMissingRuntimeSceneKeyRef = useRef("");
+  const rightSidebarStyle = useMemo(
+    () =>
+      ({
+        "--inspector-width": `${rightSidebarWidth}px`,
+      }) as CSSProperties,
+    [rightSidebarWidth],
+  );
+  const shouldRenderRightSidebar = isShellWindow || isDetachedTabWindow;
 
   useEffect(() => {
     activeTabIdRef.current = activeTabId;
@@ -233,6 +249,25 @@ export function App(): ReactElement {
     setIsSelectionActionCardOpen(result.selectedNodeIds.length > 0 && showSelectionActions);
   }
 
+  function handleRightSidebarResizeStart(event: ReactPointerEvent<HTMLElement>): void {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = rightSidebarWidth;
+
+    function handlePointerMove(moveEvent: PointerEvent): void {
+      const nextWidth = Math.min(560, Math.max(300, startWidth + startX - moveEvent.clientX));
+      setRightSidebarWidth(nextWidth);
+    }
+
+    function handlePointerUp(): void {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp, { once: true });
+  }
+
   useEffect(() => {
     if (!workspaceHydrated || !hydratedSelection) {
       return;
@@ -308,7 +343,23 @@ export function App(): ReactElement {
   }, [tabRuntimeSnapshot]);
 
   useEffect(() => {
-    if (!workspaceHydrated || !shouldAutoGenerateLayerTerrain(scene, cartographerStatus)) {
+    if (isShellWindow || !workspaceHydrated) {
+      return;
+    }
+
+    const focusNode = resolveRuntimeFocusNode(scene);
+
+    if (!focusNode) {
+      if (isOnDemandCartographerLayer(scene.viewport.layer)) {
+        traceTelescopeUi("layer.autogen.skip_no_focus", {
+          layer: scene.viewport.layer,
+          tab_id: activeTabId,
+        });
+      }
+      return;
+    }
+
+    if (!shouldAutoGenerateLayerTerrain(scene, cartographerStatus, focusNode)) {
       return;
     }
 
@@ -317,25 +368,72 @@ export function App(): ReactElement {
       cartographerChunkScheduling.chunk_width,
       cartographerChunkScheduling.chunk_height,
     );
+
     const requestKey = [
       activeTabId,
-      scene.id,
-      scene.metadata.updated_at,
       scene.viewport.layer,
+      focusNode?.id ?? scene.runtime.focused_node_id ?? "viewport",
       chunk.key,
     ].join(":");
 
     if (autoLayerTerrainRequestsRef.current.has(requestKey)) {
+      traceTelescopeUi("layer.autogen.skip_dedupe", {
+        chunk,
+        focus: summarizeNodeForTrace(focusNode),
+        layer: scene.viewport.layer,
+        request_key: requestKey,
+        tab_id: activeTabId,
+      });
       return;
     }
 
-    autoLayerTerrainRequestsRef.current.add(requestKey);
-    void handleAssistantChunkExpansion(scene.viewport, cartographerChunkScheduling).catch(() => undefined);
+    traceTelescopeUi("layer.autogen.schedule", {
+      chunk,
+      focus: summarizeNodeForTrace(focusNode),
+      layer: scene.viewport.layer,
+      request_key: requestKey,
+      tab_id: activeTabId,
+    });
+
+    if (autoLayerTerrainTimerRef.current !== undefined) {
+      window.clearTimeout(autoLayerTerrainTimerRef.current);
+    }
+
+    autoLayerTerrainTimerRef.current = window.setTimeout(() => {
+      autoLayerTerrainTimerRef.current = undefined;
+
+      if (autoLayerTerrainRequestsRef.current.has(requestKey)) {
+        return;
+      }
+
+      autoLayerTerrainRequestsRef.current.add(requestKey);
+      traceTelescopeUi("layer.autogen.trigger", {
+        chunk,
+        focus: summarizeNodeForTrace(focusNode),
+        layer: scene.viewport.layer,
+        request_key: requestKey,
+        tab_id: activeTabId,
+      });
+      void handleFocusedLayerGeneration({
+        focusNode,
+        scene,
+        tabId: activeTabId,
+        viewport: scene.viewport,
+      }).catch(() => undefined);
+    }, 720);
+
+    return () => {
+      if (autoLayerTerrainTimerRef.current !== undefined) {
+        window.clearTimeout(autoLayerTerrainTimerRef.current);
+        autoLayerTerrainTimerRef.current = undefined;
+      }
+    };
   }, [
     activeTabId,
     cartographerChunkScheduling,
     cartographerStatus,
-    handleAssistantChunkExpansion,
+    handleFocusedLayerGeneration,
+    isShellWindow,
     scene,
     workspaceHydrated,
   ]);
@@ -385,8 +483,29 @@ export function App(): ReactElement {
 
   function handleSceneViewport(viewport: TerrainScene["viewport"]): void {
     const nextSelectedNodeIds = syncSceneViewport(viewport, selectedNodeIds);
+    const chunk = createCartographerChunkKeyForViewport(
+      viewport,
+      cartographerChunkScheduling.chunk_width,
+      cartographerChunkScheduling.chunk_height,
+    );
+    const viewportTraceKey = `${activeTabId}:${viewport.layer}:${chunk.key}:${Math.round(viewport.x / 120)}:${Math.round(viewport.y / 120)}:${Math.round(viewport.zoom * 10)}`;
 
-    if (nextSelectedNodeIds.length !== selectedNodeIds.length) {
+    if (lastViewportTraceKeyRef.current !== viewportTraceKey) {
+      lastViewportTraceKeyRef.current = viewportTraceKey;
+      traceTelescopeUi("viewport.changed", {
+        chunk,
+        layer: viewport.layer,
+        selected_count: nextSelectedNodeIds.length,
+        tab_id: activeTabId,
+        viewport: {
+          x: Math.round(viewport.x),
+          y: Math.round(viewport.y),
+          zoom: Number(viewport.zoom.toFixed(3)),
+        },
+      });
+    }
+
+    if (!areNodeIdArraysEqual(nextSelectedNodeIds, selectedNodeIds)) {
       setSelectedNodeIds(nextSelectedNodeIds);
       setSelectedRelationId(undefined);
       setSelectedObservationId(undefined);
@@ -396,7 +515,16 @@ export function App(): ReactElement {
   }
 
   function handleLayerSelect(layer: LayerId, focusNodeId?: string): void {
-    applySelection(selectLayer(layer, focusNodeId));
+    const result = selectLayer(layer, focusNodeId);
+    traceTelescopeUi("layer.select", {
+      focus_node_id: focusNodeId,
+      from_layer: scene.viewport.layer,
+      result_focus_node_id: result.focusNodeId,
+      result_selected_count: result.selectedNodeIds.length,
+      tab_id: activeTabId,
+      to_layer: layer,
+    });
+    applySelection(result);
   }
 
   function handleCommandChange(event: ChangeEvent<HTMLInputElement>): void {
@@ -530,6 +658,13 @@ export function App(): ReactElement {
   function handleNodeSelect(nodeId: string): void {
     const node = scene.nodes.find((candidate) => candidate.id === nodeId);
 
+    traceTelescopeUi("node.select", {
+      layer: scene.viewport.layer,
+      node: summarizeNodeForTrace(node),
+      selected_again: selectedNodeIds.length === 1 && selectedNodeIds[0] === nodeId,
+      tab_id: activeTabId,
+    });
+
     if (node && isAbsorbableCanvasTile(node)) {
       const isSameFocusedTile = scene.runtime.focused_node_id === nodeId || (selectedNodeIds.length === 1 && selectedNodeIds[0] === nodeId);
 
@@ -544,7 +679,27 @@ export function App(): ReactElement {
     }
 
     if (node && selectedNodeIds.length === 1 && selectedNodeIds[0] === nodeId && node.zoom_target) {
+      traceTelescopeUi("node.zoom_target", {
+        node: summarizeNodeForTrace(node),
+        target: node.zoom_target,
+        tab_id: activeTabId,
+      });
       handleLayerSelect(node.zoom_target.layer, node.zoom_target.node_id);
+      return;
+    }
+
+    const continuousZoomLayer = node && selectedNodeIds.length === 1 && selectedNodeIds[0] === nodeId
+      ? resolveContinuousZoomInLayer(node.layer)
+      : undefined;
+
+    if (node && continuousZoomLayer) {
+      traceTelescopeUi("node.zoom_continuous", {
+        focus_node_id: node.id,
+        from_layer: node.layer,
+        tab_id: activeTabId,
+        to_layer: continuousZoomLayer,
+      });
+      handleLayerSelect(continuousZoomLayer, node.id);
       return;
     }
 
@@ -1223,6 +1378,8 @@ export function App(): ReactElement {
         <WindowTitleBar
           leftSidebarExpanded={!leftSidebarCollapsed}
           onToggleLeftSidebar={() => setLeftSidebarCollapsed((current) => !current)}
+          onToggleRightSidebar={() => setRightSidebarCollapsed((current) => !current)}
+          rightSidebarExpanded={!rightSidebarCollapsed}
         />
       )}
       {settingsOpen && isShellWindow ? (
@@ -1330,6 +1487,25 @@ export function App(): ReactElement {
                 viewport={scene.viewport}
               />
               {openingSkyStatus ? <OpeningSkyStatus status={openingSkyStatus} /> : null}
+              {workspaceLoadError ? (
+                <aside className="workspace-load-error" aria-live="polite">
+                  <span>Workspace snapshot unavailable</span>
+                  <strong>Trail is protected from overwrite</strong>
+                  <p>{workspaceLoadError}</p>
+                  <button
+                    onClick={() => {
+                      void syncWorkspaceFromStore({
+                        protectLocalNavigation: false,
+                        registerRuntimeTabs: true,
+                        suppressAutosave: true,
+                      });
+                    }}
+                    type="button"
+                  >
+                    Retry load
+                  </button>
+                </aside>
+              ) : null}
               {isSelectionActionCardOpen && selectedNodes.length > 0 ? (
                 <SelectionActionCard
                   nodeCount={selectedNodes.length}
@@ -1375,8 +1551,14 @@ export function App(): ReactElement {
         </section>
         )}
 
-        {!isShellWindow ? (
-        <SidebarRail collapsed={rightSidebarCollapsed} label="AI Map Control" side="right">
+        {shouldRenderRightSidebar ? (
+        <SidebarRail
+          collapsed={rightSidebarCollapsed}
+          label="AI Map Control"
+          onResizePointerDown={handleRightSidebarResizeStart}
+          side="right"
+          style={rightSidebarStyle}
+        >
           <AiMapControlSidebar
             activeTab={activeTab}
             assistantActionPermissionMode={assistantActionPermissionMode}
@@ -1469,8 +1651,8 @@ function resolveOpeningSkyStatus(
 
   if (cartographerStatus.phase === "error") {
     return {
-      body: cartographerStatus.message || "DeepSeek API key or provider configuration needs attention before SeekStar can generate the opening sky.",
-      title: "AI opening sky needs configuration",
+      body: cartographerStatus.message || "Cartographer did not return usable terrain for the opening sky.",
+      title: "AI opening sky failed",
       tone: "error",
     };
   }
@@ -1490,23 +1672,27 @@ function resolveOpeningSkyStatus(
   };
 }
 
-function shouldAutoGenerateLayerTerrain(scene: TerrainScene, cartographerStatus: CartographerRuntimeStatus): boolean {
+function shouldAutoGenerateLayerTerrain(
+  scene: TerrainScene,
+  cartographerStatus: CartographerRuntimeStatus,
+  focusNode: TerrainNode,
+): boolean {
   const layer = scene.viewport.layer;
 
   if (!isOnDemandCartographerLayer(layer)) {
     return false;
   }
 
-  if (cartographerStatus.phase === "generating" && cartographerStatus.levelId === layer) {
+  if (cartographerStatus.phase === "generating") {
     return false;
   }
 
-  if (scene.nodes.some((node) => node.layer === layer && isGeneratedTerrainNode(node))) {
+  if (scene.nodes.some((node) => node.layer === layer && isGeneratedTerrainNodeForLayer(node, layer) && isNodeScopedToFocus(node, focusNode))) {
     return false;
   }
 
   return !(scene.scout_observations ?? []).some(
-    (observation) => observation.layer === layer && isActiveLayerObservation(observation),
+    (observation) => observation.layer === layer && isActiveLayerObservation(observation) && isObservationScopedToFocus(observation, focusNode),
   );
 }
 
@@ -1522,6 +1708,22 @@ function isGeneratedTerrainNode(node: TerrainNode): boolean {
   );
 }
 
+function isGeneratedTerrainNodeForLayer(node: TerrainNode, layer: LayerId): boolean {
+  if (layer === "L3") {
+    return node.source_state === "source_backed" && Boolean(node.source_url);
+  }
+
+  return isGeneratedTerrainNode(node);
+}
+
+function isNodeScopedToFocus(node: TerrainNode, focusNode: TerrainNode): boolean {
+  return node.created_from?.node_id === focusNode.id;
+}
+
+function isObservationScopedToFocus(observation: ScoutObservation, focusNode: TerrainNode): boolean {
+  return observation.target_node_ids?.includes(focusNode.id) === true;
+}
+
 function isActiveLayerObservation(observation: ScoutObservation): boolean {
   return (
     observation.status === "pending" ||
@@ -1529,6 +1731,136 @@ function isActiveLayerObservation(observation: ScoutObservation): boolean {
     observation.status === "observed" ||
     observation.status === "converted"
   );
+}
+
+function resolveRuntimeFocusNode(scene: TerrainScene): TerrainNode | undefined {
+  const focusNodeId = scene.runtime.focused_node_id ?? scene.selection.node_ids[0];
+  const explicitFocusNode = focusNodeId ? scene.nodes.find((node) => node.id === focusNodeId) : undefined;
+  const parentLayer = resolveFocusAnchorLayer(scene.viewport.layer);
+
+  if (explicitFocusNode && (explicitFocusNode.layer === parentLayer || explicitFocusNode.layer === scene.viewport.layer)) {
+    return explicitFocusNode;
+  }
+
+  return (
+    findNearestGeneratedNode(scene.nodes, scene.viewport, parentLayer) ??
+    findNearestGeneratedNode(scene.nodes, scene.viewport, scene.viewport.layer)
+  );
+}
+
+function resolveFocusAnchorLayer(layer: LayerId): LayerId | undefined {
+  if (layer === "L0") {
+    return "supra_macro";
+  }
+
+  if (layer === "L1") {
+    return "L0";
+  }
+
+  if (layer === "L2") {
+    return "L1";
+  }
+
+  if (layer === "L3") {
+    return "L2";
+  }
+
+  return undefined;
+}
+
+function findNearestGeneratedNode(
+  nodes: TerrainNode[],
+  viewport: TerrainScene["viewport"],
+  layer: LayerId | undefined,
+): TerrainNode | undefined {
+  if (!layer) {
+    return undefined;
+  }
+
+  return nodes
+    .filter((node) => node.layer === layer && isGeneratedTerrainNode(node))
+    .sort((left, right) => getNodeViewportDistance(left, viewport) - getNodeViewportDistance(right, viewport))[0];
+}
+
+function getNodeViewportDistance(node: TerrainNode, viewport: TerrainScene["viewport"]): number {
+  const x = node.position_hint?.x ?? 0;
+  const y = node.position_hint?.y ?? 0;
+  return Math.hypot(x - viewport.x, y - viewport.y);
+}
+
+function areNodeIdArraysEqual(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((nodeId, index) => nodeId === right[index]);
+}
+
+function resolveContinuousZoomInLayer(layer: LayerId): LayerId | undefined {
+  if (layer === "supra_macro") {
+    return "L0";
+  }
+
+  if (layer === "L0") {
+    return "L1";
+  }
+
+  if (layer === "L1") {
+    return "L2";
+  }
+
+  if (layer === "L2") {
+    return "L3";
+  }
+
+  return undefined;
+}
+
+function traceTelescopeUi(event: string, payload?: unknown): void {
+  try {
+    if (window.localStorage.getItem("seekstar.trace") === "0") {
+      return;
+    }
+
+    if (!import.meta.env.DEV && window.localStorage.getItem("seekstar.trace") !== "1") {
+      return;
+    }
+  } catch {
+    if (!import.meta.env.DEV) {
+      return;
+    }
+  }
+
+  const suffix = payload === undefined ? "" : ` ${stringifyTelescopeTracePayload(payload)}`;
+  console.info(`[SeekStar][telescope-ui] ${event}${suffix}`);
+}
+
+function stringifyTelescopeTracePayload(payload: unknown): string {
+  try {
+    return JSON.stringify(payload, (_key, value: unknown) => {
+      if (typeof value === "string" && value.length > 800) {
+        return `${value.slice(0, 800)}...<truncated ${value.length - 800} chars>`;
+      }
+
+      return value;
+    });
+  } catch (error) {
+    return JSON.stringify({
+      trace_error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function summarizeNodeForTrace(node: TerrainNode | undefined): Record<string, unknown> | undefined {
+  if (!node) {
+    return undefined;
+  }
+
+  return {
+    id: node.id,
+    layer: node.layer,
+    source_state: node.source_state,
+    title: node.title,
+    type: node.type,
+    x: node.position_hint?.x === undefined ? undefined : Math.round(node.position_hint.x),
+    y: node.position_hint?.y === undefined ? undefined : Math.round(node.position_hint.y),
+  };
 }
 
 function createFallbackDeepLensSnapshot(scene: TerrainScene, node: TerrainNode): DeepLensSnapshot | undefined {

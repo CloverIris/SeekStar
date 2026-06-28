@@ -2,6 +2,7 @@ import { assertValidTerrainScene, normalizeTerrainScene } from "@seekstar/core-s
 import type { DeepLensSnapshot, LayerId, ScoutObservation, ScoutPlan, SourceRef, TerrainNode, TerrainScene } from "@seekstar/core-schema";
 import {
   applyExplorationEvent,
+  applyLevelRuntimeOutputToScene,
   createDirectUrlScoutPlan,
   createDefaultNewSeekScene,
   createExplorationObjectPool,
@@ -40,6 +41,7 @@ import {
 } from "./cartographerRuntimeClient";
 
 interface UseExplorationSessionOptions {
+  enableCartographerAutomation?: boolean;
   initialScene?: TerrainScene;
   runtimeTabId?: string;
 }
@@ -83,6 +85,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
   const initialScene = options.initialScene ?? defaultSeekStarSeedScene;
   const initialTabId = initialScene.active_tab_id;
   const runtimeTabId = options.runtimeTabId;
+  const cartographerAutomationEnabled = options.enableCartographerAutomation ?? true;
 
   const [scenesByTabId, setScenesByTabId] = useState<Record<string, TerrainScene>>({
     [initialTabId]: initialScene,
@@ -91,6 +94,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
   const [basketByTabId, setBasketByTabId] = useState<Record<string, SelectionBasketItem[]>>({});
   const [persistenceStatus, setPersistenceStatus] = useState<PersistenceStatus>("loading");
   const [workspaceHydrated, setWorkspaceHydrated] = useState(false);
+  const [workspaceLoadError, setWorkspaceLoadError] = useState<string | undefined>();
   const [hydratedSelection, setHydratedSelection] = useState<SelectionSyncResult | undefined>();
   const [cartographerStatus, setCartographerStatus] = useState<CartographerRuntimeStatus>({
     message: "Cartographer ready",
@@ -108,7 +112,9 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
   const lastPersistedLocalNavigationRevisionRef = useRef(0);
   const lastWorkspaceChangeRevisionRef = useRef(0);
   const suppressNextAutosaveRef = useRef(false);
+  const workspaceLoadBlockedRef = useRef(false);
   const cartographerBootstrapRef = useRef<Set<string>>(new Set());
+  const focusedLayerGenerationInFlightRef = useRef<Set<string>>(new Set());
   const autoCandidateVerificationRef = useRef<Set<string>>(new Set());
   const autoCandidateVerificationInFlightRef = useRef(false);
   const defaultTonightSkySeedRef = useRef(createDefaultTonightSkySessionSeed());
@@ -239,6 +245,8 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
           preferredActiveTabId: syncOptions.preferredActiveTabId,
           runtimeTabId,
         });
+        workspaceLoadBlockedRef.current = false;
+        setWorkspaceLoadError(undefined);
         const settledLaunch = settleStaleDirectUrlPendingScenes(launch.scenesByTabId);
         const resetLaunch = syncOptions.resetDefaultOpeningSky
           ? resetHydratedDefaultNewSeekScenes(settledLaunch.scenesByTabId)
@@ -293,8 +301,12 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         setPersistenceStatus("saved");
 
         return nextSelection;
-      } catch {
-        setPersistenceStatus("error");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        workspaceLoadBlockedRef.current = true;
+        suppressNextAutosaveRef.current = true;
+        setWorkspaceLoadError(message);
+        setPersistenceStatus("unavailable");
         return undefined;
       } finally {
         if (!syncOptions.shouldCancel?.()) {
@@ -338,6 +350,11 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
 
   useEffect(() => {
     if (!workspaceHydrated) {
+      return undefined;
+    }
+
+    if (workspaceLoadBlockedRef.current) {
+      setPersistenceStatus("unavailable");
       return undefined;
     }
 
@@ -422,6 +439,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       });
       replaceScene(activeTabId, result.scene);
       return {
+        scene: result.scene,
         selectedNodeIds: result.selectedNodeIds ?? [],
         focusNodeId: result.focusNodeId,
       };
@@ -444,6 +462,11 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       activeTabIdRef.current = transaction.activeTabId;
       setScenesByTabId(transaction.scenesByTabId);
       setActiveTabId(transaction.activeTabId);
+    }
+
+    if (workspaceLoadBlockedRef.current) {
+      setPersistenceStatus("unavailable");
+      return Promise.resolve(transaction.scene);
     }
 
     setPersistenceStatus("saving");
@@ -472,6 +495,11 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       parentBacklink: NonNullable<TerrainScene["tabs"][number]["parent_backlink"]>,
     ): Promise<void> => {
       const tabId = openedScene.active_tab_id;
+
+      if (workspaceLoadBlockedRef.current) {
+        setPersistenceStatus("unavailable");
+        return;
+      }
 
       setPersistenceStatus("saving");
 
@@ -560,6 +588,11 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
 
   const persistWorkspaceAfterSceneChange = useCallback(
     async (tabId: string, scenesOverride?: Record<string, TerrainScene>): Promise<void> => {
+      if (workspaceLoadBlockedRef.current) {
+        setPersistenceStatus("unavailable");
+        return;
+      }
+
       await workspacePersistence.persist({
         activeTabId: tabId,
         basketByTabId: basketByTabIdRef.current,
@@ -626,6 +659,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
 
         applyCartographerChunkSnapshot(result.snapshot);
         const nextScene = result.scene;
+        markBootstrapCartographerChunksDiscovered(input.tabId, nextScene, discoveredFrontiersRef.current);
         const nextScenesByTabId = replaceScene(input.tabId, nextScene);
         await persistWorkspaceAfterSceneChange(input.tabId, nextScenesByTabId);
         setCartographerStatus(result.status);
@@ -992,7 +1026,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
   );
 
   useEffect(() => {
-    if (!workspaceHydrated) {
+    if (!cartographerAutomationEnabled || !workspaceHydrated) {
       return;
     }
 
@@ -1026,10 +1060,10 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       seed: bootstrapRequest.seed,
       tabId: activeTabId,
     });
-  }, [activeTabId, bootstrapCartographerTerrain, scenesByTabId, workspaceHydrated]);
+  }, [activeTabId, bootstrapCartographerTerrain, cartographerAutomationEnabled, scenesByTabId, workspaceHydrated]);
 
   useEffect(() => {
-    if (!workspaceHydrated || autoCandidateVerificationInFlightRef.current) {
+    if (!cartographerAutomationEnabled || !workspaceHydrated || autoCandidateVerificationInFlightRef.current) {
       return;
     }
 
@@ -1065,7 +1099,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     }).finally(() => {
       autoCandidateVerificationInFlightRef.current = false;
     });
-  }, [activeTabId, ingestDirectUrlSourceIntoScene, scenesByTabId, workspaceHydrated]);
+  }, [activeTabId, cartographerAutomationEnabled, ingestDirectUrlSourceIntoScene, scenesByTabId, workspaceHydrated]);
 
   const handleApplyDomainLexiconToDefaultSeek = useCallback(
     (domainLexicons: readonly DomainLexicon[] | undefined, activeLexiconId?: string): SelectionSyncResult => {
@@ -1428,10 +1462,24 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         return;
       }
 
+      if (isFocusRequiredExpansionLayer(input.viewport.layer)) {
+        traceExplorationSession("viewport_expansion.skip_focus_required", {
+          layer: input.viewport.layer,
+          scene: summarizeExplorationScene(input.scene),
+          tab_id: input.tabId,
+        });
+        return;
+      }
+
       const chunk = createCartographerChunkKeyForViewport(input.viewport);
       const expansionKey = `${input.tabId}:${input.viewport.layer}:${chunk.key}`;
 
       if (!input.forceRefresh && !input.ignoreDedupe && discoveredFrontiersRef.current.has(expansionKey)) {
+        traceExplorationSession("viewport_expansion.skip_dedupe", {
+          chunk,
+          layer: input.viewport.layer,
+          tab_id: input.tabId,
+        });
         return;
       }
 
@@ -1444,6 +1492,14 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
 
       try {
         const latestScene = scenesByTabIdRef.current[input.tabId] ?? input.scene;
+        traceExplorationSession("viewport_expansion.start", {
+          chunk,
+          force_refresh: Boolean(input.forceRefresh),
+          ignore_dedupe: Boolean(input.ignoreDedupe),
+          layer: input.viewport.layer,
+          scene: summarizeExplorationScene(latestScene),
+          tab_id: input.tabId,
+        });
         setCartographerStatus({
           chunkKey: chunk.key,
           levelId: input.viewport.layer,
@@ -1460,9 +1516,53 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         });
         applyCartographerChunkSnapshot(transaction.snapshot);
         setCartographerStatus(transaction.status);
-        const nextScene = transaction.result.sceneApply?.scene;
+        const latestSceneAfterGeneration = scenesByTabIdRef.current[input.tabId];
+        const nextScene = transaction.result.output.status === "ok" && latestSceneAfterGeneration?.viewport.layer === input.viewport.layer
+          ? applyLevelRuntimeOutputToScene(latestSceneAfterGeneration, transaction.result.output, {
+              focusFirstNode: false,
+              timestamp: transaction.result.output.generated_at,
+            }).scene
+          : undefined;
+
+        traceExplorationSession("viewport_expansion.result", {
+          cache_status: transaction.result.cacheStatus,
+          chunk,
+          output_status: transaction.result.output.status,
+          output_counts: {
+            nodes: transaction.result.output.nodes.length,
+            relations: transaction.result.output.relations.length,
+            source_candidates: transaction.result.output.source_candidates.length,
+          },
+          phase: transaction.status.phase,
+          scene_apply: transaction.result.sceneApply
+            ? {
+                added_nodes: transaction.result.sceneApply.addedNodeIds.length,
+                added_observations: transaction.result.sceneApply.addedObservationIds.length,
+                added_relations: transaction.result.sceneApply.addedRelationIds.length,
+                focus_node_id: transaction.result.sceneApply.focusNodeId,
+              }
+            : undefined,
+          tab_id: input.tabId,
+        });
 
         if (!nextScene || !scenesByTabIdRef.current[input.tabId]) {
+          traceExplorationSession("viewport_expansion.drop_no_scene_apply", {
+            chunk,
+            layer: input.viewport.layer,
+            output_status: transaction.result.output.status,
+            tab_id: input.tabId,
+          });
+          setPersistenceStatus("saved");
+          return;
+        }
+
+        if (!nextScene) {
+          traceExplorationSession("viewport_expansion.drop_stale_result", {
+            chunk,
+            current_scene: summarizeExplorationScene(scenesByTabIdRef.current[input.tabId] ?? latestScene),
+            layer: input.viewport.layer,
+            tab_id: input.tabId,
+          });
           setPersistenceStatus("saved");
           return;
         }
@@ -1470,7 +1570,13 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         const nextScenesByTabId = replaceScene(input.tabId, nextScene);
         await persistWorkspaceAfterSceneChange(input.tabId, nextScenesByTabId);
         setPersistenceStatus("saved");
-      } catch {
+      } catch (error) {
+        traceExplorationSession("viewport_expansion.error", {
+          chunk,
+          error: error instanceof Error ? error.message : String(error),
+          layer: input.viewport.layer,
+          tab_id: input.tabId,
+        });
         setCartographerStatus({
           chunkKey: chunk.key,
           levelId: input.viewport.layer,
@@ -1480,6 +1586,170 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
           updatedAt: new Date().toISOString(),
         });
         setPersistenceStatus("error");
+      }
+    },
+    [applyCartographerChunkSnapshot, persistWorkspaceAfterSceneChange, replaceScene],
+  );
+
+  const handleFocusedLayerGeneration = useCallback(
+    async (input: {
+      focusNode?: TerrainNode;
+      forceRefresh?: boolean;
+      scene: TerrainScene;
+      tabId: string;
+      viewport: TerrainScene["viewport"];
+    }): Promise<SelectionSyncResult | undefined> => {
+      if (!isFocusedCartographerLayer(input.viewport.layer)) {
+        return undefined;
+      }
+
+      const chunk = createCartographerChunkKeyForViewport(input.viewport);
+      const latestScene = scenesByTabIdRef.current[input.tabId] ?? input.scene;
+      const focusNode = input.focusNode ?? resolveSceneRuntimeFocusNode(latestScene);
+      const focusRequestKey = `${input.tabId}:${input.viewport.layer}:${chunk.key}:${focusNode?.id ?? "viewport"}`;
+      const frontierKey = `${input.tabId}:${input.viewport.layer}:${chunk.key}`;
+
+      if (!focusNode) {
+        traceExplorationSession("layer_focus.skip_no_focus", {
+          chunk,
+          layer: input.viewport.layer,
+          scene: summarizeExplorationScene(latestScene),
+          tab_id: input.tabId,
+        });
+        return undefined;
+      }
+
+      if (!input.forceRefresh && focusedLayerGenerationInFlightRef.current.has(focusRequestKey)) {
+        traceExplorationSession("layer_focus.skip_inflight", {
+          chunk,
+          focus: summarizeTerrainNodeForTrace(focusNode),
+          layer: input.viewport.layer,
+          request_key: focusRequestKey,
+          tab_id: input.tabId,
+        });
+        return undefined;
+      }
+
+      focusedLayerGenerationInFlightRef.current.add(focusRequestKey);
+
+      if (!input.forceRefresh) {
+        discoveredFrontiersRef.current.add(frontierKey);
+      }
+
+      traceExplorationSession("layer_focus.start", {
+        chunk,
+        focus: summarizeTerrainNodeForTrace(focusNode),
+        force_refresh: Boolean(input.forceRefresh),
+        layer: input.viewport.layer,
+        request_key: focusRequestKey,
+        scene: summarizeExplorationScene(latestScene),
+        tab_id: input.tabId,
+      });
+
+      setPersistenceStatus("saving");
+      setCartographerStatus({
+        chunkKey: chunk.key,
+        levelId: input.viewport.layer,
+        message: `Generating focused ${input.viewport.layer} terrain ${chunk.key}`,
+        mode: "decompose_down",
+        phase: "generating",
+        updatedAt: new Date().toISOString(),
+      });
+
+      try {
+        const revisionAtRequest = localNavigationRevisionRef.current;
+        const transaction = await window.seekstar.cartographer.runLayerFocusTransaction({
+          focus: createCartographerFocusFromNode(focusNode),
+          forceRefresh: input.forceRefresh,
+          scene: latestScene,
+          tabId: input.tabId,
+          viewport: input.viewport,
+        });
+        applyCartographerChunkSnapshot(transaction.snapshot);
+        setCartographerStatus(transaction.status);
+        const nextScene = transaction.result.sceneApply?.scene;
+
+        traceExplorationSession("layer_focus.result", {
+          cache_status: transaction.result.cacheStatus,
+          chunk,
+          focus: summarizeTerrainNodeForTrace(focusNode),
+          output_status: transaction.result.output.status,
+          output_counts: {
+            nodes: transaction.result.output.nodes.length,
+            relations: transaction.result.output.relations.length,
+            source_candidates: transaction.result.output.source_candidates.length,
+          },
+          phase: transaction.status.phase,
+          scene_apply: transaction.result.sceneApply
+            ? {
+                added_nodes: transaction.result.sceneApply.addedNodeIds.length,
+                added_observations: transaction.result.sceneApply.addedObservationIds.length,
+                added_relations: transaction.result.sceneApply.addedRelationIds.length,
+                focus_node_id: transaction.result.sceneApply.focusNodeId,
+              }
+            : undefined,
+          tab_id: input.tabId,
+        });
+
+        if (!nextScene || !scenesByTabIdRef.current[input.tabId]) {
+          traceExplorationSession("layer_focus.drop_no_scene_apply", {
+            chunk,
+            layer: input.viewport.layer,
+            output_status: transaction.result.output.status,
+            tab_id: input.tabId,
+          });
+          setPersistenceStatus("saved");
+          return undefined;
+        }
+
+        if (!shouldApplyCartographerSceneResult({
+          currentRevision: localNavigationRevisionRef.current,
+          expectedFocusNodeId: focusNode.id,
+          requestRevision: revisionAtRequest,
+          requestViewport: input.viewport,
+          tabId: input.tabId,
+          scenesByTabId: scenesByTabIdRef.current,
+        })) {
+          traceExplorationSession("layer_focus.drop_stale_result", {
+            chunk,
+            current_scene: summarizeExplorationScene(scenesByTabIdRef.current[input.tabId] ?? latestScene),
+            focus: summarizeTerrainNodeForTrace(focusNode),
+            layer: input.viewport.layer,
+            tab_id: input.tabId,
+          });
+          setPersistenceStatus("saved");
+          return undefined;
+        }
+
+        const nextScenesByTabId = replaceScene(input.tabId, nextScene);
+        await persistWorkspaceAfterSceneChange(input.tabId, nextScenesByTabId);
+        setPersistenceStatus("saved");
+
+        return {
+          scene: nextScene,
+          selectedNodeIds: nextScene.selection.node_ids,
+          focusNodeId: nextScene.runtime.focused_node_id ?? nextScene.selection.node_ids[0],
+        };
+      } catch (error) {
+        traceExplorationSession("layer_focus.error", {
+          chunk,
+          error: error instanceof Error ? error.message : String(error),
+          focus: summarizeTerrainNodeForTrace(focusNode),
+          layer: input.viewport.layer,
+          tab_id: input.tabId,
+        });
+        setCartographerStatus({
+          chunkKey: chunk.key,
+          levelId: input.viewport.layer,
+          message: `Failed focused ${input.viewport.layer} terrain ${chunk.key}`,
+          mode: "decompose_down",
+          phase: "error",
+          updatedAt: new Date().toISOString(),
+        });
+        setPersistenceStatus("error");
+        return undefined;
+      } finally {
+        focusedLayerGenerationInFlightRef.current.delete(focusRequestKey);
       }
     },
     [applyCartographerChunkSnapshot, persistWorkspaceAfterSceneChange, replaceScene],
@@ -1538,6 +1808,15 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       viewport: TerrainScene["viewport"],
       scheduling?: CartographerChunkSchedulingPolicy,
     ): void => {
+      if (isFocusRequiredExpansionLayer(viewport.layer)) {
+        traceExplorationSession("direction_expansion.skip_focus_required", {
+          direction,
+          layer: viewport.layer,
+          tab_id: activeTabIdRef.current,
+        });
+        return;
+      }
+
       const tabId = activeTabIdRef.current;
       const currentScene = scenesByTabIdRef.current[tabId] ?? scene;
       const policy = normalizeCartographerChunkSchedulingPolicy(scheduling);
@@ -1566,6 +1845,14 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         return undefined;
       }
 
+      if (isFocusRequiredExpansionLayer(viewport.layer)) {
+        traceExplorationSession("assistant_expansion.skip_focus_required", {
+          layer: viewport.layer,
+          tab_id: activeTabIdRef.current,
+        });
+        return undefined;
+      }
+
       const tabId = activeTabIdRef.current;
       const currentScene = scenesByTabIdRef.current[tabId] ?? scene;
       const policy = normalizeCartographerChunkSchedulingPolicy(scheduling);
@@ -1591,7 +1878,13 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         });
         applyCartographerChunkSnapshot(transaction.snapshot);
         setCartographerStatus(transaction.status);
-        const nextScene = transaction.result.sceneApply?.scene;
+        const latestSceneAfterGeneration = scenesByTabIdRef.current[tabId];
+        const nextScene = transaction.result.output.status === "ok" && latestSceneAfterGeneration?.viewport.layer === viewport.layer
+          ? applyLevelRuntimeOutputToScene(latestSceneAfterGeneration, transaction.result.output, {
+              focusFirstNode: false,
+              timestamp: transaction.result.output.generated_at,
+            }).scene
+          : undefined;
 
         if (!nextScene || !scenesByTabIdRef.current[tabId]) {
           setPersistenceStatus("saved");
@@ -1657,6 +1950,19 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       if (isCartographerExpandableLayer(nextViewport.layer)) {
         const policy = normalizeCartographerChunkSchedulingPolicy(scheduling);
 
+        if (isFocusRequiredExpansionLayer(nextViewport.layer)) {
+          traceExplorationSession("frontier.cartographer.skip_focus_required", {
+            layer: nextViewport.layer,
+            tab_id: activeTabIdRef.current,
+            viewport: {
+              x: Math.round(nextViewport.x),
+              y: Math.round(nextViewport.y),
+              zoom: Number(nextViewport.zoom.toFixed(3)),
+            },
+          });
+          return;
+        }
+
         if (!policy.auto_expand_enabled || policy.auto_preload_ring <= 0) {
           return;
         }
@@ -1664,8 +1970,18 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         const tabId = activeTabIdRef.current;
         const currentScene = scenesByTabIdRef.current[tabId] ?? scene;
         const chunk = createCartographerChunkKeyForViewport(nextViewport, policy.chunk_width, policy.chunk_height);
+        const expansionKey = `${tabId}:${nextViewport.layer}:${chunk.key}`;
         const timerKey = `cartographer:${tabId}:${nextViewport.layer}:${chunk.key}`;
         const existingTimer = frontierTimersRef.current[timerKey];
+
+        if (discoveredFrontiersRef.current.has(expansionKey)) {
+          traceExplorationSession("frontier.cartographer.skip_discovered", {
+            chunk,
+            layer: nextViewport.layer,
+            tab_id: tabId,
+          });
+          return;
+        }
 
         if (existingTimer) {
           window.clearTimeout(existingTimer);
@@ -1680,6 +1996,17 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
             mode: "expand_horizontal",
           }),
         );
+        traceExplorationSession("frontier.cartographer.queue", {
+          chunk,
+          debounce_ms: policy.boundary_debounce_ms,
+          layer: nextViewport.layer,
+          tab_id: tabId,
+          viewport: {
+            x: Math.round(nextViewport.x),
+            y: Math.round(nextViewport.y),
+            zoom: Number(nextViewport.zoom.toFixed(3)),
+          },
+        });
         frontierTimersRef.current[timerKey] = window.setTimeout(() => {
           void expandCartographerChunk({
             scene: currentScene,
@@ -1872,6 +2199,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     cartographerChunkRecords,
     cartographerStatus,
     persistenceStatus,
+    workspaceLoadError,
     workspaceHydrated,
     hydratedSelection,
     syncWorkspaceFromStore,
@@ -1902,6 +2230,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     handleScoutSourceLinks,
     handleCanvasFrontierDiscovery,
     handleAssistantChunkExpansion,
+    handleFocusedLayerGeneration,
     handleCartographerChunkDirectionExpand,
     handleCartographerChunkRefresh,
     handleCartographerTransactionCancel,
@@ -1945,6 +2274,35 @@ function isDefaultNewSeekScene(scene: TerrainScene): boolean {
   const visibleSeed = (activeTab?.seed || activeTab?.title || scene.metadata.title).trim();
 
   return activeTab?.id === DEFAULT_NEW_SEEK_TAB_ID && !activeTab.parent_backlink && visibleSeed === NEW_SEEK_TITLE;
+}
+
+function shouldApplyCartographerSceneResult(input: {
+  currentRevision: number;
+  expectedFocusNodeId?: string;
+  requestRevision: number;
+  requestViewport: TerrainScene["viewport"];
+  scenesByTabId: Record<string, TerrainScene>;
+  tabId: string;
+}): boolean {
+  if (input.currentRevision !== input.requestRevision) {
+    return false;
+  }
+
+  const currentScene = input.scenesByTabId[input.tabId];
+
+  if (!currentScene || currentScene.viewport.layer !== input.requestViewport.layer) {
+    return false;
+  }
+
+  if (input.expectedFocusNodeId) {
+    const currentFocusNodeId = currentScene.runtime.focused_node_id ?? currentScene.selection.node_ids[0];
+
+    if (currentFocusNodeId && currentFocusNodeId !== input.expectedFocusNodeId) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 async function loadConfiguredDefaultScene(fallbackScene: TerrainScene): Promise<TerrainScene> {
@@ -2079,10 +2437,41 @@ function findNextAutoVerifiableCandidate(scene: TerrainScene, queuedIds: Set<str
         observation.layer === "L3" &&
         observation.status === "source_candidate" &&
         Boolean(observation.url) &&
+        (observation.target_node_ids?.length ?? 0) > 0 &&
         !queuedIds.has(observation.id) &&
         isDirectHttpUrl(observation.url ?? ""),
     )
     .sort((left, right) => (right.confidence ?? 0) - (left.confidence ?? 0))[0];
+}
+
+function isFocusedCartographerLayer(layer: LayerId): layer is "L1" | "L2" | "L3" {
+  return layer === "L1" || layer === "L2" || layer === "L3";
+}
+
+function resolveSceneRuntimeFocusNode(scene: TerrainScene): TerrainNode | undefined {
+  const focusNodeId = scene.runtime.focused_node_id ?? scene.selection.node_ids[0];
+
+  return focusNodeId ? scene.nodes.find((node) => node.id === focusNodeId) : undefined;
+}
+
+function createCartographerFocusFromNode(node: TerrainNode | undefined):
+  | {
+      id?: string;
+      title: string;
+      level_id?: string;
+      excerpt?: string;
+    }
+  | undefined {
+  if (!node) {
+    return undefined;
+  }
+
+  return {
+    excerpt: (node.summary ?? node.quote ?? node.semantic_breadcrumb?.join(" / ") ?? "").slice(0, 360),
+    id: node.id,
+    level_id: node.layer,
+    title: node.title,
+  };
 }
 
 function createHyperlinkOrphanSeed(
@@ -2185,8 +2574,44 @@ function summarizeExplorationScene(scene: TerrainScene): Record<string, unknown>
   };
 }
 
+function summarizeTerrainNodeForTrace(node: TerrainNode | undefined): Record<string, unknown> | undefined {
+  if (!node) {
+    return undefined;
+  }
+
+  return {
+    id: node.id,
+    layer: node.layer,
+    source_state: node.source_state,
+    title: node.title,
+    type: node.type,
+    x: node.position_hint?.x === undefined ? undefined : Math.round(node.position_hint.x),
+    y: node.position_hint?.y === undefined ? undefined : Math.round(node.position_hint.y),
+  };
+}
+
+function markBootstrapCartographerChunksDiscovered(tabId: string, scene: TerrainScene, discovered: Set<string>): void {
+  for (const layer of ["supra_macro", "L0", "L1", "L2", "L3"] as const) {
+    if (!scene.nodes.some((node) => node.layer === layer)) {
+      continue;
+    }
+
+    const chunk = createCartographerChunkKeyForViewport({
+      ...scene.viewport,
+      layer,
+      x: 0,
+      y: 0,
+    });
+    discovered.add(`${tabId}:${layer}:${chunk.key}`);
+  }
+}
+
 function isCartographerExpandableLayer(layer: LayerId): layer is CartographerLevelBandId {
   return layer === "L0" || layer === "L1" || layer === "L2" || layer === "L3";
+}
+
+function isFocusRequiredExpansionLayer(layer: LayerId): boolean {
+  return layer === "L3";
 }
 
 function settleStaleDirectUrlPendingScenes(scenesByTabId: Record<string, TerrainScene>): {

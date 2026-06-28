@@ -300,6 +300,7 @@ export class ScoutJobCoordinator {
           excerpt: input.observation.snippet ?? input.observation.query,
         },
         observationId: input.observation.id,
+        initialLayer: "L3",
       },
     });
   }

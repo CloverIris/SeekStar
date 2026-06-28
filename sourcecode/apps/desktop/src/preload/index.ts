@@ -17,6 +17,8 @@ import type {
   CartographerRuntimeBootstrapResult,
   CartographerRuntimeCancelRequest,
   CartographerRuntimeCancelResult,
+  CartographerRuntimeLayerFocusRequest,
+  CartographerRuntimeLayerFocusResult,
   CartographerRuntimeSourceReplacementRequest,
   CartographerRuntimeSourceReplacementResult,
   CartographerRuntimeViewportExpansionRequest,
@@ -123,6 +125,8 @@ contextBridge.exposeInMainWorld("seekstar", {
     },
     runBootstrapTransaction: (input: CartographerRuntimeBootstrapRequest): Promise<CartographerRuntimeBootstrapResult> =>
       ipcRenderer.invoke("cartographer:run-bootstrap-transaction", input),
+    runLayerFocusTransaction: (input: CartographerRuntimeLayerFocusRequest): Promise<CartographerRuntimeLayerFocusResult> =>
+      ipcRenderer.invoke("cartographer:run-layer-focus-transaction", input),
     runSourceReplacementTransaction: (
       input: CartographerRuntimeSourceReplacementRequest,
     ): Promise<CartographerRuntimeSourceReplacementResult> => ipcRenderer.invoke("cartographer:run-source-replacement-transaction", input),

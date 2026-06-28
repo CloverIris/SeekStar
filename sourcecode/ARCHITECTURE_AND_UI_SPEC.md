@@ -86,7 +86,7 @@ Design principle:
 The renderer receives structured scene data. It does not ask AI how to draw every frame.
 
 P5.1-P5.9 implementation note:
-The renderer shell subscribes to exploration state through `useExplorationSession`, while core scene mutation, object-pool derivation, Scout planning, and Pixi projection now live in `@seekstar/constellation-engine`. See `docs/architecture/p5-9-service-contracts-and-constellation-engine.md`.
+The renderer shell subscribes to exploration state through `useExplorationSession`, while core scene mutation, object-pool derivation, Scout planning, and Pixi projection now live in `@seekstar/constellation-engine`. See `docs/archive/p5-implementation-history/p5-9-service-contracts-and-constellation-engine.md`.
 
 P5.2-P5.11 implementation note:
 The runtime has a typed event entry and derived object pool. `selection.changed`, `viewport.changed`, `layer.changed`, and `scout.observations.appended` wrap the scene mutation helpers in the Constellation Engine. `ExplorationObjectPool` indexes the active scene for canvas, inspector, search, and source-conversion subscribers. The canonical layer model lives in `@seekstar/core-schema/src/semanticLayers.ts`; Star Gallery, Tile Field, and Text Grain are focal bands over the L0-L11 12Level semantic spine, not a replacement for it.
@@ -139,7 +139,7 @@ Candidate observations and any legacy candidate-surface concept are queue/status
 These events are the telescope operation protocol. Viewport movement may reveal same-layer frontiers. Layer changes move between macro orientation, source-backed tile surfaces, and text-grain detail. Selection and lasso create addressable regions that can be inspected, promoted, exported, or passed to AI only when the user asks for interpretation.
 
 P5.6 implementation note:
-The Electron host now owns the first Chrome-like tab runtime boundary. `TabRuntimeManager` stores `TabRecord` metadata, WebContentsView instances, session partition strings, detached tab windows, workspace folders, crash records, and cache budgets. Renderer tab controls call the runtime through the preload bridge, while `TerrainScene` remains the per-tab durable exploration snapshot. The first `WorkspaceStore` boundary remains JSON-backed so SQLite/FTS can be introduced through a migration ADR instead of leaking file shape into the renderer. See `docs/architecture/p5-6-app-framework-tab-runtime.md`.
+The Electron host now owns the first Chrome-like tab runtime boundary. `TabRuntimeManager` stores `TabRecord` metadata, WebContentsView instances, session partition strings, detached tab windows, workspace folders, crash records, and cache budgets. Renderer tab controls call the runtime through the preload bridge, while `TerrainScene` remains the per-tab durable exploration snapshot. The first `WorkspaceStore` boundary remains JSON-backed so SQLite/FTS can be introduced through a migration ADR instead of leaking file shape into the renderer. See `docs/archive/p5-implementation-history/p5-6-app-framework-tab-runtime.md`.
 
 P5.7 implementation note:
 The main observatory shell now provides a dock rectangle instead of rendering the active telescope tab itself. Electron main docks the active tab `WebContentsView` into that rectangle with `runtimeSurface=docked`; detached windows reload the same tab surface with `runtimeSurface=detached`. This is the first main-window crash-isolation boundary: shell UI and tab UI are separate renderer surfaces, while `WorkspaceStore` and `TabRuntimeManager` remain host-owned.

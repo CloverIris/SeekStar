@@ -17,6 +17,7 @@ sourcecode/
 |  `- storage-service/      # Storage/cache ports with JSON adapter today
 |- docs/
 |  |- architecture/
+|  |- archive/              # Superseded implementation history and legacy root docs
 |  `- decisions/
 |- AGENTS.md
 |- PRD.md
@@ -52,6 +53,8 @@ Development mode opens detached DevTools by default. Restart Electron fully afte
 - `ARCHITECTURE_AND_UI_SPEC.md`: architecture and UI specification.
 - `UI_STYLE_GUIDE.md`: visual system and shell standards.
 - `docs/architecture/`: architecture slices, service contracts, 12Level/P6 telescope runtime.
+- `docs/status/`: project closure and phase status records.
+- `docs/archive/`: superseded implementation history kept out of the current baseline.
 - `docs/decisions/`: architecture decision records.
 
 ## Current Mainline Status
@@ -142,8 +145,16 @@ The current usable spine includes:
 - P6.58 App Gallery runtime hardening: L0/L1 Cartographer output now uses a deterministic continuous bubble-gallery layout instead of provider-authored radial positions. Chunk preloads remain cache/runtime boundaries, but the canvas presents them as one offscreen-prepared field inspired by Apple Watch Grid View behavior. The Pixi projection filters old long macro relations, Electron retries transient tab-renderer loads, the chunk subscriber avoids repeated destroyed listeners, and Cartographer cost-ledger writes tolerate transient Windows rename failures.
 - P6.59 MVP layout cleanup and DeepSeek adapter: the old radial/spiral Level Runtime fallback is removed. AI providers now supply semantic material only; Level Runtime owns all L0-L3/Deep Lens/Recursive Seed coordinates by layout family, and the default profile is `seekstar-default-p6-gallery-v3`. Settings now includes a DeepSeek OpenAI-compatible provider preset (`https://api.deepseek.com`, `deepseek-v4-flash`, `DEEPSEEK_API_KEY`) so real per-layer CLI/UI testing can use the same provider boundary once the env key is available.
 - P6.60 destructive App Gallery projection cleanup: the MVP renderer no longer trusts persisted L0/L1 `position_hint` values or macro relations. Pixi projection derives a continuous Apple-Watch-like bubble field for L0/L1 at render time, filters old hub-and-spoke relation lines, and removes the default chunk debug HUD from the main canvas.
-- P6.61 MVP doctrine documentation reset: PRD, AGENTS guidance, and P6 architecture notes now treat old logic/caches/UI/fallbacks as deletion targets during MVP; AI Cartographer is the primary L0-L3 terrain producer; DataService is a validation/loading/tool boundary; Deep Lens replaces visible L4-L10 detail layers; failed source candidates stay out of the main canvas; the right sidebar is AI map control first.
+- MVP doctrine documentation reset: PRD, AGENTS guidance, and P6 architecture notes now treat old logic/caches/UI/fallbacks as deletion targets during MVP; AI Cartographer is the primary L0-L3 terrain producer; DataService is a validation/loading/tool boundary; Deep Lens replaces visible L4-L10 detail layers; failed source candidates stay out of the main canvas; the right sidebar is AI map control first.
+- P6.62 opening sky and real-provider path: default New Seek uses `default_tonight_sky`, visible scaffold/domain fallback nodes are removed from the product canvas, domain lexicons are prompt hints only, DeepSeek/OpenAI-compatible routing is the default real generation path, and missing keys fail clearly instead of producing mock terrain.
+- P6.63 closure complete: workspace load failures no longer overwrite snapshots, continuous telescope layer transitions reject stale Cartographer results, L3 source candidates stay in review/recovery until DataService creates source-backed tiles, L2/L3 expansion is on-demand by default, and mojibake AI/cache output is rejected before scene/cache write.
 
-Remaining before practical daily use:
+P6 is closed at P6.63. The closure record is [`docs/status/p6-closure.md`](docs/status/p6-closure.md).
 
-- extractor providers behind the P5.16/P5.17 DataService registry and OS-backed encrypted key storage for providers that need more than environment references;
+Next after P6:
+
+- extractor providers behind the DataService registry;
+- OS-backed encrypted key storage for providers that need more than environment references;
+- SQLite/FTS/vector-backed durable storage beyond the current JSON adapters;
+- full local-file Ground Mode;
+- stronger Deep Lens and file snapshot materialization.

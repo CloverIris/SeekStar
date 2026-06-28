@@ -70,6 +70,8 @@ export interface CartographerRuntimeViewportExpansionRequest {
 }
 
 export interface CartographerRuntimeViewportExpansionResult {
+  requestStartedAt: string;
+  requestViewport: TerrainScene["viewport"];
   result: CartographerChunkRequestResult;
   snapshot: CartographerChunkStoreSnapshot;
   status: {
@@ -78,6 +80,30 @@ export interface CartographerRuntimeViewportExpansionResult {
     levelId: CartographerRuntimeRequest["level_id"];
     message: string;
     mode: "expand_horizontal";
+    phase: "applied" | "cancelled" | "error";
+    updatedAt: string;
+  };
+}
+
+export interface CartographerRuntimeLayerFocusRequest {
+  focus?: CartographerRuntimeRequest["focus"];
+  forceRefresh?: boolean;
+  scene: TerrainScene;
+  tabId: string;
+  viewport: TerrainScene["viewport"];
+}
+
+export interface CartographerRuntimeLayerFocusResult {
+  requestStartedAt: string;
+  requestViewport: TerrainScene["viewport"];
+  result: CartographerChunkRequestResult;
+  snapshot: CartographerChunkStoreSnapshot;
+  status: {
+    cacheStatus?: "hit" | "miss" | "refresh";
+    chunkKey: string;
+    levelId: "L1" | "L2" | "L3";
+    message: string;
+    mode: "decompose_down";
     phase: "applied" | "cancelled" | "error";
     updatedAt: string;
   };
@@ -104,7 +130,7 @@ export interface CartographerRuntimeSourceReplacementResult {
   };
 }
 
-export type CartographerRuntimeTransactionKind = "bootstrap" | "viewport_expansion" | "source_replacement";
+export type CartographerRuntimeTransactionKind = "bootstrap" | "viewport_expansion" | "layer_focus" | "source_replacement";
 
 export interface CartographerRuntimeCancelRequest {
   kind?: CartographerRuntimeTransactionKind;
@@ -136,6 +162,7 @@ export function registerCartographerRuntimeBridge(): void {
   ipcMain.removeHandler("cartographer:run-chunk-transaction");
   ipcMain.removeHandler("cartographer:run-bootstrap-transaction");
   ipcMain.removeHandler("cartographer:run-viewport-expansion-transaction");
+  ipcMain.removeHandler("cartographer:run-layer-focus-transaction");
   ipcMain.removeHandler("cartographer:run-source-replacement-transaction");
   ipcMain.removeHandler("cartographer:cancel-transaction");
   ipcMain.handle("cartographer:cancel-transaction", async (_event, input): Promise<CartographerRuntimeCancelResult> => {
@@ -220,6 +247,17 @@ export function registerCartographerRuntimeBridge(): void {
 
         if (result.output.status === "cancelled") {
           return createCancelledBootstrapResult(nextScene, lastSnapshot, chunk, seed, lastCacheStatus);
+        }
+
+        if (result.output.status !== "ok" && bootstrap.entryMode === "default_tonight_sky" && levelId === "supra_macro") {
+          traceCartographerBridge("bootstrap.level.non_blocking_failure", {
+            cache_status: result.cacheStatus,
+            diagnostics: result.output.diagnostics.slice(0, 4),
+            level_id: levelId,
+            mode,
+            tab_id: bootstrap.tabId,
+          });
+          continue;
         }
 
         if (result.output.status !== "ok") {
@@ -338,6 +376,8 @@ export function registerCartographerRuntimeBridge(): void {
       });
 
       return {
+        requestStartedAt: transaction.startedAt,
+        requestViewport: expansion.viewport,
         result,
         snapshot,
         status: {
@@ -373,7 +413,7 @@ export function registerCartographerRuntimeBridge(): void {
             role: "active",
           }),
         ]);
-        const cancelledResult = createCancelledViewportExpansionResult(expansion, chunk, levelId, snapshot);
+        const cancelledResult = createCancelledViewportExpansionResult(expansion, chunk, levelId, snapshot, transaction.startedAt);
 
         return cancelledResult;
       }
@@ -384,6 +424,137 @@ export function registerCartographerRuntimeBridge(): void {
           levelId,
           message: errorMessage,
           mode: "expand_horizontal",
+          phase: "error",
+          role: "active",
+        }),
+      ]);
+
+      throw error;
+    } finally {
+      finishCartographerTransaction(transaction);
+    }
+  });
+  ipcMain.handle("cartographer:run-layer-focus-transaction", async (_event, input): Promise<CartographerRuntimeLayerFocusResult> => {
+    const focusRequest = parseCartographerRuntimeLayerFocusRequest(input);
+    const transaction = beginCartographerTransaction(focusRequest.tabId, "layer_focus");
+    const runtimeSettings = resolveCartographerLevelRuntimeSettings(await loadSettings());
+    const levelId = parseDecomposeLevelId(focusRequest.viewport.layer);
+    const seed = resolveSceneSeed(focusRequest.scene);
+    const chunk = createCartographerChunkKeyForViewport(focusRequest.viewport, runtimeSettings);
+    const sceneContext = createCartographerSceneContext(focusRequest.scene, levelId, focusRequest.viewport);
+    const focusResolution = resolveCartographerLayerFocus(focusRequest.focus, sceneContext);
+    const focusTitle = focusResolution.focus?.title ? ` around ${focusResolution.focus.title}` : "";
+    const startedMessage = `Focusing ${levelId} chunk ${chunk.key}${focusTitle}`;
+    const errorMessage = `Failed focused ${levelId} chunk ${chunk.key}`;
+
+    traceCartographerBridge("layer_focus.start", {
+      chunk,
+      context_focus_anchor: sceneContext.focus_anchor,
+      focus: focusResolution.focus,
+      focus_source: focusResolution.source,
+      force_refresh: Boolean(focusRequest.forceRefresh),
+      level_id: levelId,
+      scene: summarizeSceneForTrace(focusRequest.scene),
+      seed,
+      tab_id: focusRequest.tabId,
+    });
+
+    await appendCartographerChunkRecords(focusRequest.tabId, [
+      createCartographerChunkStoreRecord({
+        chunk,
+        levelId,
+        message: startedMessage,
+        mode: "decompose_down",
+        phase: "generating",
+        role: "active",
+      }),
+    ]);
+
+    try {
+      const result = await getCoordinator().request({
+        applyToScene: true,
+        chunk,
+        context: {
+          ...sceneContext,
+          focus_reason: "continuous_zoom",
+          focus_source: focusResolution.source,
+          requested_focus: focusResolution.focus,
+          viewport: focusRequest.viewport,
+        },
+        focus: focusResolution.focus,
+        forceRefresh: focusRequest.forceRefresh,
+        level_id: levelId,
+        mode: "decompose_down",
+        preload: false,
+        scene: focusRequest.scene,
+        seed,
+        signal: transaction.controller.signal,
+        settings: runtimeSettings,
+      });
+      const snapshot = await appendCartographerChunkRecords(focusRequest.tabId, result.chunkRecords);
+      const cancelled = result.output.status === "cancelled";
+      const failed = result.output.status !== "ok" && !cancelled;
+      await appendCartographerCostLedgerRecords(focusRequest.tabId, result, seed);
+
+      traceCartographerBridge("layer_focus.done", {
+        cache_status: result.cacheStatus,
+        focus: focusResolution.focus,
+        focus_source: focusResolution.source,
+        output: summarizeRuntimeOutputForTrace(result.output),
+        preloaded_count: result.preloaded.length,
+        scene_apply: summarizeSceneApplyForTrace(result.sceneApply),
+        scene_after: result.sceneApply?.scene ? summarizeSceneForTrace(result.sceneApply.scene) : summarizeSceneForTrace(focusRequest.scene),
+        tab_id: focusRequest.tabId,
+      });
+
+      return {
+        requestStartedAt: transaction.startedAt,
+        requestViewport: focusRequest.viewport,
+        result,
+        snapshot,
+        status: {
+          cacheStatus: result.cacheStatus,
+          chunkKey: chunk.key,
+          levelId,
+          message: cancelled
+            ? `Cancelled focused ${levelId} chunk ${chunk.key}`
+            : failed
+              ? createRuntimeFailureMessage(`Failed focused ${levelId} chunk ${chunk.key}`, result)
+              : `Focused ${levelId} chunk ${chunk.key}`,
+          mode: "decompose_down",
+          phase: cancelled ? "cancelled" : failed ? "error" : "applied",
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    } catch (error) {
+      traceCartographerBridge("layer_focus.error", {
+        chunk,
+        error: error instanceof Error ? error.message : String(error),
+        level_id: levelId,
+        tab_id: focusRequest.tabId,
+      });
+
+      if (transaction.controller.signal.aborted) {
+        const snapshot = await appendCartographerChunkRecords(focusRequest.tabId, [
+          createCartographerChunkStoreRecord({
+            chunk,
+            levelId,
+            message: `Cancelled focused ${levelId} chunk ${chunk.key}`,
+            mode: "decompose_down",
+            phase: "cancelled",
+            role: "active",
+          }),
+        ]);
+
+        return createCancelledLayerFocusResult(focusRequest, chunk, levelId, snapshot, transaction.startedAt);
+      }
+
+      await appendCartographerChunkRecords(focusRequest.tabId, [
+        createCartographerChunkStoreRecord({
+          chunk,
+          levelId,
+          message: errorMessage,
+          mode: "decompose_down",
           phase: "error",
           role: "active",
         }),
@@ -818,8 +989,11 @@ function createCancelledViewportExpansionResult(
   chunk: CartographerLevelChunkKey,
   levelId: CartographerRuntimeRequest["level_id"],
   snapshot: CartographerChunkStoreSnapshot,
+  startedAt: string,
 ): CartographerRuntimeViewportExpansionResult {
   return {
+    requestStartedAt: startedAt,
+    requestViewport: request.viewport,
     result: createCancelledChunkRequestResult(request.scene, chunk, levelId, "expand_horizontal", resolveSceneSeed(request.scene)),
     snapshot,
     status: {
@@ -827,6 +1001,29 @@ function createCancelledViewportExpansionResult(
       levelId,
       message: `Cancelled ${levelId} chunk ${chunk.key}`,
       mode: "expand_horizontal",
+      phase: "cancelled",
+      updatedAt: new Date().toISOString(),
+    },
+  };
+}
+
+function createCancelledLayerFocusResult(
+  request: CartographerRuntimeLayerFocusRequest,
+  chunk: CartographerLevelChunkKey,
+  levelId: "L1" | "L2" | "L3",
+  snapshot: CartographerChunkStoreSnapshot,
+  startedAt: string,
+): CartographerRuntimeLayerFocusResult {
+  return {
+    requestStartedAt: startedAt,
+    requestViewport: request.viewport,
+    result: createCancelledChunkRequestResult(request.scene, chunk, levelId, "decompose_down", resolveSceneSeed(request.scene)),
+    snapshot,
+    status: {
+      chunkKey: chunk.key,
+      levelId,
+      message: `Cancelled focused ${levelId} chunk ${chunk.key}`,
+      mode: "decompose_down",
       phase: "cancelled",
       updatedAt: new Date().toISOString(),
     },
@@ -1007,6 +1204,49 @@ function parseCartographerRuntimeViewportExpansionRequest(value: unknown): Carto
   };
 }
 
+function parseCartographerRuntimeLayerFocusRequest(value: unknown): CartographerRuntimeLayerFocusRequest {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("Cartographer layer focus transaction must be an object.");
+  }
+
+  const candidate = value as Partial<CartographerRuntimeLayerFocusRequest>;
+
+  if (!candidate.tabId?.trim()) {
+    throw new Error("Cartographer layer focus transaction requires a tab id.");
+  }
+
+  if (!candidate.scene || typeof candidate.scene !== "object") {
+    throw new Error("Cartographer layer focus transaction requires a scene.");
+  }
+
+  if (!candidate.viewport || typeof candidate.viewport !== "object") {
+    throw new Error("Cartographer layer focus transaction requires a viewport.");
+  }
+
+  return {
+    focus: sanitizeCartographerRuntimeFocus(candidate.focus),
+    forceRefresh: candidate.forceRefresh,
+    scene: candidate.scene as TerrainScene,
+    tabId: candidate.tabId.trim().slice(0, 240),
+    viewport: candidate.viewport as TerrainScene["viewport"],
+  };
+}
+
+function sanitizeCartographerRuntimeFocus(
+  focus: CartographerRuntimeLayerFocusRequest["focus"],
+): CartographerRuntimeLayerFocusRequest["focus"] {
+  if (!focus || typeof focus !== "object" || !focus.title?.trim()) {
+    return undefined;
+  }
+
+  return {
+    excerpt: typeof focus.excerpt === "string" ? truncateContextText(focus.excerpt, 360) : undefined,
+    id: typeof focus.id === "string" ? focus.id.trim().slice(0, 240) : undefined,
+    level_id: typeof focus.level_id === "string" ? focus.level_id.trim().slice(0, 80) : undefined,
+    title: focus.title.trim().slice(0, 160),
+  };
+}
+
 function parseCartographerRuntimeSourceReplacementRequest(value: unknown): CartographerRuntimeSourceReplacementRequest {
   if (typeof value !== "object" || value === null) {
     throw new Error("Cartographer source replacement transaction must be an object.");
@@ -1115,6 +1355,52 @@ function createCartographerSceneContext(
     source_count: scene.sources.length,
     tab_id: scene.active_tab_id,
   };
+}
+
+function resolveCartographerLayerFocus(
+  requestedFocus: CartographerRuntimeRequest["focus"],
+  sceneContext: Record<string, unknown>,
+): { focus?: NonNullable<CartographerRuntimeRequest["focus"]>; source: "request" | "scene_context" | "none" } {
+  if (requestedFocus?.title?.trim()) {
+    return {
+      focus: requestedFocus,
+      source: "request",
+    };
+  }
+
+  const contextFocus = createCartographerFocusFromContextAnchor(sceneContext.focus_anchor);
+
+  if (!contextFocus) {
+    return { source: "none" };
+  }
+
+  return {
+    focus: contextFocus,
+    source: "scene_context",
+  };
+}
+
+function createCartographerFocusFromContextAnchor(anchor: unknown): NonNullable<CartographerRuntimeRequest["focus"]> | undefined {
+  if (!isTraceRecord(anchor)) {
+    return undefined;
+  }
+
+  const title = typeof anchor.title === "string" ? anchor.title.trim() : "";
+
+  if (!title) {
+    return undefined;
+  }
+
+  return {
+    id: typeof anchor.id === "string" ? anchor.id : undefined,
+    title,
+    level_id: typeof anchor.layer === "string" ? anchor.layer : undefined,
+    excerpt: typeof anchor.summary === "string" ? anchor.summary : undefined,
+  };
+}
+
+function isTraceRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function createContinuousScaleAnchorContext(
@@ -1344,7 +1630,7 @@ function resolveBootstrapCartographerMode(levelId: CartographerRuntimeRequest["l
 }
 
 function isCartographerTransactionKind(value: unknown): value is CartographerRuntimeTransactionKind {
-  return value === "bootstrap" || value === "viewport_expansion" || value === "source_replacement";
+  return value === "bootstrap" || value === "viewport_expansion" || value === "layer_focus" || value === "source_replacement";
 }
 
 function parseExpandableLevelId(value: unknown): "L0" | "L1" | "L2" | "L3" {
@@ -1353,6 +1639,14 @@ function parseExpandableLevelId(value: unknown): "L0" | "L1" | "L2" | "L3" {
   }
 
   throw new Error("Cartographer viewport expansion requires an L0-L3 layer.");
+}
+
+function parseDecomposeLevelId(value: unknown): "L1" | "L2" | "L3" {
+  if (value === "L1" || value === "L2" || value === "L3") {
+    return value;
+  }
+
+  throw new Error("Cartographer layer focus requires an L1-L3 layer.");
 }
 
 function resolveSceneSeed(scene: TerrainScene): string {

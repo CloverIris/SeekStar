@@ -1471,6 +1471,7 @@ function SelectedNodePanel({
   const currentLayer = scene.layers.find((layer) => layer.id === scene.viewport.layer);
   const parentLayerId = currentLayer?.parent_layer_id;
   const zoomTarget = node.zoom_target;
+  const continuousZoomLayer = zoomTarget ? undefined : resolveContinuousZoomInLayer(node.layer);
   const sourceRelations = getSourceRelationsForNode(scene, node);
   const scoutObservation = source?.created_from_observation_id
     ? scene.scout_observations?.find((observation) => observation.id === source.created_from_observation_id)
@@ -1524,6 +1525,11 @@ function SelectedNodePanel({
           Zoom in to {zoomTarget.layer}
         </button>
       ) : null}
+      {continuousZoomLayer ? (
+        <button className="inspect-action" onClick={() => onLayerSelect(continuousZoomLayer, node.id)} type="button">
+          Zoom in to {continuousZoomLayer}
+        </button>
+      ) : null}
       {parentLayerId ? (
         <button className="inspect-action" onClick={() => onLayerSelect(parentLayerId)} type="button">
           Zoom out to {parentLayerId}
@@ -1539,6 +1545,26 @@ function SelectedNodePanel({
       </button>
     </section>
   );
+}
+
+function resolveContinuousZoomInLayer(layer: LayerId): LayerId | undefined {
+  if (layer === "supra_macro") {
+    return "L0";
+  }
+
+  if (layer === "L0") {
+    return "L1";
+  }
+
+  if (layer === "L1") {
+    return "L2";
+  }
+
+  if (layer === "L2") {
+    return "L3";
+  }
+
+  return undefined;
 }
 
 function SourceEvidenceCard({

@@ -16,6 +16,8 @@ import type {
   CartographerRuntimeBootstrapResult,
   CartographerRuntimeCancelRequest,
   CartographerRuntimeCancelResult,
+  CartographerRuntimeLayerFocusRequest,
+  CartographerRuntimeLayerFocusResult,
   CartographerRuntimeSourceReplacementRequest,
   CartographerRuntimeSourceReplacementResult,
   CartographerRuntimeViewportExpansionRequest,
@@ -92,6 +94,7 @@ export interface SeekStarCartographerApi {
   clearChunkRecords: (tabId: string) => Promise<CartographerChunkStoreSnapshot>;
   subscribeChunkRecords: (tabId: string, callback: (snapshot: CartographerChunkStoreSnapshot) => void) => () => void;
   runBootstrapTransaction: (input: CartographerRuntimeBootstrapRequest) => Promise<CartographerRuntimeBootstrapResult>;
+  runLayerFocusTransaction: (input: CartographerRuntimeLayerFocusRequest) => Promise<CartographerRuntimeLayerFocusResult>;
   runSourceReplacementTransaction: (
     input: CartographerRuntimeSourceReplacementRequest,
   ) => Promise<CartographerRuntimeSourceReplacementResult>;

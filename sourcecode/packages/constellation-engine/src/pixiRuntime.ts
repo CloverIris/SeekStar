@@ -269,7 +269,7 @@ function createMainContentProjection(
 
   if (viewport.layer === "L3") {
     return {
-      emptyReason: "No source-backed webpage/document tile exists on this layer yet.",
+      emptyReason: "No source-backed webpage/document/PDF/image tile exists on this layer yet.",
       intakeStatus: "idle",
       mode: "empty_source_field",
       candidateTileSurfaces,

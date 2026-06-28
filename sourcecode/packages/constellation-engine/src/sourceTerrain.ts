@@ -78,7 +78,14 @@ export function createSourceTerrainPatch(input: SourceIngestionInput, scene: Ter
   const sourceId = `source-${slug}-${stamp}`;
   const sourceNodeId = `node-${slug}-source-${stamp}`;
   const documentNodeId = `node-${slug}-document-${stamp}`;
-  const anchor = getSourceAnchor(scene);
+  const anchor = getSourceAnchor(scene, input.initialLayer);
+  const documentPosition =
+    input.initialLayer === "L3"
+      ? anchor
+      : {
+          x: anchor.x + 310,
+          y: anchor.y,
+        };
   const tags = input.tags ?? ["manual-ingest"];
   const scoutBacked = tags.includes("scout-observation");
 
@@ -133,7 +140,7 @@ export function createSourceTerrainPatch(input: SourceIngestionInput, scene: Ter
     id: documentNodeId,
     layer: "L3",
     parentId: sourceNodeId,
-    position: { x: anchor.x + 310, y: anchor.y },
+    position: documentPosition,
     source,
     sourceRange: { source_id: source.id, locator: `${source.id}#document`, start: 0, end: sourceText.length, excerpt: sourceText.slice(0, 320) },
     summary: sourceText.slice(0, 360),
@@ -553,9 +560,19 @@ function createContainsRelation(input: { from: string; id: string; scoutBacked: 
   };
 }
 
-function getSourceAnchor(scene: TerrainScene): { x: number; y: number } {
-  const existingSourceNodes = scene.nodes.filter((node) => node.type === "source" || node.source_state === "source_backed");
+function getSourceAnchor(scene: TerrainScene, initialLayer?: LayerId): { x: number; y: number } {
+  const anchorLayer = initialLayer === "L3" ? "L3" : "L2";
+  const existingSourceNodes = scene.nodes.filter(
+    (node) => node.layer === anchorLayer && (node.type === "source" || node.source_state === "source_backed"),
+  );
   const offset = existingSourceNodes.length * 130;
+
+  if (initialLayer === "L3") {
+    return {
+      x: scene.viewport.x,
+      y: scene.viewport.y + offset,
+    };
+  }
 
   return {
     x: scene.viewport.x + 360,

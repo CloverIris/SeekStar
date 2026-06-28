@@ -2029,8 +2029,9 @@ function createDefaultCartographerPromptProfileSettings(): SeekStarSettings["car
           "Do not repeat the seed as every title.",
           "Prefer broad human-knowledge frames over narrow implementation details.",
           "Return cartographer_primary nodes only.",
+          "Return title and node_type only; do not include summary or tags.",
         ],
-        target_count: 12,
+        target_count: 6,
       },
       {
         level_id: "L0",
@@ -2049,10 +2050,11 @@ function createDefaultCartographerPromptProfileSettings(): SeekStarSettings["car
         prompt_brief: "Decompose the focused domain into topic neighborhoods and same-level adjacent branches.",
         prompt_constraints: [
           "Nodes should be topic-level, not article-level.",
-          "Use relations to show semantic neighborhoods.",
+          "Use local adjacency rather than radial hub-and-spoke relations.",
           "Source candidates are optional and must remain unverified.",
+          "Return compact nodes with title only unless a short summary is essential.",
         ],
-        target_count: 18,
+        target_count: 10,
       },
       {
         level_id: "L2",
@@ -2062,8 +2064,9 @@ function createDefaultCartographerPromptProfileSettings(): SeekStarSettings["car
           "Nodes should describe source directions or source families.",
           "Candidate URLs may be proposed, but only as cartographer_unverified_source.",
           "Prefer canonical, durable, or educational sources when proposing URLs.",
+          "Return compact nodes with title only unless a short summary is essential.",
         ],
-        target_count: 12,
+        target_count: 8,
       },
       {
         level_id: "L3",
@@ -2075,9 +2078,9 @@ function createDefaultCartographerPromptProfileSettings(): SeekStarSettings["car
           "Do not return cartographer_primary webpage or document nodes.",
           "Do not call any URL source-backed.",
           "Prefer URLs likely to load in a normal browser.",
-          "If uncertain, provide fewer but more durable candidate URLs.",
+          "Return 2-3 durable candidate URLs at most.",
         ],
-        target_count: 8,
+        target_count: 3,
       },
       {
         level_id: "deep_lens",

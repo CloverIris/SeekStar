@@ -205,6 +205,7 @@ interface CartographerPreloadResult {
 
 export interface CartographerRuntimeSceneApplyOptions {
   focusFirstNode?: boolean;
+  focus?: CartographerLevelRuntimeFocus;
   timestamp?: string;
 }
 
@@ -269,6 +270,7 @@ export class CartographerChunkCoordinator {
     const sceneApply = input.applyToScene === false || output.status !== "ok"
       ? undefined
       : applyLevelRuntimeOutputToScene(input.scene, output, {
+          focus: runtimeInput.focus,
           focusFirstNode: false,
           timestamp: output.generated_at,
         });
@@ -376,11 +378,40 @@ export class CartographerChunkCoordinator {
 }
 
 function isUsableCartographerCacheRecord(record: CartographerChunkCacheRecord | undefined): record is CartographerChunkCacheRecord {
-  return Boolean(record && isCacheableCartographerOutput(record.output));
+  return Boolean(
+    record &&
+      isCacheableCartographerOutput(record.output) &&
+      isCompatibleCartographerCacheOutput(record.output) &&
+      !hasMojibakeCartographerOutput(record.output),
+  );
 }
 
 function isCacheableCartographerOutput(output: CartographerLevelRuntimeOutput): boolean {
   return output.status === "ok" && (output.nodes.length > 0 || output.relations.length > 0 || output.source_candidates.length > 0);
+}
+
+function isCompatibleCartographerCacheOutput(output: CartographerLevelRuntimeOutput): boolean {
+  if (output.level_id !== "L3") {
+    return true;
+  }
+
+  return output.source_candidates.length > 0 && output.nodes.every((node) => node.source_state === "fog" || node.node_type === "fog_region");
+}
+
+function hasMojibakeCartographerOutput(output: CartographerLevelRuntimeOutput): boolean {
+  return (
+    output.nodes.some((node) => looksLikeMojibake(node.title) || looksLikeMojibake(node.summary ?? "")) ||
+    output.source_candidates.some((candidate) => looksLikeMojibake(candidate.title) || looksLikeMojibake(candidate.snippet ?? ""))
+  );
+}
+
+function looksLikeMojibake(value: string): boolean {
+  const text = value.trim();
+
+  return (
+    text.includes("\uFFFD") ||
+    /(?:Ã.|Â.|â[€™€œ€“]|閲忓|鑴戞|绯荤|鏂规|绠楁|璁＄|瓒呭|闅忔|杩愬|姣旂|纭|妯℃|缁艰|鍥㈤|鎺ュ|鏁版|璋锋)/u.test(text)
+  );
 }
 
 const DEFAULT_CARTOGRAPHER_PROMPT_PROFILE_ID = "seekstar-default-p6-gallery-v3";
@@ -434,7 +465,7 @@ export function applyLevelRuntimeOutputToScene(
   const existingCandidateUrls = new Set((scene.scout_observations ?? []).flatMap((observation) => (observation.url ? [normalizeUrlKey(observation.url)] : [])));
   const nodeIdMap = new Map<string, string>();
   const nextNodes = output.nodes.flatMap((node, index) => {
-    const mappedNode = toTerrainNode(node, output, targetLayer, timestamp, index, existingNodeIds);
+    const mappedNode = toTerrainNode(node, output, targetLayer, timestamp, index, existingNodeIds, options.focus);
     nodeIdMap.set(node.id, mappedNode.id);
     existingNodeIds.add(mappedNode.id);
 
@@ -458,7 +489,7 @@ export function applyLevelRuntimeOutputToScene(
       return [];
     }
 
-    const mappedObservation = toScoutObservation(candidate, output, scene.active_tab_id, timestamp, index, existingObservationIds);
+    const mappedObservation = toScoutObservation(candidate, output, scene.active_tab_id, timestamp, index, existingObservationIds, options.focus);
     existingObservationIds.add(mappedObservation.id);
     existingCandidateUrls.add(urlKey);
 
@@ -692,6 +723,7 @@ function toTerrainNode(
   timestamp: string,
   index: number,
   existingNodeIds: Set<string>,
+  focus?: CartographerLevelRuntimeFocus,
 ): TerrainNode {
   const id = uniqueId(node.id || `cartographer-${slugify(output.seed)}-${slugify(output.chunk.key)}-${index + 1}`, existingNodeIds);
   const chunkPolicy = normalizeCartographerChunkPolicy(output.chunk_policy);
@@ -711,6 +743,7 @@ function toTerrainNode(
     created_from: {
       label: `${output.mode} / ${output.level_id} / ${output.chunk.key}`,
       layer,
+      node_id: focus?.id,
       excerpt: node.summary,
     },
     position_hint: {
@@ -755,6 +788,7 @@ function toScoutObservation(
   timestamp: string,
   index: number,
   existingObservationIds: Set<string>,
+  focus?: CartographerLevelRuntimeFocus,
 ): ScoutObservation {
   const id = uniqueId(candidate.id || `cartographer-candidate-${slugify(output.seed)}-${slugify(output.chunk.key)}-${index + 1}`, existingObservationIds);
   const chunkPolicy = normalizeCartographerChunkPolicy(output.chunk_policy);
@@ -776,7 +810,7 @@ function toScoutObservation(
     confidence: candidate.confidence,
     query: output.seed,
     title: candidate.title,
-    target_node_ids: [],
+    target_node_ids: focus?.id ? [focus.id] : [],
     url: candidate.url,
     snippet: candidate.snippet ?? candidate.reason,
     source_type: candidate.source_type,

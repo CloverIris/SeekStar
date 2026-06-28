@@ -157,11 +157,11 @@ button {
   position: relative;
   z-index: 100;
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) 138px;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 14px;
   height: var(--titlebar-height);
-  padding: 0 0 0 12px;
+  padding: 0 10px 0 12px;
   border-bottom: 1px solid var(--border-hairline);
   color: var(--text-muted);
   font-size: 13px;
@@ -288,11 +288,14 @@ button {
   -webkit-app-region: drag;
 }
 
-.window-titlebar-spacer {
-  width: 138px;
+.window-titlebar-side-actions {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 36px;
   height: 100%;
-  app-region: drag;
-  -webkit-app-region: drag;
+  align-items: center;
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
 }
 
 .window-nav,
@@ -410,6 +413,7 @@ button {
 }
 
 .sidebar-rail-right {
+  z-index: 3;
   width: var(--inspector-width);
 }
 
@@ -434,6 +438,25 @@ button {
 .sidebar-rail-right .sidebar-rail-inner {
   width: var(--inspector-width);
   transform: translateX(0);
+}
+
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  z-index: 8;
+  width: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle:focus-visible {
+  background: rgb(110 159 255 / 20%);
 }
 
 .sidebar-rail-left.collapsed .sidebar-rail-inner {
@@ -1203,6 +1226,65 @@ button {
 
 .opening-sky-status-error {
   border-color: rgb(224 97 116 / 38%);
+}
+
+.workspace-load-error {
+  position: absolute;
+  left: 50%;
+  top: 18px;
+  z-index: 5;
+  display: grid;
+  gap: 6px;
+  width: min(560px, calc(100% - 48px));
+  padding: 10px 12px;
+  border: 1px solid rgb(224 97 116 / 42%);
+  border-radius: var(--radius-md);
+  color: rgb(240 204 211 / 88%);
+  text-align: center;
+  background: rgb(32 12 18 / 78%);
+  box-shadow: 0 12px 34px rgb(0 0 0 / 24%);
+  backdrop-filter: blur(14px);
+  transform: translateX(-50%);
+}
+
+.workspace-load-error span,
+.workspace-load-error p,
+.workspace-load-error strong {
+  margin: 0;
+}
+
+.workspace-load-error span {
+  color: rgb(245 170 184 / 88%);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.workspace-load-error strong {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.workspace-load-error p {
+  color: rgb(240 204 211 / 78%);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.workspace-load-error button {
+  justify-self: center;
+  padding: 5px 10px;
+  border: 1px solid rgb(245 170 184 / 42%);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  background: rgb(255 255 255 / 8%);
+}
+
+.workspace-load-error button:hover {
+  background: rgb(255 255 255 / 13%);
 }
 
 .canvas-plane {

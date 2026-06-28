@@ -1,7 +1,7 @@
 # SeekStar Product Requirements Document
 
 Version: 0.2
-Status: P6 MVP reset baseline
+Status: P6 MVP closure baseline
 Product name: SeekStar / 寻星
 Product type: Electron-based AI cartographic telescope
 Primary mode: chunked 2.5D semantic star map
@@ -922,7 +922,7 @@ These references inform implementation boundaries; they do not override SeekStar
 
 ## 9.4 Historical Implementation Notes Are Non-normative
 
-The following P2-P5 notes are retained only as implementation history and protocol context. They must not override the P6 MVP reset baseline above.
+The following P2-P5 notes are retained only as implementation history and protocol context. They must not override the P6 MVP closure baseline above.
 
 Current rules:
 
@@ -940,10 +940,10 @@ Use these files for historical protocol context only:
 
 * `docs/architecture/`
 * `docs/decisions/`
-* `docs/architecture/p5-*.md`
+* `docs/archive/p5-implementation-history/`
 * `docs/architecture/p6-ai-cartographer-and-level-runtime-redesign.md`
 
-The PRD now treats the P6 MVP reset baseline as authoritative. If an older milestone conflicts with this document, delete or rewrite the old path rather than carrying compatibility shims forward.
+The PRD now treats the P6 MVP closure baseline as authoritative. If an older milestone conflicts with this document, delete or rewrite the old path rather than carrying compatibility shims forward.
 
 ## 10. UI Layout
 
@@ -1231,4 +1231,4 @@ P5 implementation history is no longer part of the PRD requirement spine, but a 
 * Browser/document absorption remains a focused-tile behavior, not the default way to browse the map.
 * Workspace, Scout job, and tab-session coordination should remain engine/App Framework concerns, not renderer-local shortcuts.
 
-Anything else from P5 should be reintroduced only if it supports the P6 MVP reset baseline and does not resurrect old fallback UI, mock terrain, or source-first map generation.
+Anything else from P5 should be reintroduced only if it supports the P6 MVP closure baseline and does not resurrect old fallback UI, mock terrain, or source-first map generation.

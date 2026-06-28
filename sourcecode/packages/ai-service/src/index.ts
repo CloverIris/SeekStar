@@ -96,6 +96,7 @@ export interface AiModelResponse {
   model?: string;
   text?: string;
   json?: unknown;
+  finish_reason?: string;
   diagnostics: CartographerDiagnostic[];
   telemetry?: AiModelTelemetry;
   usage?: AiModelUsage;
@@ -243,6 +244,8 @@ const AI_TRACE_PREVIEW_LIMIT = 360;
 
 function resolveCartographerMaxTokens(levelId: string): number {
   switch (levelId) {
+    case "supra_macro":
+      return 1_600;
     case "L0":
       return 1_800;
     case "L1":
@@ -250,7 +253,6 @@ function resolveCartographerMaxTokens(levelId: string): number {
     case "L2":
       return 1_200;
     case "L3":
-    case "supra_macro":
       return 1_000;
     default:
       return 1_000;
@@ -406,9 +408,9 @@ export class OpenAiCompatibleProvider implements AiModelProvider {
       {
         provider: this.config,
         messages,
-        response_format: "json_object",
+        response_format: input.level_id === "L3" ? undefined : "json_object",
         signal: options.signal,
-        temperature: 0.4,
+        temperature: 0.2,
         max_tokens: resolveCartographerMaxTokens(input.level_id),
         timeout_ms: this.config.timeout_ms,
       },
@@ -650,6 +652,16 @@ export function validateCartographerGenerationOutput(
       return [];
     }
 
+    if (looksLikeMojibake(node.title)) {
+      diagnostics.push({
+        severity: "error",
+        code: "cartographer.mojibake_detected",
+        message: "Generated node title appears to be mojibake and was rejected before scene/cache write.",
+        path: `nodes.${index}.title`,
+      });
+      return [];
+    }
+
     return [
       {
         id: typeof node.id === "string" ? node.id : undefined,
@@ -701,6 +713,16 @@ export function validateCartographerGenerationOutput(
       return [];
     }
 
+    if (looksLikeMojibake(candidate.title)) {
+      diagnostics.push({
+        severity: "error",
+        code: "cartographer.mojibake_detected",
+        message: "Generated source candidate title appears to be mojibake and was rejected before scene/cache write.",
+        path: `source_candidates.${index}.title`,
+      });
+      return [];
+    }
+
     return [
       {
         id: typeof candidate.id === "string" ? candidate.id : undefined,
@@ -714,6 +736,10 @@ export function validateCartographerGenerationOutput(
       },
     ];
   });
+
+  if (diagnostics.some((diagnostic) => diagnostic.severity === "error")) {
+    return { valid: false, diagnostics };
+  }
 
   return {
     valid: true,
@@ -977,12 +1003,16 @@ async function requestOpenAiCompatibleModel(request: AiModelRequest, apiKey: str
       const text = extractOpenAiText(payload);
       const parsed = parseJsonObject(text);
       const usage = extractOpenAiUsage(payload);
+      const finishReason = extractOpenAiFinishReason(payload);
+      const likelyTokenLimit = finishReason === "length" || (typeof request.max_tokens === "number" && usage?.output_tokens === request.max_tokens);
 
       traceAiService("model.response.summary", {
         attempt,
+        finish_reason: finishReason,
         provider_id: provider.id,
         text_length: text.length,
         text_preview: isSeekStarVerboseTraceEnabled() ? truncateTraceText(text) : undefined,
+        truncated_by_token_limit: likelyTokenLimit || undefined,
         usage,
       });
 
@@ -1003,11 +1033,14 @@ async function requestOpenAiCompatibleModel(request: AiModelRequest, apiKey: str
           provider_id: provider.id,
           model: provider.model,
           text,
+          finish_reason: finishReason,
           diagnostics: [
             {
               severity: "error",
-              code: "ai.invalid_json",
-              message: parsed.message,
+              code: likelyTokenLimit ? "ai.output_truncated" : "ai.invalid_json",
+              message: likelyTokenLimit
+                ? `AI provider stopped at max_tokens before returning valid JSON: ${parsed.message}`
+                : parsed.message,
               provider_id: provider.id,
             },
           ],
@@ -1030,6 +1063,7 @@ async function requestOpenAiCompatibleModel(request: AiModelRequest, apiKey: str
         model: provider.model,
         text,
         json: parsed.value,
+        finish_reason: finishReason,
         diagnostics: [],
         telemetry: createAiModelTelemetry({
           attempts: attempt,
@@ -1207,24 +1241,135 @@ function normalizeAiModelTelemetry(value: unknown): AiModelTelemetry | undefined
 }
 
 export function buildCartographerMessages(input: CartographerGenerationInput): AiModelMessage[] {
+  const targetNodeCount = getCartographerTargetNodeCount(input);
+  const outputContract = createCartographerOutputContract(input, targetNodeCount);
+  const promptSeed = createPromptSeed(input.seed);
+
+  if (input.level_id === "L3") {
+    return buildL3SourceCandidateMessages(input, targetNodeCount, outputContract);
+  }
+
   return [
     {
       role: "system",
       content:
-        "You are SeekStar AI Cartographer. Return only strict JSON with keys: mode, level_id, seed, nodes, relations, source_candidates. " +
+        "You are SeekStar AI Cartographer. Return one valid compact JSON object only; no markdown, no prose, no trailing comments. " +
+        "Use exactly these top-level keys: mode, level_id, seed, nodes, relations, source_candidates. " +
+        "Visible titles must be readable Simplified Chinese UTF-8; never output mojibake or garbled text. " +
+        "Keep relations as an empty array because SeekStar creates local layout relations. " +
+        "For nodes use only title and node_type unless output_contract explicitly asks for more; never use label, description, candidate_url, url_status, or nested objects. " +
         "AI terrain is cartographer_primary. URL candidates are unverified and must not be called source-backed. " +
-        "When context.level_module is present, follow its role, prompt_brief, prompt_constraints, target count, and source candidate policy.",
+        "For L3 put every URL in source_candidates and keep nodes empty. " +
+        "Stop after the requested count; shorter valid JSON is better than long JSON.",
     },
     {
       role: "user",
       content: JSON.stringify({
         task: input.mode,
         level_id: input.level_id,
-        seed: input.seed,
+        seed: promptSeed,
         chunk: input.chunk,
         focus: input.focus,
+        output_contract: outputContract,
         settings: input.settings,
         context: input.context,
+      }),
+    },
+  ];
+}
+
+function getCartographerTargetNodeCount(input: CartographerGenerationInput): number {
+  const value = isRecord(input.settings) ? input.settings.target_node_count : undefined;
+
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return input.level_id === "L3" ? 3 : 8;
+  }
+
+  const max = input.level_id === "L3" ? 3 : 24;
+
+  return Math.max(0, Math.min(max, Math.round(value)));
+}
+
+function createCartographerOutputContract(input: CartographerGenerationInput, targetNodeCount: number): Record<string, unknown> {
+  if (input.level_id === "L3") {
+    return {
+      max_source_candidates: targetNodeCount,
+      nodes: [],
+      relations: [],
+      source_candidate_shape: {
+        title: "short source title",
+        url: "https://...",
+        source_type: "webpage|pdf|image|document",
+        reason: "short reason",
+      },
+      rule: "Return nodes:[] and relations:[]. Valid URLs only in source_candidates.",
+    };
+  }
+
+  return {
+    max_nodes: targetNodeCount,
+    nodes_shape: {
+      title: "short visible title",
+      node_type: isRecord(input.settings) && typeof input.settings.default_node_type === "string" ? input.settings.default_node_type : "topic",
+    },
+    title_rule: "2-10 readable Simplified Chinese characters when possible; no mojibake.",
+    forbidden_node_fields: ["id", "label", "description", "summary", "tags", "candidate_url", "url_status", "children"],
+    relations: [],
+    source_candidates: [],
+    rule: "Return compact nodes with title and node_type only; relations:[]. Do not include URLs in nodes.",
+  };
+}
+
+function createPromptSeed(seed: string): string {
+  const withoutOpenedAt = seed.replace(/;\s*opened_at=.*$/i, "").trim();
+  const normalized = withoutOpenedAt || seed.trim();
+
+  return normalized.length > 96 ? `${normalized.slice(0, 96)}...` : normalized;
+}
+
+function buildL3SourceCandidateMessages(
+  input: CartographerGenerationInput,
+  targetNodeCount: number,
+  outputContract: Record<string, unknown>,
+): AiModelMessage[] {
+  const focusTitle = createPromptSeed(input.focus?.title ?? input.seed);
+
+  return [
+    {
+      role: "system",
+      content:
+        "Return only one compact JSON object. No markdown. " +
+        "Top-level keys: mode, level_id, seed, nodes, relations, source_candidates. " +
+        "For L3, nodes must be [] and relations must be []. " +
+        "Create 2-3 real public URL candidates that can load in a browser. " +
+        "Use readable Simplified Chinese titles. Do not call candidates source-backed.",
+    },
+    {
+      role: "user",
+      content: JSON.stringify({
+        task: input.mode,
+        level_id: "L3",
+        seed: createPromptSeed(input.seed),
+        focus_title: focusTitle,
+        output_contract: {
+          ...outputContract,
+          max_source_candidates: targetNodeCount,
+        },
+        required_shape: {
+          mode: input.mode,
+          level_id: "L3",
+          seed: createPromptSeed(input.seed),
+          nodes: [],
+          relations: [],
+          source_candidates: [
+            {
+              title: "short readable title",
+              url: "https://...",
+              source_type: "webpage",
+              reason: "short reason",
+            },
+          ],
+        },
       }),
     },
   ];
@@ -1280,12 +1425,44 @@ function extractOpenAiUsage(payload: unknown): AiModelUsage | undefined {
   };
 }
 
+function extractOpenAiFinishReason(payload: unknown): string | undefined {
+  if (!isRecord(payload) || !Array.isArray(payload.choices)) {
+    return undefined;
+  }
+
+  const firstChoice = payload.choices[0];
+
+  return isRecord(firstChoice) && typeof firstChoice.finish_reason === "string" ? firstChoice.finish_reason : undefined;
+}
+
 function parseJsonObject(text: string): { ok: true; value: unknown } | { ok: false; message: string } {
   try {
     return { ok: true, value: JSON.parse(text) };
   } catch (error) {
+    const extracted = extractJsonObjectText(text);
+
+    if (extracted && extracted !== text) {
+      try {
+        return { ok: true, value: JSON.parse(extracted) };
+      } catch {
+        // Fall through to the original parse error so diagnostics point at the provider output.
+      }
+    }
+
     return { ok: false, message: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function extractJsonObjectText(text: string): string | undefined {
+  const trimmed = text.trim();
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+
+  if (firstBrace < 0 || lastBrace <= firstBrace) {
+    return undefined;
+  }
+
+  return trimmed.slice(firstBrace, lastBrace + 1);
 }
 
 function isCartographerGenerationMode(value: unknown): value is CartographerGenerationMode {
@@ -1397,6 +1574,15 @@ function isProbablyUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function looksLikeMojibake(value: string): boolean {
+  const text = value.trim();
+
+  return (
+    text.includes("\uFFFD") ||
+    /(?:Ã.|Â.|â[€™€œ€“]|閲忓|鑴戞|绯荤|鏂规|绠楁|璁＄|瓒呭|闅忔|杩愬|姣旂|纭|妯℃|缁艰|鍥㈤|鎺ュ|鏁版|璋锋)/u.test(text)
+  );
 }
 
 function toUnitNumber(value: unknown, fallback: number): number {

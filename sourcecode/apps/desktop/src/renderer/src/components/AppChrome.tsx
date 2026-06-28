@@ -1,5 +1,5 @@
 import type { ExplorationTab, TabRecord } from "@seekstar/core-schema";
-import type { ReactElement, RefObject } from "react";
+import type { CSSProperties, PointerEvent, ReactElement, RefObject } from "react";
 import { useState } from "react";
 import { ArrowLeft, ArrowRight, PanelLeftOpen, X } from "lucide-react";
 import { goBack, goForward } from "../platform/windowApi";
@@ -39,17 +39,30 @@ export function SidebarRail({
   children,
   collapsed,
   label,
+  onResizePointerDown,
   side,
+  style,
 }: {
   children: ReactElement;
   collapsed: boolean;
   label: string;
+  onResizePointerDown?: (event: PointerEvent<HTMLElement>) => void;
   side: "left" | "right";
+  style?: CSSProperties;
 }): ReactElement {
   const railClass = collapsed ? `sidebar-rail sidebar-rail-${side} collapsed` : `sidebar-rail sidebar-rail-${side}`;
 
   return (
-    <aside aria-label={label} className={railClass}>
+    <aside aria-label={label} className={railClass} style={style}>
+      {side === "right" && onResizePointerDown ? (
+        <button
+          aria-label="Resize AI Map Control"
+          className="sidebar-resize-handle"
+          onPointerDown={onResizePointerDown}
+          title="Resize AI Map Control"
+          type="button"
+        />
+      ) : null}
       <div className="sidebar-rail-inner">{children}</div>
     </aside>
   );
@@ -95,9 +108,13 @@ export function DetachedTabTitleBar({
 export function WindowTitleBar({
   leftSidebarExpanded,
   onToggleLeftSidebar,
+  onToggleRightSidebar,
+  rightSidebarExpanded,
 }: {
   leftSidebarExpanded: boolean;
   onToggleLeftSidebar: () => void;
+  onToggleRightSidebar?: () => void;
+  rightSidebarExpanded?: boolean;
 }): ReactElement {
   const [openMenuId, setOpenMenuId] = useState<AppMenuId | null>(null);
 
@@ -127,7 +144,16 @@ export function WindowTitleBar({
         <span className="window-titlebar-brand-lens">AI Explorer lens</span>
       </p>
       <div aria-hidden="true" className="window-drag-region" />
-      <div className="window-titlebar-spacer" />
+      <div className="window-titlebar-side-actions">
+        {onToggleRightSidebar ? (
+          <SidebarToggleButton
+            expanded={rightSidebarExpanded ?? true}
+            label="AI Map Control"
+            onClick={onToggleRightSidebar}
+            side="right"
+          />
+        ) : null}
+      </div>
     </header>
   );
 }

@@ -1,6 +1,6 @@
 # P6 AI Cartographer and Level Runtime Redesign
 
-Status: P6 implementation baseline active through P6.61
+Status: P6 implementation baseline active through P6.63 closure
 
 P6 changes the center of gravity of SeekStar.
 
@@ -448,9 +448,9 @@ P6.60 treats old L0/L1 radial and chunk-island scenes as incompatible MVP artifa
 
 This is intentionally destructive. During MVP, user-facing coherence of the telescope canvas has higher priority than compatibility with mock-stage cached terrain.
 
-## P6.61 MVP Doctrine Documentation Reset
+## MVP Doctrine Documentation Reset
 
-P6.61 makes the product doctrine explicit across PRD and AGENTS guidance:
+This pass makes the product doctrine explicit across PRD and AGENTS guidance:
 
 - MVP cleanup is destructive. Old logic, old caches, fake buttons, old debug panels, old fallback paths, and mock-stage render artifacts should be deleted when touched rather than hidden or kept compatible.
 - AI Cartographer is the default L0-L3 and recursive-seed terrain producer. `cartographer_primary` is normal map material after schema validation.
@@ -490,6 +490,19 @@ The next runtime direction is:
 - the full prompt profile and all-level module definitions must stay out of ordinary generation payloads.
 
 For L3, candidate and tile are separate product objects. AI source candidates become `ScoutObservation(status="source_candidate")` queue/status records. They may appear in overlays, Source review, recovery, and AI Map Control, but not as main-canvas tile surfaces. Only DataService/Playwright-successful observations can create source-backed webpage/document/PDF/image tiles that participate in thumbnail prewarm, live `WebContentsView`, absorption, browser mode, and Deep Lens.
+
+## P6 Closure Record
+
+P6 closes at P6.63. The MVP spine is no longer waiting on more feature expansion before the next phase:
+
+- Workspace `EPERM`/load failures protect prior snapshots instead of saving empty replacement state.
+- Continuous telescope results are version/layer checked so old L1/L2/L3 Cartographer transactions cannot overwrite the current viewport.
+- L3 now treats AI URL output as source-candidate queue material only; DataService-backed observations are the only source-backed tile surfaces.
+- L0/L1 retain limited macro smoothness support, while L2/L3 default to on-demand generation without automatic preload rings.
+- Mojibake AI titles and stale mojibake chunk cache records are rejected before they become scene/cache anchors.
+- Closure verification passed with `npm.cmd run typecheck`, `npm.cmd run build`, and `npm.cmd run smoke:modules`.
+
+Post-P6 work should move to extractor providers, OS-backed key storage, SQLite/FTS/vector persistence, local-file Ground Mode, and stronger Deep Lens/file snapshot materialization.
 
 ## Right Sidebar Redesign
 

@@ -357,7 +357,7 @@ export function resolveCartographerLevelRuntimeSettings(settings: SeekStarSettin
       {
         prompt_brief: module.prompt_brief,
         prompt_constraints: module.prompt_constraints,
-        target_count: module.target_count,
+        target_count: clampCartographerRuntimeTargetCount(module.level_id, module.target_count),
       },
     ]),
   ) as LevelRuntimePromptProfileOverride["modules"];
@@ -381,8 +381,22 @@ export function resolveCartographerLevelRuntimeSettings(settings: SeekStarSettin
       language: profile.language,
       modules,
     },
-    target_counts: Object.fromEntries(profile.modules.map((module) => [module.level_id, module.target_count])) as LevelRuntimeSettings["target_counts"],
+    target_counts: Object.fromEntries(
+      profile.modules.map((module) => [module.level_id, clampCartographerRuntimeTargetCount(module.level_id, module.target_count)]),
+    ) as LevelRuntimeSettings["target_counts"],
   };
+}
+
+function clampCartographerRuntimeTargetCount(levelId: LevelBandId, value: number): number {
+  const mvpMaxByLevel: Partial<Record<LevelBandId, number>> = {
+    supra_macro: 6,
+    L1: 10,
+    L2: 8,
+    L3: 3,
+  };
+  const max = mvpMaxByLevel[levelId] ?? 80;
+
+  return clampNumber(value, 1, max, max);
 }
 
 function createCartographerChunkPolicyRevision(settings: CartographerChunkSchedulingSettings): string {

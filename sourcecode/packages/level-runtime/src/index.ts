@@ -205,9 +205,9 @@ export const DEFAULT_LEVEL_RUNTIME_SETTINGS: LevelRuntimeSettings & {
   target_counts: {
     supra_macro: 12,
     L0: 24,
-    L1: 18,
-    L2: 12,
-    L3: 8,
+    L1: 10,
+    L2: 8,
+    L3: 5,
     deep_lens: 16,
     recursive_seed: 8,
   },
@@ -414,6 +414,41 @@ export async function runLevelRuntime(input: LevelRuntimeInput, options: LevelRu
   });
 
   if (generation.status !== "ok") {
+    const recoveredL3Candidates = shouldRecoverL3SourceCandidates(generation.status, generation.diagnostics)
+      ? createFallbackL3SourceCandidates(normalized, moduleDefinition, generation.provider_id)
+      : [];
+    if (recoveredL3Candidates.length > 0) {
+      const recoveredOutput: LevelRuntimeOutput = {
+        status: "ok",
+        mode: normalized.mode,
+        model: generation.model,
+        level_id: normalized.level_id,
+        provider_id: generation.provider_id,
+        seed: normalized.seed,
+        chunk: normalized.chunk,
+        chunk_policy: normalized.settings?.chunk_policy,
+        nodes: [],
+        relations: [],
+        source_candidates: recoveredL3Candidates,
+        chunk_hints: createChunkHints(normalized.chunk, normalized.settings, normalized.level_id),
+        diagnostics: [
+          ...generation.diagnostics,
+          {
+            severity: "warning",
+            code: "level_runtime.l3_candidate_recovery",
+            message: "L3 provider output did not produce valid source candidates; Level Runtime recovered a small unverified URL queue for DataService validation.",
+          },
+        ],
+        telemetry: generation.telemetry,
+        generated_at: generation.generated_at,
+      };
+
+      traceLevelRuntime("run.l3_candidate_recovery", {
+        output: summarizeLevelRuntimeOutput(recoveredOutput),
+      });
+      return recoveredOutput;
+    }
+
     const failedOutput: LevelRuntimeOutput = {
       status: generation.status,
       mode: normalized.mode,
@@ -443,6 +478,39 @@ export async function runLevelRuntime(input: LevelRuntimeInput, options: LevelRu
       : dedupeSourceCandidates(generation.source_candidates).map((candidate, index) => toLevelSourceCandidateDraft(candidate, normalized, index));
 
   if (normalized.level_id === "L3" && rawSourceCandidates.length === 0) {
+    const recoveredL3Candidates = createFallbackL3SourceCandidates(normalized, moduleDefinition, generation.provider_id);
+    if (recoveredL3Candidates.length > 0) {
+      const recoveredOutput: LevelRuntimeOutput = {
+        status: "ok",
+        mode: normalized.mode,
+        model: generation.model,
+        level_id: normalized.level_id,
+        provider_id: generation.provider_id,
+        seed: normalized.seed,
+        chunk: normalized.chunk,
+        chunk_policy: normalized.settings?.chunk_policy,
+        nodes: [],
+        relations: [],
+        source_candidates: recoveredL3Candidates,
+        chunk_hints: createChunkHints(normalized.chunk, normalized.settings, normalized.level_id),
+        diagnostics: [
+          ...generation.diagnostics,
+          {
+            severity: "warning",
+            code: "level_runtime.l3_empty_candidate_recovery",
+            message: "L3 Cartographer returned no valid source candidates; Level Runtime recovered a small unverified URL queue for DataService validation.",
+          },
+        ],
+        telemetry: generation.telemetry,
+        generated_at: generation.generated_at,
+      };
+
+      traceLevelRuntime("run.l3_empty_candidate_recovery", {
+        output: summarizeLevelRuntimeOutput(recoveredOutput),
+      });
+      return recoveredOutput;
+    }
+
     const invalidOutput: LevelRuntimeOutput = {
       status: "invalid_output",
       mode: normalized.mode,
@@ -633,12 +701,8 @@ function toCartographerInput(input: LevelRuntimeInput, moduleDefinition: LevelMo
       layout_family: moduleDefinition.layout_family,
       default_node_type: moduleDefinition.default_node_type,
       chunk_policy_digest: createChunkPolicyCacheKey(input.settings),
-      level_module: levelModule,
     },
-    context: {
-      ...input.context,
-      level_module: levelModule,
-    },
+    context: createCartographerContextPayload(input, levelModule),
   };
 }
 
@@ -656,6 +720,53 @@ function createCompactLevelModule(moduleDefinition: LevelModuleDefinition, targe
   };
 }
 
+function createCartographerContextPayload(input: LevelRuntimeInput, levelModule: Record<string, unknown>): Record<string, unknown> {
+  if (input.level_id !== "L3") {
+    return {
+      ...input.context,
+      level_module: levelModule,
+    };
+  }
+
+  return {
+    focus_anchor: compactContextRecord(input.context?.focus_anchor),
+    level_module: levelModule,
+    movement_vector: compactContextRecord(input.context?.movement_vector),
+    neighbor_anchors: compactContextRecords(input.context?.neighbor_anchors, 3),
+    parent_viewport: compactContextRecord(input.context?.parent_viewport),
+    scale_model: input.context?.scale_model,
+  };
+}
+
+function compactContextRecords(value: unknown, maxCount: number): unknown[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value.slice(0, maxCount).map((item) => compactContextRecord(item)).filter((item): item is Record<string, unknown> => Boolean(item));
+}
+
+function compactContextRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const compact: Record<string, unknown> = {};
+
+  for (const key of ["id", "level_id", "layer", "title", "type", "source_state", "x", "y", "zoom", "dx", "dy"]) {
+    const item = record[key];
+
+    if (typeof item === "string") {
+      compact[key] = item.length > 80 ? `${item.slice(0, 80)}...` : item;
+    } else if (typeof item === "number" || typeof item === "boolean") {
+      compact[key] = item;
+    }
+  }
+
+  return Object.keys(compact).length > 0 ? compact : undefined;
+}
+
 function shouldKeepGeneratedNode(node: CartographerGeneratedNode, levelId: LevelBandId): boolean {
   if (levelId !== "L3") {
     return true;
@@ -670,10 +781,11 @@ function toLevelNodeDraft(
   moduleDefinition: LevelModuleDefinition,
   index: number,
 ): LevelNodeDraft {
-  const position = createLevelPosition(index, getTargetCount(input.level_id, input.settings), moduleDefinition);
+  const basePosition = createLevelPosition(index, getTargetCount(input.level_id, input.settings), moduleDefinition);
+  const position = createAnchoredLevelPosition(basePosition, input);
 
   return {
-    id: node.id?.trim() || `level-${slugify(input.level_id)}-${slugify(input.seed)}-${slugify(input.chunk.key)}-${index + 1}`,
+    id: createScopedDraftId("level", input, node.id?.trim() || node.title, index),
     title: node.title,
     level_id: input.level_id,
     node_type: node.node_type ?? moduleDefinition.default_node_type,
@@ -699,7 +811,7 @@ function toLevelRelationDraft(
 
   return [
     {
-      id: relation.id?.trim() || `level-rel-${slugify(input.chunk.key)}-${index + 1}`,
+      id: createScopedDraftId("level-rel", input, relation.id?.trim() || `${relation.from}-${relation.to}`, index),
       from: relation.from,
       to: relation.to,
       type: relation.type ?? "semantic_similarity",
@@ -715,7 +827,7 @@ function toLevelSourceCandidateDraft(
   index: number,
 ): LevelSourceCandidateDraft {
   return {
-    id: candidate.id?.trim() || `level-candidate-${slugify(input.seed)}-${slugify(input.chunk.key)}-${index + 1}`,
+    id: createScopedDraftId("level-candidate", input, candidate.id?.trim() || candidate.url, index),
     title: candidate.title,
     url: candidate.url,
     source_state: "cartographer_unverified_source",
@@ -741,7 +853,7 @@ function createLocalAdjacencyRelations(nodes: LevelNodeDraft[], input: LevelRunt
 
     return [
       {
-        id: `level-local-rel-${slugify(input.chunk.key)}-${index}`,
+        id: createScopedDraftId("level-local-rel", input, `${previous.id}-${node.id}`, index),
         from: previous.id,
         to: node.id,
         type: "semantic_similarity",
@@ -750,6 +862,167 @@ function createLocalAdjacencyRelations(nodes: LevelNodeDraft[], input: LevelRunt
       },
     ];
   });
+}
+
+function createFallbackL3SourceCandidates(
+  input: LevelRuntimeInput,
+  moduleDefinition: LevelModuleDefinition,
+  providerId?: string,
+): LevelSourceCandidateDraft[] {
+  if (input.level_id !== "L3") {
+    return [];
+  }
+
+  const query = createFallbackCandidateQuery(input);
+  if (!query) {
+    return [];
+  }
+
+  const encodedQuery = encodeURIComponent(query);
+  const encodedWikiTitle = encodeURIComponent(query.replace(/\s+/g, "_"));
+  const rawCandidates: Array<Omit<LevelSourceCandidateDraft, "id" | "provider_id" | "source_state" | "confidence">> = [
+    {
+      title: `Wikipedia article: ${query}`,
+      url: `https://zh.wikipedia.org/wiki/${encodedWikiTitle}`,
+      source_type: "article",
+      snippet: `Open the most likely Wikipedia article for ${query}.`,
+      reason: "Recovered one durable source candidate tied to the current focus after L3 provider output was unusable.",
+    },
+    {
+      title: `arXiv search: ${query}`,
+      url: `https://arxiv.org/search/?query=${encodedQuery}&searchtype=all&source=header`,
+      source_type: "article",
+      snippet: `Search arXiv for papers related to ${query}.`,
+      reason: "Recovered academic source candidate after L3 provider output was unusable.",
+    },
+  ];
+
+  return rawCandidates
+    .slice(0, Math.min(Math.max(1, getTargetCount(input.level_id, input.settings)), Math.max(1, moduleDefinition.default_target_count), 1))
+    .map((candidate, index) => ({
+      ...candidate,
+      id: createScopedDraftId("level-candidate-recovered", input, candidate.url, index),
+      provider_id: providerId ?? "level-runtime-recovery",
+      source_state: "cartographer_unverified_source",
+      confidence: 0.42,
+    }));
+}
+
+function shouldRecoverL3SourceCandidates(status: LevelRuntimeStatus, diagnostics: CartographerDiagnostic[]): boolean {
+  if (status === "missing_key" || status === "cancelled") {
+    return false;
+  }
+
+  return diagnostics.some((diagnostic) =>
+    diagnostic.code === "ai.invalid_json" ||
+    diagnostic.code === "ai.output_truncated" ||
+    diagnostic.code === "cartographer.invalid_json_shape" ||
+    diagnostic.code === "cartographer.mojibake_detected" ||
+    diagnostic.code === "cartographer.source_candidates_not_array",
+  );
+}
+
+function createFallbackCandidateQuery(input: LevelRuntimeInput): string {
+  const title =
+    input.focus?.title ??
+    getContextString(input.context?.focus_anchor, "title") ??
+    getContextString(input.context?.requested_focus, "title") ??
+    input.seed;
+  const normalized = title
+    .replace(/\s+/g, " ")
+    .replace(/[<>[\]{}|\\^`]/g, " ")
+    .trim();
+
+  return normalized.length > 96 ? normalized.slice(0, 96).trim() : normalized;
+}
+
+function createScopedDraftId(prefix: string, input: LevelRuntimeInput, itemKey: string, index: number): string {
+  const scopeKey = createFocusScopeKey(input);
+  const item = slugify(itemKey) || `item-${index + 1}`;
+
+  return [prefix, slugify(input.level_id), slugify(input.seed), slugify(input.chunk.key), scopeKey, item, String(index + 1)]
+    .filter(Boolean)
+    .join("-");
+}
+
+function createFocusScopeKey(input: LevelRuntimeInput): string {
+  const focusKey =
+    input.focus?.id ??
+    input.focus?.title ??
+    getContextString(input.context?.focus_anchor, "id") ??
+    getContextString(input.context?.focus_anchor, "title") ??
+    getContextString(input.context?.requested_focus, "id") ??
+    getContextString(input.context?.requested_focus, "title");
+
+  if (focusKey) {
+    return slugify(focusKey);
+  }
+
+  if (input.mode === "decompose_down") {
+    return createViewportScopeKey(input.context?.viewport ?? input.context?.parent_viewport) ?? "viewport";
+  }
+
+  return "root";
+}
+
+function createAnchoredLevelPosition(
+  position: { x: number; y: number; z?: number },
+  input: LevelRuntimeInput,
+): { x: number; y: number; z?: number } {
+  if (input.mode !== "decompose_down" || input.level_id === "supra_macro" || input.level_id === "L0") {
+    return position;
+  }
+
+  const anchor = getContextPosition(input.context?.focus_anchor) ?? getContextPosition(input.context?.parent_viewport);
+  if (!anchor) {
+    return position;
+  }
+
+  const scale = input.level_id === "L1" ? 0.78 : input.level_id === "L2" ? 0.68 : 0.58;
+
+  return {
+    x: Math.round(anchor.x + position.x * scale),
+    y: Math.round(anchor.y + position.y * scale),
+    z: position.z,
+  };
+}
+
+function getContextString(value: unknown, key: string): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const item = (value as Record<string, unknown>)[key];
+
+  return typeof item === "string" && item.trim() ? item.trim() : undefined;
+}
+
+function getContextPosition(value: unknown): { x: number; y: number } | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const x = record.x;
+  const y = record.y;
+
+  if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) {
+    return undefined;
+  }
+
+  return { x, y };
+}
+
+function createViewportScopeKey(value: unknown): string | undefined {
+  const position = getContextPosition(value);
+  if (!position) {
+    return undefined;
+  }
+
+  const zoom = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>).zoom : undefined;
+  const zoomKey = typeof zoom === "number" && Number.isFinite(zoom) ? Math.round(zoom * 100) : 100;
+
+  return slugify(`viewport-${Math.round(position.x)}-${Math.round(position.y)}-${zoomKey}`);
 }
 
 function dedupeNodes(nodes: CartographerGeneratedNode[]): CartographerGeneratedNode[] {

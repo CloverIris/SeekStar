@@ -12,6 +12,7 @@ import {
   applyLevelRuntimeOutputToScene,
   applyLayerSelect,
   CartographerChunkCoordinator,
+  createCartographerChunkCacheKey,
   createDirectUrlScoutPlan,
   createSeedScene,
   createTerrainPixiProjection,
@@ -438,10 +439,15 @@ async function runAiLevelRuntimeSmoke() {
   assert(l3Module.source_candidate_policy === "prefer_unverified", `L3 source candidate policy mismatch: ${l3Module.source_candidate_policy}`);
   assert(Array.isArray(cliProfiles) && cliProfiles.some((profile) => profile.id === defaultProfileId), "Level Runtime CLI profiles missing default");
   assert(cliL3Module.level_id === "L3" && cliL3Module.layout_family === "tile_field", "Level Runtime CLI L3 module mismatch");
+  const aiPromptUserMessage = aiPromptPreview.messages?.find((message) => message.role === "user");
+  const aiPromptPayload = JSON.parse(aiPromptUserMessage?.content ?? "{}");
+  assert(aiPromptPayload.output_contract, "AI Service CLI prompt preview missing compact output contract");
   assert(
-    aiPromptPreview.messages?.some((message) => message.content.includes("context.level_module")),
-    "AI Service CLI prompt preview missing level module instruction",
+    Array.isArray(aiPromptPayload.output_contract.nodes) && aiPromptPayload.output_contract.nodes.length === 0,
+    "AI Service CLI L3 prompt contract must keep AI nodes out of the tile canvas",
   );
+  assert(!aiPromptPayload.settings?.prompt_profile, "AI Service CLI prompt preview must not include full prompt profile");
+  assert(!aiPromptPayload.settings?.modules, "AI Service CLI prompt preview must not include full prompt modules");
   assert(
     assistantPromptPreview.messages?.some((message) => message.content.includes("AI Map Assistant")),
     "AI Service CLI assistant prompt preview missing assistant instruction",
@@ -535,9 +541,9 @@ async function runAiLevelRuntimeSmoke() {
       generate: async (generationInput) => createInvalidL3NodeOnlyOutput(generationInput),
     },
   );
-  assert(invalidL3RuntimeOutput.status === "invalid_output", `Level Runtime invalid L3 status: ${invalidL3RuntimeOutput.status}`);
+  assert(invalidL3RuntimeOutput.status === "ok", `Level Runtime invalid L3 recovery status: ${invalidL3RuntimeOutput.status}`);
   assert(invalidL3RuntimeOutput.nodes.length === 0, "Level Runtime invalid L3 output must not retain webpage nodes");
-  assert(invalidL3RuntimeOutput.source_candidates.length === 0, "Level Runtime invalid L3 output must not invent source candidates");
+  assert(invalidL3RuntimeOutput.source_candidates.length > 0, "Level Runtime invalid L3 output should recover unverified source candidates");
   assert(invalidL3RuntimeOutput.chunk_hints.preload.length === 0, "Level Runtime invalid L3 output must not preload");
 
   const replacementRuntimeOutput = await levelRuntimeModule.runLevelRuntime(
@@ -576,6 +582,41 @@ async function runAiLevelRuntimeSmoke() {
     replacementRuntimeOutput.source_candidates.every((candidate) => candidate.source_state === "cartographer_unverified_source"),
     "Level Runtime replacement produced non-unverified source candidates",
   );
+
+  const focusAOutput = await levelRuntimeModule.runLevelRuntime(
+    {
+      mode: "decompose_down",
+      level_id: "L2",
+      seed: "CPU",
+      chunk: baseChunk,
+      focus: { id: "focus-a", title: "Focus A", level_id: "L1" },
+      context: {
+        focus_anchor: { id: "focus-a", title: "Focus A", layer: "L1", x: -500, y: 0 },
+        scale_model: "continuous",
+      },
+    },
+    { generate: fixtureGenerator },
+  );
+  const focusBOutput = await levelRuntimeModule.runLevelRuntime(
+    {
+      mode: "decompose_down",
+      level_id: "L2",
+      seed: "CPU",
+      chunk: baseChunk,
+      focus: { id: "focus-b", title: "Focus B", level_id: "L1" },
+      context: {
+        focus_anchor: { id: "focus-b", title: "Focus B", layer: "L1", x: 500, y: 0 },
+        scale_model: "continuous",
+      },
+    },
+    { generate: fixtureGenerator },
+  );
+  const focusAIds = new Set(focusAOutput.nodes.map((node) => node.id));
+  const focusBX = averageNodeX(focusBOutput.nodes);
+  const focusAX = averageNodeX(focusAOutput.nodes);
+  assert(focusAOutput.nodes.length > 0 && focusBOutput.nodes.length > 0, "Focused continuous L2 smoke returned no nodes");
+  assert(focusBOutput.nodes.every((node) => !focusAIds.has(node.id)), "Focused continuous L2 node ids collided across parent anchors");
+  assert(focusBX - focusAX > 600, `Focused continuous L2 anchors did not separate terrain: ${focusAX} -> ${focusBX}`);
 
   let promptOverrideGenerationInput;
   const promptOverrideOutput = await levelRuntimeModule.runLevelRuntime(
@@ -622,7 +663,7 @@ async function runAiLevelRuntimeSmoke() {
   assert(promptOverrideGenerationInput?.settings?.language === "en", "Level Runtime prompt override language did not reach AI input");
   assert(!promptOverrideGenerationInput?.settings?.prompt_profile, "Level Runtime AI payload must not include full prompt_profile");
   assert(!promptOverrideGenerationInput?.settings?.modules, "Level Runtime AI payload must not include full prompt modules");
-  assert(promptOverrideGenerationInput?.settings?.level_module?.target_count === 3, "Level Runtime compact level module target did not reach AI input");
+  assert(promptOverrideGenerationInput?.context?.level_module?.target_count === 3, "Level Runtime compact level module target did not reach AI input");
 
   const host = new levelRuntimeModule.ChunkedLevelRuntimeHost({
     generate: fixtureGenerator,
@@ -859,6 +900,40 @@ async function runAiLevelRuntimeSmoke() {
   const invalidCoordinatorStoredChunks = await invalidCoordinatorStorage.listChunks();
   await invalidCoordinatorStorage.clearChunks();
   await rm(invalidCoordinatorStoragePath, { force: true });
+  const staleL3CachePath = resolve(`.module-smoke-cartographer-stale-l3-${Date.now()}.json`);
+  const staleL3Storage = new storageModule.JsonLevelChunkStorage(staleL3CachePath);
+  const staleL3Input = {
+    mode: "decompose_down",
+    level_id: "L3",
+    seed: "GPU stale cache",
+    chunk: baseChunk,
+  };
+  const staleL3CacheKey = createCartographerChunkCacheKey(staleL3Input);
+  await staleL3Storage.saveChunk(storageModule.createLevelChunkCacheRecord({
+    cacheKey: staleL3CacheKey,
+    input: {
+      mode: staleL3Input.mode,
+      level_id: staleL3Input.level_id,
+      seed: staleL3Input.seed,
+      chunk_key: staleL3Input.chunk.key,
+      focus_key: "none",
+    },
+    output: createInvalidL3NodeOnlyOutput(staleL3Input),
+  }));
+  const staleL3Coordinator = new CartographerChunkCoordinator({
+    generate: (input, options) => levelRuntimeModule.runLevelRuntime(input, { ...options, generate: fixtureGenerator }),
+    storage: staleL3Storage,
+  });
+  const staleL3Refresh = await staleL3Coordinator.request({
+    applyToScene: true,
+    chunk: staleL3Input.chunk,
+    level_id: "L3",
+    mode: "decompose_down",
+    scene: rendererBootstrappedScene,
+    seed: staleL3Input.seed,
+  });
+  await staleL3Storage.clearChunks();
+  await rm(staleL3CachePath, { force: true });
   const rendererExpandedScene = rendererChunkExpansion.sceneApply?.scene ?? rendererBootstrappedScene;
   const rendererExpansionProjection = createTerrainPixiProjection(
     rendererExpandedScene,
@@ -950,11 +1025,24 @@ async function runAiLevelRuntimeSmoke() {
     "Cartographer coordinator source replacement did not add replacement candidates",
   );
   assert(coordinatorReplacement.preloaded.length === 0, `Cartographer coordinator replacement preload count: ${coordinatorReplacement.preloaded.length}`);
-  assert(invalidCoordinatorResult.output.status === "invalid_output", `Cartographer coordinator invalid L3 status: ${invalidCoordinatorResult.output.status}`);
-  assert(!invalidCoordinatorResult.sceneApply, "Cartographer coordinator invalid L3 output must not apply to scene");
-  assert(invalidCoordinatorStoredChunks.length === 0, "Cartographer coordinator invalid L3 output must not be cached");
+  assert(invalidCoordinatorResult.output.status === "ok", `Cartographer coordinator recovered L3 status: ${invalidCoordinatorResult.output.status}`);
+  assert(invalidCoordinatorResult.output.nodes.length === 0, "Cartographer coordinator recovered L3 output must not retain webpage nodes");
+  assert(
+    (invalidCoordinatorResult.sceneApply?.addedObservationIds.length ?? 0) > 0,
+    "Cartographer coordinator recovered L3 output should apply source candidate observations",
+  );
+  assert(invalidCoordinatorStoredChunks.length > 0, "Cartographer coordinator recovered L3 output should be cached");
+  assert(staleL3Refresh.cacheStatus === "refresh", `Cartographer coordinator stale L3 cache status: ${staleL3Refresh.cacheStatus}`);
+  assert(staleL3Refresh.output.nodes.length === 0, "Cartographer coordinator stale L3 cache should regenerate through L3 cleaner");
+  assert(staleL3Refresh.output.source_candidates.length > 0, "Cartographer coordinator stale L3 cache should regenerate source candidates");
 
   const l0Apply = applyLevelRuntimeOutputToScene(cartographerScene, l0RuntimeOutput, { focusFirstNode: false });
+  const l0FocusTarget = l0Apply.scene.nodes.find((node) => node.layer === "L0");
+  assert(l0FocusTarget, "Continuous zoom-in smoke target missing");
+  const zoomInSelection = applyLayerSelect(l0Apply.scene, "L1", l0FocusTarget.id);
+  assert(zoomInSelection.focusNodeId === l0FocusTarget.id, "Continuous zoom-in should retain parent focus anchor");
+  assert(zoomInSelection.scene.runtime.focused_node_id === l0FocusTarget.id, "Continuous zoom-in runtime focus should remain on parent anchor");
+  assert(zoomInSelection.scene.selection.node_ids.length === 0, "Continuous zoom-in should not select parent node on child layer");
   const l1Apply = applyLevelRuntimeOutputToScene(l0Apply.scene, l1RuntimeOutput, { focusFirstNode: false });
   const l3Apply = applyLevelRuntimeOutputToScene(l0Apply.scene, l3RuntimeOutput, { focusFirstNode: false });
   const l1Projection = createTerrainPixiProjection(l1Apply.scene, { ...l1Apply.scene.viewport, layer: "L1", zoom: 1.18 }, {
@@ -1013,6 +1101,7 @@ async function runAiLevelRuntimeSmoke() {
       aiPromptMessages: aiPromptPreview.messages.length,
       promptOverrideNodes: promptOverrideOutput.nodes.length,
       promptOverrideBrief: promptOverrideGenerationInput.context.level_module.prompt_brief,
+      focusedAnchorDelta: Math.round(focusBX - focusAX),
     },
     levels: levelOutputs,
     constellationBridge: {
@@ -1023,6 +1112,7 @@ async function runAiLevelRuntimeSmoke() {
       candidateObservations: l3Projection.candidateObservations.length,
       candidateTileSurfaces: l3Projection.candidateTileSurfaces.length,
       sourceTileSurfaces: l3Projection.tileSurfaces.length,
+      zoomInFocusNode: zoomInSelection.focusNodeId,
       zoomOutFocusNode: zoomOutSelection.focusNodeId,
     },
     chunkRuntimeHost: {
@@ -1058,6 +1148,8 @@ async function runAiLevelRuntimeSmoke() {
       replacementCandidates: coordinatorReplacement.sceneApply?.addedObservationIds.length ?? 0,
       invalidL3CachedChunks: invalidCoordinatorStoredChunks.length,
       invalidL3Status: invalidCoordinatorResult.output.status,
+      staleL3CacheStatus: staleL3Refresh.cacheStatus,
+      staleL3RegeneratedCandidates: staleL3Refresh.output.source_candidates.length,
       cancellation: {
         lifecyclePhase: coordinatorCancelled.chunkRecords[0]?.phase,
         sceneApplied: Boolean(coordinatorCancelled.sceneApply),
@@ -1323,6 +1415,14 @@ function getFixtureNodeType(levelId) {
   }
 
   return "concept";
+}
+
+function averageNodeX(nodes) {
+  if (nodes.length === 0) {
+    return 0;
+  }
+
+  return nodes.reduce((sum, node) => sum + (node.position_hint?.x ?? 0), 0) / nodes.length;
 }
 
 function slugify(value) {

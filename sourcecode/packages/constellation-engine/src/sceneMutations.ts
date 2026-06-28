@@ -134,6 +134,7 @@ export function applySceneViewport(scene: TerrainScene, viewport: ViewportState,
   const layerSelectedNodeIds = selectedNodeIds.filter(
     (nodeId) => scene.nodes.find((node) => node.id === nodeId)?.layer === viewport.layer,
   );
+  const nextFocusedNodeId = resolveContinuousViewportFocusNodeId(scene, viewport, selectedNodeIds, layerSelectedNodeIds);
 
   return withSceneViewport(
     {
@@ -145,7 +146,7 @@ export function applySceneViewport(scene: TerrainScene, viewport: ViewportState,
       runtime: {
         ...scene.runtime,
         browser_absorption: createIdleAbsorptionState(),
-        focused_node_id: layerSelectedNodeIds[0],
+        focused_node_id: nextFocusedNodeId,
         updated_at: new Date().toISOString(),
       },
     },
@@ -153,25 +154,73 @@ export function applySceneViewport(scene: TerrainScene, viewport: ViewportState,
   );
 }
 
+function resolveContinuousViewportFocusNodeId(
+  scene: TerrainScene,
+  viewport: ViewportState,
+  selectedNodeIds: string[],
+  layerSelectedNodeIds: string[],
+): string | undefined {
+  if (layerSelectedNodeIds[0]) {
+    return layerSelectedNodeIds[0];
+  }
+
+  const currentFocusId = scene.runtime.focused_node_id ?? selectedNodeIds[0] ?? scene.selection.node_ids[0];
+  const currentFocusNode = currentFocusId ? scene.nodes.find((node) => node.id === currentFocusId) : undefined;
+  const anchorLayer = resolveContinuousFocusAnchorLayer(viewport.layer);
+
+  if (currentFocusNode && (currentFocusNode.layer === viewport.layer || currentFocusNode.layer === anchorLayer)) {
+    return currentFocusNode.id;
+  }
+
+  return undefined;
+}
+
+function resolveContinuousFocusAnchorLayer(layer: LayerId): LayerId | undefined {
+  if (layer === "L1") {
+    return "L0";
+  }
+
+  if (layer === "L2") {
+    return "L1";
+  }
+
+  if (layer === "L3") {
+    return "L2";
+  }
+
+  if (layer === "L0") {
+    return "supra_macro";
+  }
+
+  return undefined;
+}
+
 export function applyLayerSelect(
   scene: TerrainScene,
   layer: LayerId,
   focusNodeId?: string,
 ): { scene: TerrainScene; selectedNodeIds: string[]; focusNodeId?: string } {
-  const focusNode = focusNodeId
-    ? scene.nodes.find((node) => node.id === focusNodeId && node.layer === layer)
-    : findNearestNodeOnLayer(scene.nodes, layer, scene.viewport);
+  const requestedFocusNode = focusNodeId ? scene.nodes.find((node) => node.id === focusNodeId) : undefined;
+  const anchorLayer = resolveContinuousFocusAnchorLayer(layer);
+  const requestedFocusIsAnchor = Boolean(requestedFocusNode && requestedFocusNode.layer === anchorLayer);
+  const focusNode = requestedFocusNode?.layer === layer
+    ? requestedFocusNode
+    : requestedFocusNode
+      ? undefined
+      : findNearestNodeOnLayer(scene.nodes, layer, scene.viewport);
+  const viewportAnchorNode = focusNode ?? requestedFocusNode;
   const nextViewport: ViewportState = {
     ...scene.viewport,
-    x: focusNode?.position_hint?.x ?? scene.viewport.x,
-    y: focusNode?.position_hint?.y ?? scene.viewport.y,
+    x: viewportAnchorNode?.position_hint?.x ?? scene.viewport.x,
+    y: viewportAnchorNode?.position_hint?.y ?? scene.viewport.y,
     layer,
     zoom: resolveZoomForLayer(layer),
   };
   const selectedNodeIds = focusNode ? [focusNode.id] : [];
+  const runtimeFocusNodeId = focusNode?.id ?? (requestedFocusIsAnchor ? requestedFocusNode?.id : undefined);
 
   return {
-    focusNodeId: focusNode?.id,
+    focusNodeId: runtimeFocusNodeId,
     selectedNodeIds,
     scene: withSceneViewport(
       {
@@ -183,7 +232,7 @@ export function applyLayerSelect(
         runtime: {
           ...scene.runtime,
           browser_absorption: createIdleAbsorptionState(),
-          focused_node_id: focusNode?.id,
+          focused_node_id: runtimeFocusNodeId,
           updated_at: new Date().toISOString(),
         },
       },
@@ -194,8 +243,13 @@ export function applyLayerSelect(
 
 function findNearestNodeOnLayer(nodes: TerrainNode[], layer: LayerId, viewport: ViewportState): TerrainNode | undefined {
   return nodes
-    .filter((node) => node.layer === layer)
-    .sort((left, right) => getViewportDistance(left, viewport) - getViewportDistance(right, viewport))[0];
+    .map((node, index) => ({ index, node }))
+    .filter((item) => item.node.layer === layer)
+    .sort((left, right) => {
+      const distanceDelta = getViewportDistance(left.node, viewport) - getViewportDistance(right.node, viewport);
+
+      return distanceDelta === 0 ? right.index - left.index : distanceDelta;
+    })[0]?.node;
 }
 
 function getViewportDistance(node: TerrainNode, viewport: ViewportState): number {
