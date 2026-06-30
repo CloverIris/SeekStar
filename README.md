@@ -171,6 +171,8 @@ SeekStar 目前处于 MVP 核心开发阶段。
 * 失败 URL 候选不进入主画布，进入恢复/诊断队列并可请求 AI 替代；
 * AI 输出必须经 AI Service / Level Runtime 返回结构化结果并通过 schema 校验，不再由 UI 伪造。
 
+信息结构补充已经写入 [INFORMATION_STRUCTURE.zh.md](INFORMATION_STRUCTURE.zh.md)：3D 概念图只作为背后隐喻，下一阶段仍用 2D 画布表达。核心约束是语义盘面、单一 active observation cone、L3 当前镜头最多 25 个 tile 分片，以及 Deep Lens 作为独立微观阅读层。概念图说明见 [design/information _structure/README.md](<design/information _structure/README.md>)。
+
 下一冲刺仍需完成的产品闭环：
 
 * L3 只显示 source-backed tile surface，彻底移除 AI `webpage` 概念卡片伪 tile；
