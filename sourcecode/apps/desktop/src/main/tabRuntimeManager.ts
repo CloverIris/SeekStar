@@ -13,6 +13,15 @@ const DEFAULT_WORKSPACE_NAME = "SeekStar local workspace";
 const TAB_RUNTIME_SCHEMA_REVISION = 59;
 const DEPRECATED_RUNTIME_TAB_IDS = ["tab-default-seekstar-seed", "tab-unknown-unknowns-deep-zoom"] as const;
 const TAB_RENDERER_LOAD_RETRY_DELAYS_MS = [350, 900, 1800, 3200] as const;
+const CANVAS_TOOLS = ["pointer", "pan", "lens", "lasso", "brush"] as const;
+const DEFAULT_CANVAS_TOOL: CanvasTool = "pointer";
+
+export type CanvasTool = (typeof CANVAS_TOOLS)[number];
+
+export interface TabCanvasToolChangeEvent {
+  tabId: string;
+  tool: CanvasTool;
+}
 
 export interface TabRuntimeSnapshot {
   version: 1;
@@ -112,6 +121,7 @@ export class TabObjectCache {
 export class TabRuntimeManager {
   private readonly entriesByTabId = new Map<string, RuntimeEntry>();
   private readonly detachedWindowsById = new Map<number, DetachedWindowEntry>();
+  private readonly activeCanvasToolsByTabId = new Map<string, CanvasTool>();
   private readonly cache = new TabObjectCache();
   private readonly foldersById = new Map<string, WorkspaceFolder>();
   private activeTabId = DEFAULT_TAB_ID;
@@ -138,6 +148,12 @@ export class TabRuntimeManager {
     this.registerHandler("tabs:detach", async (_event, tabId) => this.detachTab(parseTabId(tabId)));
     this.registerHandler("tabs:attach", async (_event, tabId) => this.attachTab(parseTabId(tabId)));
     this.registerHandler("tabs:set-dock-bounds", async (_event, bounds) => this.setDockBounds(parseDockBounds(bounds)));
+    this.registerHandler("tabs:get-active-canvas-tool", async (_event, tabId) => this.getActiveCanvasTool(parseTabId(tabId)));
+    this.registerHandler("tabs:set-active-canvas-tool", async (_event, input) => {
+      const parsed = parseCanvasToolChangeInput(input);
+
+      return this.setActiveCanvasTool(parsed.tabId, parsed.tool);
+    });
     this.registerHandler("tabs:clear-cache", async (_event, tabId) => {
       this.cache.clear(typeof tabId === "string" ? tabId : undefined);
       await this.updateCacheUsage();
@@ -199,6 +215,20 @@ export class TabRuntimeManager {
       folders: this.getOrderedFolders(),
       updated_at: new Date().toISOString(),
     };
+  }
+
+  async getActiveCanvasTool(tabId: string): Promise<CanvasTool> {
+    await this.ensureLoaded();
+
+    return this.activeCanvasToolsByTabId.get(tabId) ?? DEFAULT_CANVAS_TOOL;
+  }
+
+  async setActiveCanvasTool(tabId: string, tool: CanvasTool): Promise<CanvasTool> {
+    await this.ensureLoaded();
+
+    this.activeCanvasToolsByTabId.set(tabId, tool);
+    this.broadcastCanvasToolChanged({ tabId, tool });
+    return tool;
   }
 
   async createTab(input: { tabId?: string; title: string; seed: string; activate: boolean }): Promise<TabRuntimeSnapshot> {
@@ -299,6 +329,7 @@ export class TabRuntimeManager {
         this.closeDetachedWindow(tabId);
         this.closeEntryWebContents(deprecatedEntry);
         this.cache.clear(tabId);
+        this.activeCanvasToolsByTabId.delete(tabId);
         this.entriesByTabId.delete(tabId);
       }
     }
@@ -342,6 +373,7 @@ export class TabRuntimeManager {
     this.closeDetachedWindow(tabId);
     this.closeEntryWebContents(entry);
     this.cache.clear(tabId);
+    this.activeCanvasToolsByTabId.delete(tabId);
     this.entriesByTabId.delete(tabId);
 
     if (this.activeTabId === tabId) {
@@ -527,6 +559,7 @@ export class TabRuntimeManager {
     const snapshot = createDefaultSnapshot();
     this.cache.clear();
     this.entriesByTabId.clear();
+    this.activeCanvasToolsByTabId.clear();
     this.foldersById.clear();
     this.workspaceName = snapshot.workspace_name;
     this.activeTabId = snapshot.active_tab_id;
@@ -1115,6 +1148,12 @@ export class TabRuntimeManager {
     }
   }
 
+  private broadcastCanvasToolChanged(event: TabCanvasToolChangeEvent): void {
+    for (const contents of webContents.getAllWebContents()) {
+      contents.send("tabs:canvas-tool-changed", event);
+    }
+  }
+
   private registerHandler(channel: string, handler: (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown): void {
     ipcMain.removeHandler(channel);
     ipcMain.handle(channel, handler);
@@ -1428,6 +1467,23 @@ function parseDockBounds(value: unknown): Rectangle | undefined {
   }
 
   return { x, y, width, height };
+}
+
+function parseCanvasToolChangeInput(value: unknown): TabCanvasToolChangeEvent {
+  const candidate = typeof value === "object" && value !== null ? (value as { tabId?: unknown; tool?: unknown }) : {};
+
+  return {
+    tabId: parseTabId(candidate.tabId),
+    tool: parseCanvasTool(candidate.tool),
+  };
+}
+
+function parseCanvasTool(value: unknown): CanvasTool {
+  return typeof value === "string" && isCanvasTool(value) ? value : DEFAULT_CANVAS_TOOL;
+}
+
+function isCanvasTool(value: string): value is CanvasTool {
+  return CANVAS_TOOLS.includes(value as CanvasTool);
 }
 
 function parseTabId(value: unknown): string {

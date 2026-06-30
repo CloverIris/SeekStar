@@ -1,5 +1,4 @@
 import type { TabRecord, TerrainScene, WorkspaceFolder } from "@seekstar/core-schema";
-import type { CanvasTool } from "@seekstar/constellation-engine";
 import type { DragEvent, ReactElement } from "react";
 import { useState } from "react";
 import {
@@ -22,8 +21,10 @@ import {
   Star,
   Trash2,
   X,
+  ZoomIn,
   type LucideIcon,
 } from "lucide-react";
+import type { CanvasTool } from "./canvasTools";
 import { getActiveTab } from "../exploration/types";
 
 interface ObservatorySidebarProps {
@@ -56,6 +57,7 @@ const favoriteSeeds = ["Cognitive maps", "Source trails", "Domain gallery"];
 const canvasTools: Array<{ id: CanvasTool; label: string; icon: LucideIcon; disabled?: boolean }> = [
   { id: "pointer", label: "Pointer", icon: MousePointer2 },
   { id: "pan", label: "Pan", icon: Hand },
+  { id: "lens", label: "Lens", icon: ZoomIn },
   { id: "lasso", label: "Lasso", icon: Lasso },
   { id: "brush", label: "Brush", icon: Brush, disabled: true },
 ];
@@ -106,7 +108,7 @@ export function ObservatorySidebar({
 
       <section className="sidebar-section workspace-section">
         <div className="workspace-section-header">
-          <h2>Workspace</h2>
+          <h2>Observatory</h2>
           <button aria-label="Rename workspace" onClick={onWorkspaceRename} type="button">
             Rename
           </button>
@@ -115,7 +117,13 @@ export function ObservatorySidebar({
           <span className="sidebar-icon">
             <Folder aria-hidden="true" size={14} strokeWidth={1.8} />
           </span>
-          <span>{workspaceName}</span>
+          <span className="workspace-name-body">
+            <span>Local workspace</span>
+            <strong>{workspaceName}</strong>
+            <small>
+              {scenes.length} seeks / {folders.length} fields
+            </small>
+          </span>
         </button>
         <div className="folder-list">
           {folders.map((folder) => (
@@ -132,13 +140,13 @@ export function ObservatorySidebar({
           ))}
           <button className="folder-create" onClick={onFolderCreate} type="button">
             <FolderPlus aria-hidden="true" size={13} strokeWidth={1.8} />
-            New folder
+            Add field
           </button>
         </div>
       </section>
 
       <section className="sidebar-section">
-        <h2>Favorites</h2>
+        <h2>Star fields</h2>
         <div className="sidebar-list">
           {favoriteSeeds.map((seed) => (
             <button className="sidebar-list-item" key={seed} onClick={onFocusCommand} type="button">
@@ -152,7 +160,7 @@ export function ObservatorySidebar({
       </section>
 
       <section className="sidebar-section">
-        <h2>Canvas tools</h2>
+        <h2>Telescope tools</h2>
         <div className="canvas-tool-list">
           {canvasTools.map((tool) => (
             <button

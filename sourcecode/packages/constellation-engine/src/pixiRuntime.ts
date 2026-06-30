@@ -52,9 +52,13 @@ export interface TerrainTileSurface {
   loadPriority: TileSurfaceLoadPriority;
   loadState: TileSurfaceLoadState;
   nodeId: string;
+  resourceKind?: "html" | "image" | "pdf" | "unknown";
   screenBounds?: ProjectionRect;
   sourceId?: string;
+  sourceHost?: string;
   sourceState: SourceState;
+  snippet?: string;
+  sourceTitle?: string;
   sourceUrl?: string;
   title: string;
   type: TerrainNode["type"];
@@ -114,6 +118,7 @@ export function createTerrainPixiProjection(
   const layerNodeIds = new Set(layerNodes.map((node) => node.id));
   const renderedNodes = layerNodes;
   const renderedNodeIds = new Set(renderedNodes.map((node) => node.id));
+  const sourcesById = new Map(scene.sources.map((source) => [source.id, source]));
   const candidateObservations = (scene.scout_observations ?? []).filter(
     (observation) =>
       observation.layer === viewport.layer &&
@@ -121,7 +126,7 @@ export function createTerrainPixiProjection(
       candidateStatuses.has(observation.status) &&
       observation.status !== "converted",
   );
-  const tileSurfaces = createTileSurfaces(layerNodes, viewport, options);
+  const tileSurfaces = createTileSurfaces(layerNodes, viewport, sourcesById, options);
   const candidateTileSurfaces: CandidateTileSurface[] = [];
   const nodesById = new Map(renderedNodes.map((node) => [node.id, node]));
 
@@ -347,92 +352,97 @@ function createMvpGalleryNodes(nodes: TerrainNode[]): TerrainNode[] {
 function createMvpTileFieldNodes(nodes: TerrainNode[]): TerrainNode[] {
   const sortedNodes = [...nodes].sort(compareGalleryNodes);
   const columns = 5;
-  const cellWidth = 300;
-  const cellHeight = 190;
-  let cursorX = 0;
-  let cursorY = 0;
-  let rowHeight = 1;
-  const occupiedRows: Array<Array<boolean>> = [];
+  const rows = Math.max(5, Math.ceil(sortedNodes.length / columns));
+  const cellWidth = 324;
+  const cellHeight = 208;
+  const orderedSlots = createCenteredTileSlotOrder(columns, rows);
+  const centerColumn = (columns - 1) / 2;
+  const centerRow = (rows - 1) / 2;
 
   return sortedNodes.map((node, index) => {
-    const span = getLiveTileSpan(index);
-    const slot = findTileSlot(occupiedRows, columns, cursorX, cursorY, span.width, span.height);
-
-    markTileSlot(occupiedRows, slot.x, slot.y, span.width, span.height);
-    cursorX = slot.x + span.width;
-    cursorY = slot.y;
-    rowHeight = Math.max(rowHeight, span.height);
-
-    if (cursorX >= columns) {
-      cursorX = 0;
-      cursorY += rowHeight;
-      rowHeight = 1;
-    }
+    const slot = orderedSlots[index] ?? { column: index % columns, row: Math.floor(index / columns) };
 
     return {
       ...node,
       position_hint: {
-        x: Math.round((slot.x + span.width / 2 - columns / 2) * cellWidth),
-        y: Math.round((slot.y + span.height / 2) * cellHeight),
+        x: Math.round((slot.column - centerColumn) * cellWidth),
+        y: Math.round((slot.row - centerRow) * cellHeight),
       },
     };
   });
 }
 
-function getLiveTileSpan(index: number): { width: number; height: number } {
-  const pattern = [
-    { width: 2, height: 2 },
-    { width: 1, height: 1 },
-    { width: 1, height: 1 },
-    { width: 2, height: 1 },
-    { width: 1, height: 2 },
-    { width: 1, height: 1 },
-    { width: 2, height: 1 },
-    { width: 1, height: 1 },
-  ];
+function createCenteredTileSlotOrder(columns: number, rows: number): Array<{ column: number; row: number }> {
+  const centerColumn = (columns - 1) / 2;
+  const centerRow = (rows - 1) / 2;
 
-  return pattern[index % pattern.length] ?? { width: 1, height: 1 };
+  return Array.from({ length: columns * rows }, (_, index) => ({
+    column: index % columns,
+    row: Math.floor(index / columns),
+  })).sort((left, right) => {
+    const leftDx = left.column - centerColumn;
+    const leftDy = left.row - centerRow;
+    const rightDx = right.column - centerColumn;
+    const rightDy = right.row - centerRow;
+    const leftRing = Math.max(Math.abs(leftDx), Math.abs(leftDy));
+    const rightRing = Math.max(Math.abs(rightDx), Math.abs(rightDy));
+
+    if (leftRing !== rightRing) {
+      return leftRing - rightRing;
+    }
+
+    const leftDirectionPriority = getTileSlotDirectionPriority(leftDx, leftDy);
+    const rightDirectionPriority = getTileSlotDirectionPriority(rightDx, rightDy);
+
+    if (leftDirectionPriority !== rightDirectionPriority) {
+      return leftDirectionPriority - rightDirectionPriority;
+    }
+
+    const leftDistance = Math.abs(leftDx) + Math.abs(leftDy);
+    const rightDistance = Math.abs(rightDx) + Math.abs(rightDy);
+
+    if (leftDistance !== rightDistance) {
+      return leftDistance - rightDistance;
+    }
+
+    return left.column - right.column;
+  });
 }
 
-function findTileSlot(
-  occupiedRows: Array<Array<boolean>>,
-  columns: number,
-  startX: number,
-  startY: number,
-  spanWidth: number,
-  spanHeight: number,
-): { x: number; y: number } {
-  for (let y = startY; y < startY + 80; y += 1) {
-    for (let x = y === startY ? startX : 0; x <= columns - spanWidth; x += 1) {
-      if (isTileSlotFree(occupiedRows, x, y, spanWidth, spanHeight)) {
-        return { x, y };
-      }
-    }
+function getTileSlotDirectionPriority(dx: number, dy: number): number {
+  if (dx === 0 && dy === 0) {
+    return 0;
   }
 
-  return { x: 0, y: startY + 1 };
-}
-
-function isTileSlotFree(occupiedRows: Array<Array<boolean>>, x: number, y: number, spanWidth: number, spanHeight: number): boolean {
-  for (let row = y; row < y + spanHeight; row += 1) {
-    for (let column = x; column < x + spanWidth; column += 1) {
-      if (occupiedRows[row]?.[column]) {
-        return false;
-      }
-    }
+  if (dy === 0 && dx > 0) {
+    return 1;
   }
 
-  return true;
-}
-
-function markTileSlot(occupiedRows: Array<Array<boolean>>, x: number, y: number, spanWidth: number, spanHeight: number): void {
-  for (let row = y; row < y + spanHeight; row += 1) {
-    occupiedRows[row] = occupiedRows[row] ?? [];
-
-    for (let column = x; column < x + spanWidth; column += 1) {
-      occupiedRows[row][column] = true;
-    }
+  if (dy === 0 && dx < 0) {
+    return 2;
   }
+
+  if (dx === 0 && dy > 0) {
+    return 3;
+  }
+
+  if (dx === 0 && dy < 0) {
+    return 4;
+  }
+
+  if (dx > 0 && dy > 0) {
+    return 5;
+  }
+
+  if (dx < 0 && dy > 0) {
+    return 6;
+  }
+
+  if (dx > 0 && dy < 0) {
+    return 7;
+  }
+
+  return 8;
 }
 
 function compareGalleryNodes(left: TerrainNode, right: TerrainNode): number {
@@ -528,6 +538,7 @@ function getLatestDirectUrlObservation(scene: TerrainScene): ScoutObservation | 
 function createTileSurfaces(
   nodes: TerrainNode[],
   viewport: ViewportState,
+  sourcesById: Map<string, TerrainScene["sources"][number]>,
   options: TerrainPixiProjectionOptions,
 ): TerrainTileSurface[] {
   if (!isTileLayer(viewport.layer)) {
@@ -541,6 +552,7 @@ function createTileSurfaces(
   return nodes
     .filter((node) => node.layer === viewport.layer && isTileSurfaceNode(node))
     .map((node) => {
+      const source = node.source_id ? sourcesById.get(node.source_id) : undefined;
       const position = node.position_hint ?? { x: 0, y: 0 };
       const worldBounds = {
         x: position.x - tileSize.width / 2,
@@ -564,11 +576,15 @@ function createTileSurfaces(
         loadPriority: resolveTileLoadPriority(visibility),
         loadState: resolveTileLoadState(visibility),
         nodeId: node.id,
+        resourceKind: resolveTileResourceKind(source),
         screenBounds,
         sourceId: node.source_id,
+        sourceHost: resolveTileSourceHost(node.source_url ?? source?.url),
         sourceState: node.source_state,
+        snippet: resolveTileSnippet(node, source),
+        sourceTitle: source?.title,
         sourceUrl: node.source_url,
-        title: node.title,
+        title: resolveTileTitle(node, source),
         type: node.type,
         visibility,
         worldBounds,
@@ -591,7 +607,7 @@ function resolveTileWorldSize(
   tileFieldTargetCount: number | undefined,
 ): { width: number; height: number } {
   if (!viewportBounds) {
-    return { width: 360, height: 225 };
+    return { width: 320, height: 200 };
   }
 
   const targetCount = clampTileFieldTargetCount(tileFieldTargetCount);
@@ -601,9 +617,78 @@ function resolveTileWorldSize(
   const baseZoom = resolveZoomForLayer(viewport.layer);
 
   return {
-    width: clamp(screenWidth / baseZoom, 220, 760),
-    height: clamp(screenHeight / baseZoom, 140, 520),
+    width: clamp(screenWidth / baseZoom, 240, 420),
+    height: clamp(screenHeight / baseZoom, 152, 264),
   };
+}
+
+function resolveTileTitle(node: TerrainNode, source?: TerrainScene["sources"][number]): string {
+  return collapseDuplicateTitleSegments(source?.title || node.source_title || node.title || "Untitled source");
+}
+
+function resolveTileSnippet(node: TerrainNode, source?: TerrainScene["sources"][number]): string | undefined {
+  const snippet = source?.source_snapshot?.excerpt || source?.snippet || node.summary || node.quote;
+
+  if (!snippet) {
+    return undefined;
+  }
+
+  return snippet.replace(/\s+/gu, " ").trim().slice(0, 220);
+}
+
+function resolveTileSourceHost(sourceUrl: string | undefined): string | undefined {
+  if (!sourceUrl) {
+    return undefined;
+  }
+
+  try {
+    return new URL(sourceUrl).hostname.replace(/^www\./u, "");
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveTileResourceKind(source?: TerrainScene["sources"][number]): TerrainTileSurface["resourceKind"] {
+  const primaryKind = source?.source_snapshot?.primary_resource?.kind;
+
+  if (primaryKind === "html" || primaryKind === "image" || primaryKind === "pdf") {
+    return primaryKind;
+  }
+
+  if (source?.source_type === "image") {
+    return "image";
+  }
+
+  if (source?.source_type === "document") {
+    return "pdf";
+  }
+
+  if (source?.source_type === "webpage") {
+    return "html";
+  }
+
+  return "unknown";
+}
+
+function collapseDuplicateTitleSegments(title: string): string {
+  const segments = title
+    .split(/\s*:\s*/u)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+
+  if (segments.length <= 1) {
+    return title.trim();
+  }
+
+  const deduped: string[] = [];
+
+  for (const segment of segments) {
+    if (deduped[deduped.length - 1] !== segment) {
+      deduped.push(segment);
+    }
+  }
+
+  return deduped.join(": ");
 }
 
 function createViewportWorldBounds(viewport: ViewportState, bounds: ProjectionViewportBounds): ProjectionRect {

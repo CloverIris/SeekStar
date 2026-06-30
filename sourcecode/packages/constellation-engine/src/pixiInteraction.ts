@@ -2,7 +2,7 @@ import type { TerrainNode, ViewportState } from "@seekstar/core-schema";
 import { resolveLayerForZoom } from "./lens.js";
 export { resolveZoomForLayer } from "./lens.js";
 
-export type CanvasTool = "pointer" | "pan" | "lasso" | "brush";
+export type CanvasTool = "pointer" | "pan" | "lens" | "lasso" | "brush";
 
 export interface CanvasPoint {
   x: number;

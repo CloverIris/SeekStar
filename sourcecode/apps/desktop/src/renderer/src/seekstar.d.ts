@@ -23,7 +23,7 @@ import type {
   CartographerRuntimeViewportExpansionRequest,
   CartographerRuntimeViewportExpansionResult,
 } from "../../main/cartographerRuntimeBridge";
-import type { TabRuntimeSnapshot, TabWorkspaceSyncInput } from "../../main/tabRuntimeManager";
+import type { CanvasTool, TabCanvasToolChangeEvent, TabRuntimeSnapshot, TabWorkspaceSyncInput } from "../../main/tabRuntimeManager";
 import type { TileSurfaceDeepLensSnapshot, TileSurfaceLinkEvent, TileSurfaceThumbnailEvent } from "../../main/tileSurfaceManager";
 
 export type WindowAction =
@@ -69,11 +69,14 @@ export interface SeekStarTabsApi {
   createFolder: (title: string) => Promise<TabRuntimeSnapshot>;
   deleteFolder: (folderId: string) => Promise<TabRuntimeSnapshot>;
   detach: (tabId: string) => Promise<TabRuntimeSnapshot>;
+  getActiveCanvasTool: (tabId: string) => Promise<CanvasTool>;
   list: () => Promise<TabRuntimeSnapshot>;
+  onCanvasToolChanged: (callback: (event: TabCanvasToolChangeEvent) => void) => () => void;
   onChanged: (callback: (snapshot: TabRuntimeSnapshot) => void) => () => void;
   refresh: (tabId: string) => Promise<TabRuntimeSnapshot>;
   renameWorkspace: (name: string) => Promise<TabRuntimeSnapshot>;
   reorder: (sourceTabId: string, targetTabId: string) => Promise<TabRuntimeSnapshot>;
+  setActiveCanvasTool: (tabId: string, tool: CanvasTool) => Promise<CanvasTool>;
   setDockBounds: (bounds?: { x: number; y: number; width: number; height: number }) => Promise<TabRuntimeSnapshot>;
   syncWorkspaceTabs: (input: TabWorkspaceSyncInput) => Promise<TabRuntimeSnapshot>;
   toggleFavorite: (tabId: string) => Promise<TabRuntimeSnapshot>;

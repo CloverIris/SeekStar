@@ -15,6 +15,7 @@ export function WorkbenchHeader({
   onLayerSelect,
   onToggleRightSidebar,
   rightSidebarExpanded,
+  showRightSidebarToggle = true,
 }: {
   activeTab: ExplorationTab;
   breadcrumb: string[];
@@ -25,6 +26,7 @@ export function WorkbenchHeader({
   onLayerSelect: (layer: LayerId) => void;
   onToggleRightSidebar: () => void;
   rightSidebarExpanded: boolean;
+  showRightSidebarToggle?: boolean;
 }): ReactElement {
   const breadcrumbItems = breadcrumb.map((label, index) => ({
     label,
@@ -58,12 +60,14 @@ export function WorkbenchHeader({
       </div>
       <div className="workbench-header-actions">
         <span className="workbench-job">{jobState}</span>
-        <SidebarToggleButton
-          expanded={rightSidebarExpanded}
-          label="AI Map Control"
-          onClick={onToggleRightSidebar}
-          side="right"
-        />
+        {showRightSidebarToggle ? (
+          <SidebarToggleButton
+            expanded={rightSidebarExpanded}
+            label="AI Map Control"
+            onClick={onToggleRightSidebar}
+            side="right"
+          />
+        ) : null}
       </div>
     </header>
   );

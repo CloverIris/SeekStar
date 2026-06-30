@@ -6,7 +6,7 @@ import type {
   ViewportState,
 } from "@seekstar/core-schema";
 import { isMacroLayer } from "@seekstar/core-schema";
-import type { CSSProperties, PointerEvent, ReactElement } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent, ReactElement } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LocateFixed, Maximize2, RotateCcw } from "lucide-react";
 import "pixi.js/unsafe-eval";
@@ -14,7 +14,6 @@ import { Application, Container, Graphics, Rectangle, Sprite, Text } from "pixi.
 import {
   createTileAbsorptionTransition,
   type CanvasPoint,
-  type CanvasTool,
   type LassoDraft,
   type ProjectionViewportBounds,
   type TileAbsorptionTransition,
@@ -27,6 +26,7 @@ import {
   zoomViewportAtScreenPoint,
 } from "@seekstar/constellation-engine";
 import type { CartographerChunkRuntimeRecord, CartographerRuntimeStatus } from "../exploration/cartographerRuntimeClient";
+import type { CanvasTool } from "./canvasTools";
 import { MainContentStatusOverlay, useMainContentRuntime } from "./main-content/MainContentRuntime";
 
 interface TerrainCanvasProps {
@@ -102,6 +102,13 @@ interface TileThumbnailState {
   updatedAt: string;
 }
 
+interface RenderableTileSurface extends TerrainTileSurface {
+  resourceKind?: "html" | "image" | "pdf" | "unknown";
+  snippet?: string;
+  sourceHost?: string;
+  sourceTitle?: string;
+}
+
 export function TerrainCanvas({
   activeTool,
   focusedNodeId,
@@ -149,11 +156,12 @@ export function TerrainCanvas({
     candidateObservations,
     mainContent,
     renderedNodes,
-    sourceTileSurfaces: tileSurfaces,
+    sourceTileSurfaces,
     visibleNodeIds,
     visibleNodes,
     visibleRelations,
   } = mainContentRuntime;
+  const tileSurfaces = sourceTileSurfaces as RenderableTileSurface[];
   const isBrowserAbsorbed = scene.runtime.browser_absorption.status === "absorbed";
   const absorbedTileSurface = isBrowserAbsorbed
     ? tileSurfaces.find((surface) => surface.nodeId === scene.runtime.browser_absorption.node_id && surface.sourceUrl)
@@ -491,11 +499,24 @@ export function TerrainCanvas({
   }
 
   function handlePointerDown(event: PointerEvent<HTMLElement>): void {
-    if (event.button !== 0) {
+    if (!isCanvasPrimaryCompatibleButton(event.button)) {
       return;
     }
 
-    if (activeTool === "pan" || activeTool === "pointer") {
+    if (activeTool === "lens") {
+      const point = pointFromEvent(event);
+      const bounds = event.currentTarget.getBoundingClientRect();
+
+      if (!isCanvasEntityAtScreenPoint(point, bounds, visibleNodes, tileSurfaces, viewport)) {
+        const zoomFactor = event.shiftKey ? 0.85 : 1.18;
+
+        onViewportChange(zoomViewportAtScreenPoint(viewport, point, bounds, viewport.zoom * zoomFactor));
+        setHoverPreview(undefined);
+      }
+      return;
+    }
+
+    if (activeTool === "pan") {
       event.currentTarget.setPointerCapture(event.pointerId);
       setDragState({
         mode: "pan",
@@ -504,6 +525,10 @@ export function TerrainCanvas({
         viewport,
       });
       setHoverPreview(undefined);
+      return;
+    }
+
+    if (activeTool === "pointer") {
       return;
     }
 
@@ -634,6 +659,7 @@ export function TerrainCanvas({
     <section
       className={`canvas-plane pixi-canvas-plane canvas-tool-${activeTool}`}
       aria-label="Cognitive canvas"
+      onContextMenu={preventCanvasContextMenu}
       onPointerCancel={handlePointerCancel}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
@@ -671,10 +697,10 @@ export function TerrainCanvas({
       {absorbedTileSurface ? (
         <div className="browser-absorption-exit" role="toolbar" aria-label="Browser mode">
           <button onClick={handleExitBrowserMode} type="button">
-            退出浏览器模式
+            Exit browser mode
           </button>
           <button onClick={() => onCurrentPageDeepLens(absorbedTileSurface.nodeId)} type="button">
-            进入当前页面的DeepLens
+            Open current page in Deep Lens
           </button>
         </div>
       ) : null}
@@ -817,7 +843,7 @@ function renderPixiScene({
   stage.addChild(world);
 }
 
-function createTileSurfaceFrame(surface: TerrainTileSurface, thumbnail?: TileThumbnailState): Container {
+function createTileSurfaceFrame(surface: RenderableTileSurface, thumbnail?: TileThumbnailState): Container {
   const container = new Container();
   const frame = new Graphics();
   const { x, y, width, height } = surface.worldBounds;
@@ -828,6 +854,49 @@ function createTileSurfaceFrame(surface: TerrainTileSurface, thumbnail?: TileThu
   const strokeWidth = isFocused ? 2.2 : 1.2;
   const thumbnailDataUrl = thumbnail?.status === "ready" ? thumbnail.dataUrl : undefined;
   const hasThumbnail = Boolean(thumbnailDataUrl);
+  const contentInset = 14;
+  const contentX = x + contentInset;
+  const contentY = y + contentInset;
+  const contentWidth = Math.max(96, width - contentInset * 2);
+  const contentHeight = Math.max(72, height - contentInset * 2);
+  const surfaceLabel = resolveTileSurfaceLabel(surface);
+  const displayTitle = truncateTileText(surface.title, isFocused ? 74 : 54);
+  const displaySnippet = surface.snippet ? truncateTileText(surface.snippet, isFocused ? 96 : 72) : undefined;
+  const previewStatus = resolveTilePreviewStatus(surface, thumbnail, hasThumbnail);
+  const titleText = createTileSurfaceText(displayTitle, {
+    color: 0xf4f7fb,
+    fontSize: isFocused ? 18 : 16,
+    lineHeight: isFocused ? 22 : 19,
+    wordWrapWidth: contentWidth - 18,
+  });
+  const metaText = createTileSurfaceText(
+    surface.sourceHost ? `${surfaceLabel}  ${surface.sourceHost}` : surfaceLabel,
+    {
+      color: hasThumbnail ? 0xd9ebff : 0x9fb6cf,
+      fontSize: 10,
+      wordWrapWidth: contentWidth - 18,
+    },
+  );
+  const snippetText = displaySnippet
+    ? createTileSurfaceText(displaySnippet, {
+        color: hasThumbnail ? 0xf2f7ff : 0xb8c7d9,
+        fontSize: 10,
+        lineHeight: 14,
+        wordWrapWidth: contentWidth - 18,
+      })
+    : undefined;
+  const previewStatusText = previewStatus
+    ? createTileSurfaceText(previewStatus, {
+        color: previewStatus === "preview failed" ? 0xffb5bd : 0x9fb6cf,
+        fontSize: 9,
+        wordWrapWidth: contentWidth - 18,
+      })
+    : undefined;
+  const titleBottom = contentY + 30 + titleText.height;
+  const snippetTop = Math.min(contentY + contentHeight - 54, titleBottom + 8);
+  const contentPanel = new Graphics();
+  const metaChip = new Graphics();
+  const accentBar = new Graphics();
 
   frame
     .roundRect(x, y, width, height, 10)
@@ -863,6 +932,16 @@ function createTileSurfaceFrame(surface: TerrainTileSurface, thumbnail?: TileThu
       color: 0xb85d6b,
       alpha: 0.52,
     });
+  } else {
+    contentPanel.roundRect(contentX, contentY + 18, contentWidth, Math.max(60, contentHeight - 18), 10).fill({
+      color: 0x143240,
+      alpha: isFocused ? 0.88 : 0.7,
+    });
+    accentBar.roundRect(contentX, contentY, Math.min(42, contentWidth * 0.22), 5, 2).fill({
+      color: 0x8db4ff,
+      alpha: isFocused ? 0.92 : 0.7,
+    });
+    container.addChild(contentPanel, accentBar);
   }
 
   if (surface.absorption.progress > 0) {
@@ -872,11 +951,53 @@ function createTileSurfaceFrame(surface: TerrainTileSurface, thumbnail?: TileThu
     });
   }
 
-  container.addChild(frame);
+  metaChip.roundRect(contentX, contentY, Math.min(contentWidth, metaText.width + 16), 18, 9).fill({
+    color: hasThumbnail ? 0x0b1522 : 0x0f1c2d,
+    alpha: hasThumbnail ? 0.42 : 0.92,
+  });
+  metaText.position.set(contentX + 8, contentY + 4);
+  titleText.position.set(contentX + 2, contentY + 28);
+
+  container.addChild(frame, metaChip, metaText, titleText);
+
+  if (snippetText) {
+    snippetText.position.set(contentX + 2, snippetTop);
+    container.addChild(snippetText);
+  }
+
+  if (previewStatusText) {
+    previewStatusText.position.set(contentX + 2, y + height - 24);
+    container.addChild(previewStatusText);
+  }
+
   return container;
 }
 
-function toTileSurfaceSyncBounds(bounds: TerrainTileSurface["screenBounds"]): { x: number; y: number; width: number; height: number } {
+function resolveTilePreviewStatus(
+  surface: RenderableTileSurface,
+  thumbnail: TileThumbnailState | undefined,
+  hasThumbnail: boolean,
+): string | undefined {
+  if (hasThumbnail) {
+    return undefined;
+  }
+
+  if (thumbnail?.status === "loading") {
+    return "capturing preview";
+  }
+
+  if (thumbnail?.status === "failed") {
+    return "preview failed";
+  }
+
+  if (surface.loadState === "renderer_visible" || surface.loadState === "renderer_focused" || surface.loadState === "thumbnail_ready") {
+    return "preview queued";
+  }
+
+  return undefined;
+}
+
+function toTileSurfaceSyncBounds(bounds: RenderableTileSurface["screenBounds"]): { x: number; y: number; width: number; height: number } {
   if (!bounds) {
     return { x: 0, y: 0, width: 1, height: 1 };
   }
@@ -953,7 +1074,7 @@ function createRelationLine({
   hitLine.moveTo(from.x, from.y).lineTo(to.x, to.y).stroke({ color: 0xffffff, alpha: 0.001, width: 12 });
   hitLine.eventMode = "static";
   hitLine.cursor = "pointer";
-  hitLine.on("pointertap", () => onRelationSelect(relation.id));
+  bindPrimaryCanvasActivation(hitLine, () => onRelationSelect(relation.id));
   container.addChild(hitLine, line);
 
   return container;
@@ -1018,7 +1139,7 @@ function createMacroBubble({
   container.eventMode = isGhost ? "none" : "static";
   container.cursor = isGhost ? "default" : "pointer";
   container.hitArea = new Rectangle(-radius, -radius, radius * 2, radius * 2);
-  container.on("pointertap", () => onNodeSelect(node.id));
+  bindPrimaryCanvasActivation(container, () => onNodeSelect(node.id));
   container.on("pointerover", (event) => onHover(createHoverPreview(node.title, node.type, node.source_state, node.summary, event.global)));
   container.on("pointerout", onHoverClear);
 
@@ -1084,7 +1205,7 @@ function createDetailCard({
   container.eventMode = isGhost ? "none" : "static";
   container.cursor = isGhost ? "default" : "pointer";
   container.hitArea = new Rectangle(-width / 2, -height / 2, width, height);
-  container.on("pointertap", () => onNodeSelect(node.id));
+  bindPrimaryCanvasActivation(container, () => onNodeSelect(node.id));
   container.on("pointerover", (event) => onHover(createHoverPreview(node.title, node.type, node.source_state, node.summary, event.global)));
   container.on("pointerout", onHoverClear);
 
@@ -1109,6 +1230,108 @@ function createPixiText(text: string, options: { color: number; fontSize: number
   label.anchor.set(0.5);
 
   return label;
+}
+
+function createTileSurfaceText(text: string, options: { color: number; fontSize: number; lineHeight?: number; wordWrapWidth: number }): Text {
+  return new Text({
+    text,
+    style: {
+      align: "left",
+      breakWords: true,
+      fill: options.color,
+      fontFamily: "Segoe UI, Microsoft YaHei UI, sans-serif",
+      fontSize: options.fontSize,
+      fontWeight: "600",
+      leading: options.lineHeight ?? 2,
+      lineHeight: options.lineHeight,
+      wordWrap: true,
+      wordWrapWidth: options.wordWrapWidth,
+    },
+  });
+}
+
+function bindPrimaryCanvasActivation(target: Container | Graphics, onActivate: () => void): void {
+  let lastActivationAt = 0;
+  const invoke = (): void => {
+    const now = performance.now();
+
+    if (now - lastActivationAt < 40) {
+      return;
+    }
+
+    lastActivationAt = now;
+    onActivate();
+  };
+
+  target.on("click", invoke);
+  target.on("rightclick", invoke);
+}
+
+function isCanvasPrimaryCompatibleButton(button: number): boolean {
+  return button === 0 || button === 2;
+}
+
+function preventCanvasContextMenu(event: ReactMouseEvent<HTMLElement>): void {
+  event.preventDefault();
+}
+
+function isCanvasEntityAtScreenPoint(
+  point: CanvasPoint,
+  bounds: { width: number; height: number },
+  nodes: TerrainNode[],
+  tileSurfaces: RenderableTileSurface[],
+  viewport: ViewportState,
+): boolean {
+  const worldPoint = screenToWorld(point, viewport, bounds);
+
+  if (
+    tileSurfaces.some((surface) => {
+      if (surface.visibility === "off_viewport") {
+        return false;
+      }
+
+      return isPointInRect(worldPoint, surface.worldBounds);
+    })
+  ) {
+    return true;
+  }
+
+  return nodes.some((node) => isWorldPointInsideNode(worldPoint, node, viewport));
+}
+
+function isWorldPointInsideNode(point: CanvasPoint, node: TerrainNode, viewport: ViewportState): boolean {
+  const position = node.position_hint;
+
+  if (!position) {
+    return false;
+  }
+
+  const dx = point.x - position.x;
+  const dy = point.y - position.y;
+
+  if (isMacroBubbleNode(node)) {
+    const radius = getMacroBubbleRadius(node, viewport);
+    return dx * dx + dy * dy <= radius * radius;
+  }
+
+  const width = getDetailCardWidth(node);
+  const height = getDetailCardHeight(node);
+
+  return Math.abs(dx) <= width / 2 && Math.abs(dy) <= height / 2;
+}
+
+function isPointInRect(point: CanvasPoint, rect: { x: number; y: number; width: number; height: number }): boolean {
+  return point.x >= rect.x && point.x <= rect.x + rect.width && point.y >= rect.y && point.y <= rect.y + rect.height;
+}
+
+function truncateTileText(value: string, maxCharacters: number): string {
+  const normalized = value.replace(/\s+/gu, " ").trim();
+
+  if (normalized.length <= maxCharacters) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, Math.max(1, maxCharacters - 1)).trimEnd()}...`;
 }
 
 function createHoverPreview(
@@ -1160,7 +1383,15 @@ function getMacroColor(node: TerrainNode): number {
   return 0x5667d8;
 }
 
-function getTileSurfaceColor(surface: TerrainTileSurface): number {
+function getTileSurfaceColor(surface: RenderableTileSurface): number {
+  if (surface.resourceKind === "image") {
+    return 0x182d34;
+  }
+
+  if (surface.resourceKind === "pdf") {
+    return 0x1b2a38;
+  }
+
   if (surface.sourceState === "source_backed") {
     return 0x123143;
   }
@@ -1174,6 +1405,22 @@ function getTileSurfaceColor(surface: TerrainTileSurface): number {
   }
 
   return 0x121a28;
+}
+
+function resolveTileSurfaceLabel(surface: RenderableTileSurface): string {
+  if (surface.resourceKind === "image") {
+    return "image";
+  }
+
+  if (surface.resourceKind === "pdf") {
+    return "pdf";
+  }
+
+  if (surface.type === "document") {
+    return "document";
+  }
+
+  return "webpage";
 }
 
 function getDetailColor(node: TerrainNode): number {

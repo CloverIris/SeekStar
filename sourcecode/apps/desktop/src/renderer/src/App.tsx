@@ -2,12 +2,13 @@
 import type { TileAbsorptionTrigger } from "@seekstar/core-schema";
 import type { DeepLensSnapshot } from "@seekstar/core-schema";
 import type { AiAssistantAction } from "@seekstar/ai-service";
-import { isDirectHttpUrl, type CanvasTool, type SourceIngestionInput } from "@seekstar/constellation-engine";
+import { isDirectHttpUrl, type SourceIngestionInput } from "@seekstar/constellation-engine";
 import type { SeekStarSettings } from "../../main/appSettingsStore";
 import type { TabRuntimeSnapshot } from "../../main/tabRuntimeManager";
 import type { CSSProperties, ChangeEvent, KeyboardEvent, PointerEvent as ReactPointerEvent, ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { DetachedTabTitleBar, ShellDockWorkbench, SidebarRail, WindowTitleBar } from "./components/AppChrome";
+import { DetachedTabTitleBar, ShellDockWorkbench, SidebarRail, WindowTitleBar, type SidebarRailMode } from "./components/AppChrome";
+import type { CanvasTool } from "./components/canvasTools";
 import { ObservatorySidebar } from "./components/ObservatorySidebar";
 import { TerrainCanvas } from "./components/TerrainCanvas";
 import type { TileAbsorptionRequest } from "./components/TerrainCanvas";
@@ -26,6 +27,11 @@ import {
 import { type CartographerChunkSchedulingPolicy, useExplorationSession } from "./exploration/useExplorationSession";
 import { type SearchResult, searchScene } from "./search/localSceneSearch";
 import { type SelectionBasketItem, createSelectionBasketItem } from "./selection/selectionBasket";
+
+type RightSidebarMode = Extract<SidebarRailMode, "collapsed" | "compact" | "expanded">;
+
+const RIGHT_SIDEBAR_COMPACT_WIDTH = 340;
+const RIGHT_SIDEBAR_EXPANDED_WIDTH = 500;
 
 export function App(): ReactElement {
   const runtimeParams = useMemo(() => new URLSearchParams(window.location.search), []);
@@ -96,8 +102,8 @@ export function App(): ReactElement {
   const [selectedObservationId, setSelectedObservationId] = useState<string | undefined>();
   const [viewportFocusNodeId, setViewportFocusNodeId] = useState<string | undefined>();
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
-  const [rightSidebarCollapsed, setRightSidebarCollapsed] = useState(false);
-  const [rightSidebarWidth, setRightSidebarWidth] = useState(340);
+  const [rightSidebarMode, setRightSidebarMode] = useState<RightSidebarMode>("compact");
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(RIGHT_SIDEBAR_EXPANDED_WIDTH);
   const [splashVisible, setSplashVisible] = useState(true);
   const [splashFading, setSplashFading] = useState(false);
   const [activeCanvasTool, setActiveCanvasTool] = useState<CanvasTool>("pointer");
@@ -119,12 +125,15 @@ export function App(): ReactElement {
   const lastViewportTraceKeyRef = useRef("");
   const runtimeWorkspaceSyncInFlightRef = useRef(false);
   const lastMissingRuntimeSceneKeyRef = useRef("");
+  const activeCanvasToolTabId = runtimeTabId ?? tabRuntimeSnapshot?.active_tab_id ?? activeTabId;
+  const rightSidebarEffectiveWidth = rightSidebarMode === "expanded" ? rightSidebarWidth : RIGHT_SIDEBAR_COMPACT_WIDTH;
+  const rightSidebarVisible = rightSidebarMode !== "collapsed";
   const rightSidebarStyle = useMemo(
     () =>
       ({
-        "--inspector-width": `${rightSidebarWidth}px`,
+        "--inspector-width": `${rightSidebarEffectiveWidth}px`,
       }) as CSSProperties,
-    [rightSidebarWidth],
+    [rightSidebarEffectiveWidth],
   );
   const shouldRenderRightSidebar = isShellWindow || isDetachedTabWindow;
 
@@ -230,7 +239,7 @@ export function App(): ReactElement {
       window.removeEventListener("resize", syncDockBounds);
       void window.seekstar.tabs.setDockBounds(undefined);
     };
-  }, [isShellWindow, leftSidebarCollapsed, settingsOpen, tabRuntimeSnapshot?.active_tab_id]);
+  }, [isShellWindow, leftSidebarCollapsed, rightSidebarEffectiveWidth, rightSidebarMode, settingsOpen, tabRuntimeSnapshot?.active_tab_id]);
 
   useEffect(() => {
     if (!settingsOpen) {
@@ -249,10 +258,21 @@ export function App(): ReactElement {
     setIsSelectionActionCardOpen(result.selectedNodeIds.length > 0 && showSelectionActions);
   }
 
+  function toggleRightSidebar(): void {
+    setRightSidebarMode((current) => (current === "collapsed" ? "compact" : "collapsed"));
+  }
+
+  function showRightSidebar(): void {
+    setRightSidebarMode((current) => (current === "collapsed" ? "compact" : current));
+  }
+
   function handleRightSidebarResizeStart(event: ReactPointerEvent<HTMLElement>): void {
     event.preventDefault();
     const startX = event.clientX;
-    const startWidth = rightSidebarWidth;
+    const startWidth = rightSidebarMode === "expanded" ? rightSidebarWidth : RIGHT_SIDEBAR_COMPACT_WIDTH;
+
+    setRightSidebarWidth(startWidth);
+    setRightSidebarMode("expanded");
 
     function handlePointerMove(moveEvent: PointerEvent): void {
       const nextWidth = Math.min(560, Math.max(300, startWidth + startX - moveEvent.clientX));
@@ -276,6 +296,27 @@ export function App(): ReactElement {
     setSelectedNodeIds(hydratedSelection.selectedNodeIds);
     setViewportFocusNodeId(hydratedSelection.focusNodeId);
   }, [hydratedSelection, workspaceHydrated]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void window.seekstar.tabs.getActiveCanvasTool(activeCanvasToolTabId).then((tool) => {
+      if (!cancelled) {
+        setActiveCanvasTool(tool);
+      }
+    });
+
+    const unsubscribe = window.seekstar.tabs.onCanvasToolChanged((event) => {
+      if (event.tabId === activeCanvasToolTabId) {
+        setActiveCanvasTool(event.tool);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [activeCanvasToolTabId]);
 
   useEffect(() => {
     let fadeTimeoutId: number | undefined;
@@ -514,6 +555,13 @@ export function App(): ReactElement {
     }
   }
 
+  function handleCanvasToolSelect(tool: CanvasTool): void {
+    setActiveCanvasTool(tool);
+    void window.seekstar.tabs.setActiveCanvasTool(activeCanvasToolTabId, tool).catch(() => {
+      setActiveCanvasTool("pointer");
+    });
+  }
+
   function handleLayerSelect(layer: LayerId, focusNodeId?: string): void {
     const result = selectLayer(layer, focusNodeId);
     traceTelescopeUi("layer.select", {
@@ -556,7 +604,7 @@ export function App(): ReactElement {
     if (isDirectHttpUrl(seed)) {
       resetCommandAndSearch();
       resetSelection();
-      setRightSidebarCollapsed(false);
+      showRightSidebar();
 
       const result = await ingestDirectUrlIntoCurrentTab(seed);
 
@@ -574,7 +622,7 @@ export function App(): ReactElement {
     if (result) {
       applySelection(result);
     }
-    setRightSidebarCollapsed(false);
+    showRightSidebar();
   }
 
   async function handleUseAsSeed(): Promise<void> {
@@ -604,7 +652,7 @@ export function App(): ReactElement {
     if (result) {
       applySelection(result);
     }
-    setRightSidebarCollapsed(false);
+    showRightSidebar();
   }
 
   function handleSearchCurrentTab(): void {
@@ -617,7 +665,7 @@ export function App(): ReactElement {
     setIsSelectionActionCardOpen(false);
     setIsCommandModalOpen(false);
     setCommandValue("");
-    setRightSidebarCollapsed(false);
+    showRightSidebar();
   }
 
   function requestTileAbsorption(nodeId: string, trigger: TileAbsorptionTrigger): void {
@@ -674,7 +722,7 @@ export function App(): ReactElement {
         applySelection(handleTileFocus(nodeId));
         setTileActionNodeId(undefined);
       }
-      setRightSidebarCollapsed(false);
+      showRightSidebar();
       return;
     }
 
@@ -706,13 +754,13 @@ export function App(): ReactElement {
     if (node && isDeepLensRecursiveSeedNode(node)) {
       void handleUseNodeAsSeedTab(node);
       setTileActionNodeId(undefined);
-      setRightSidebarCollapsed(false);
+      showRightSidebar();
       return;
     }
 
     handleSceneSelection([nodeId], nodeId);
     setTileActionNodeId(undefined);
-    setRightSidebarCollapsed(false);
+    showRightSidebar();
   }
 
   function handleRelationSelect(relationId: string): void {
@@ -728,12 +776,12 @@ export function App(): ReactElement {
     setSelectedObservationId(undefined);
     setViewportFocusNodeId(undefined);
     setIsSelectionActionCardOpen(false);
-    setRightSidebarCollapsed(false);
+    showRightSidebar();
   }
 
   function handleSearchResultSelect(nodeId: string): void {
     handleSceneSelection([nodeId], nodeId);
-    setRightSidebarCollapsed(false);
+    showRightSidebar();
   }
 
   function handleTabSelect(tabId: string): void {
@@ -828,7 +876,7 @@ export function App(): ReactElement {
     resetCommandAndSearch();
     applySelection(result);
     setIsSelectionActionCardOpen(false);
-    setRightSidebarCollapsed(false);
+    showRightSidebar();
     setTabRuntimeSnapshot(await window.seekstar.tabs.list());
   }
 
@@ -866,7 +914,7 @@ export function App(): ReactElement {
     resetCommandAndSearch();
     applySelection(result);
     setIsSelectionActionCardOpen(false);
-    setRightSidebarCollapsed(false);
+    showRightSidebar();
   }
 
   function handleFocusCommand(): void {
@@ -960,7 +1008,7 @@ export function App(): ReactElement {
     setSearchQuery("");
     setSearchResults([]);
     setIsSelectionActionCardOpen(false);
-    setRightSidebarCollapsed(false);
+    showRightSidebar();
   }
 
   async function handleRunScoutPlanWithUi(
@@ -974,12 +1022,12 @@ export function App(): ReactElement {
       resetSelection();
     }
 
-    setRightSidebarCollapsed(false);
+    showRightSidebar();
   }
 
   async function handleScoutSourceLinksWithUi(node: TerrainNode, source: SourceRef): Promise<void> {
     await handleScoutSourceLinks(node, source);
-    setRightSidebarCollapsed(false);
+    showRightSidebar();
   }
 
   function handleConvertScoutObservation(observation: ScoutObservation): void {
@@ -993,7 +1041,7 @@ export function App(): ReactElement {
     setSearchQuery("");
     setSearchResults([]);
     setIsSelectionActionCardOpen(false);
-    setRightSidebarCollapsed(false);
+    showRightSidebar();
   }
 
   async function handleObserveCandidateSource(observation: ScoutObservation): Promise<void> {
@@ -1008,7 +1056,7 @@ export function App(): ReactElement {
     setSearchQuery("");
     setSearchResults([]);
     setIsSelectionActionCardOpen(false);
-    setRightSidebarCollapsed(false);
+    showRightSidebar();
   }
 
   async function handleOpenCandidateAsSeek(observation: ScoutObservation): Promise<void> {
@@ -1021,7 +1069,7 @@ export function App(): ReactElement {
     resetCommandAndSearch();
     resetSelection();
     applySelection(result);
-    setRightSidebarCollapsed(false);
+    showRightSidebar();
   }
 
   async function handleReplaceFailedSourceCandidate(observation: ScoutObservation): Promise<void> {
@@ -1035,7 +1083,7 @@ export function App(): ReactElement {
     setSearchQuery("");
     setSearchResults([]);
     setIsSelectionActionCardOpen(false);
-    setRightSidebarCollapsed(false);
+    showRightSidebar();
   }
 
   async function handleAssistantAction(action: AiAssistantAction): Promise<AssistantActionExecutionResult | void> {
@@ -1057,7 +1105,7 @@ export function App(): ReactElement {
         } else {
           handleSearchResultSelect(targetNode.id);
         }
-        setRightSidebarCollapsed(false);
+        showRightSidebar();
         return {
           message: "Focused the requested node.",
           undo: {
@@ -1075,7 +1123,7 @@ export function App(): ReactElement {
 
         if (!result?.scene) {
           handleSceneViewport(viewport);
-          setRightSidebarCollapsed(false);
+          showRightSidebar();
           return {
             message: "Moved to the requested chunk.",
             undo: {
@@ -1086,7 +1134,7 @@ export function App(): ReactElement {
         }
 
         applySelection(result);
-        setRightSidebarCollapsed(false);
+        showRightSidebar();
         return {
           message: "Moved to the requested chunk and applied Cartographer terrain.",
           undo: {
@@ -1119,7 +1167,7 @@ export function App(): ReactElement {
           setSearchQuery("");
           setSearchResults([]);
           setIsSelectionActionCardOpen(false);
-          setRightSidebarCollapsed(false);
+          showRightSidebar();
           return {
             message: "Observed the selected source candidate.",
             undo: {
@@ -1137,7 +1185,7 @@ export function App(): ReactElement {
           if (result) {
             applySelection(result);
             setSelectedObservationId(undefined);
-            setRightSidebarCollapsed(false);
+            showRightSidebar();
             return {
               message: "Observed the direct URL in this Seek.",
               undo: {
@@ -1157,7 +1205,7 @@ export function App(): ReactElement {
 
         if (targetNode) {
           const result = await handleUseNodeAsSeedTab(targetNode);
-          setRightSidebarCollapsed(false);
+          showRightSidebar();
           return result
             ? {
               message: "Created a recursive seed tab from the target node.",
@@ -1185,7 +1233,7 @@ export function App(): ReactElement {
 
         if (result) {
           applySelection(result);
-          setRightSidebarCollapsed(false);
+          showRightSidebar();
         }
         return result
           ? {
@@ -1239,7 +1287,7 @@ export function App(): ReactElement {
       setSelectedObservationId(undefined);
       setViewportFocusNodeId(result.focusNodeId ?? result.selectedNodeIds[0]);
       setIsSelectionActionCardOpen(false);
-      setRightSidebarCollapsed(false);
+      showRightSidebar();
 
       return "Restored map before assistant operation.";
     }
@@ -1258,7 +1306,7 @@ export function App(): ReactElement {
       setSelectedObservationId(undefined);
       setViewportFocusNodeId(result.focusNodeId ?? result.selectedNodeIds[0]);
       setIsSelectionActionCardOpen(false);
-      setRightSidebarCollapsed(false);
+      showRightSidebar();
 
       return "Restored map before assistant operation.";
     }
@@ -1287,7 +1335,7 @@ export function App(): ReactElement {
       setSelectedObservationId(undefined);
       setViewportFocusNodeId(context.focus_node_id ?? context.selected_node_ids[0]);
       setIsSelectionActionCardOpen(false);
-      setRightSidebarCollapsed(false);
+      showRightSidebar();
 
       return "Closed created seed tab.";
     }
@@ -1306,7 +1354,7 @@ export function App(): ReactElement {
     setSelectedObservationId(undefined);
     setViewportFocusNodeId(context.focus_node_id ?? restoredSelectedNodeIds[0]);
     setIsSelectionActionCardOpen(false);
-    setRightSidebarCollapsed(false);
+    showRightSidebar();
 
     return "Restored previous viewport and selection.";
   }
@@ -1319,7 +1367,7 @@ export function App(): ReactElement {
     setSelectedRelationId(undefined);
     setSelectedObservationId(undefined);
     setIsSelectionActionCardOpen(false);
-    setRightSidebarCollapsed(false);
+    showRightSidebar();
   }
 
   async function handleAttachRuntimeTab(): Promise<void> {
@@ -1371,15 +1419,13 @@ export function App(): ReactElement {
           activeTab={activeTab}
           onAttach={handleAttachRuntimeTab}
           onClose={handleCloseRuntimeTab}
-          onToggleRightSidebar={() => setRightSidebarCollapsed((current) => !current)}
-          rightSidebarExpanded={!rightSidebarCollapsed}
+          onToggleRightSidebar={toggleRightSidebar}
+          rightSidebarExpanded={rightSidebarVisible}
         />
       ) : isDockedTabView ? null : (
         <WindowTitleBar
           leftSidebarExpanded={!leftSidebarCollapsed}
           onToggleLeftSidebar={() => setLeftSidebarCollapsed((current) => !current)}
-          onToggleRightSidebar={() => setRightSidebarCollapsed((current) => !current)}
-          rightSidebarExpanded={!rightSidebarCollapsed}
         />
       )}
       {settingsOpen && isShellWindow ? (
@@ -1394,7 +1440,7 @@ export function App(): ReactElement {
       ) : (
         <div className={isDetachedTabWindow || isDockedTabView ? "desktop-shell detached-tab-desktop" : "desktop-shell"}>
         {isShellWindow ? (
-          <SidebarRail collapsed={leftSidebarCollapsed} label="Observatory" side="left">
+          <SidebarRail mode={leftSidebarCollapsed ? "collapsed" : "expanded"} label="Observatory" side="left">
             <ObservatorySidebar
               activeTabId={activeTabId}
               activeTool={activeCanvasTool}
@@ -1410,7 +1456,7 @@ export function App(): ReactElement {
               onTabPin={handleTabPin}
               onTabRefresh={handleTabRefresh}
               onTabReorder={handleTabReorder}
-              onToolSelect={setActiveCanvasTool}
+              onToolSelect={handleCanvasToolSelect}
               onTabSelect={handleTabSelect}
               onFolderCreate={handleFolderCreate}
               onFolderDelete={handleFolderDelete}
@@ -1438,8 +1484,9 @@ export function App(): ReactElement {
               layerLabel={activeLayerLabel}
               layers={scene.layers}
               onLayerSelect={handleLayerSelect}
-              onToggleRightSidebar={() => setRightSidebarCollapsed((current) => !current)}
-              rightSidebarExpanded={!rightSidebarCollapsed}
+              onToggleRightSidebar={toggleRightSidebar}
+              rightSidebarExpanded={rightSidebarVisible}
+              showRightSidebarToggle={shouldRenderRightSidebar}
             />
             <div className="workbench-canvas-wrap">
               <TerrainCanvas
@@ -1470,7 +1517,7 @@ export function App(): ReactElement {
                     return;
                   }
                   handleCanvasFrontierDiscovery(viewport, cartographerChunkScheduling);
-                  setRightSidebarCollapsed(false);
+                  setRightSidebarMode("compact");
                 }}
                 onNodeSelect={handleNodeSelect}
                 onRelationSelect={handleRelationSelect}
@@ -1551,11 +1598,22 @@ export function App(): ReactElement {
         </section>
         )}
 
+        {shouldRenderRightSidebar && !rightSidebarVisible ? (
+          <button
+            aria-label="Restore AI Map Control"
+            className="right-sidebar-restore-handle"
+            onClick={() => setRightSidebarMode("compact")}
+            title="Restore AI Map Control"
+            type="button"
+          >
+            AI
+          </button>
+        ) : null}
         {shouldRenderRightSidebar ? (
         <SidebarRail
-          collapsed={rightSidebarCollapsed}
           label="AI Map Control"
-          onResizePointerDown={handleRightSidebarResizeStart}
+          mode={rightSidebarMode}
+          onResizePointerDown={rightSidebarVisible ? handleRightSidebarResizeStart : undefined}
           side="right"
           style={rightSidebarStyle}
         >
@@ -1564,12 +1622,14 @@ export function App(): ReactElement {
             assistantActionPermissionMode={assistantActionPermissionMode}
             assistantActionPermissionRules={assistantActionPermissionRules}
             basketItems={activeBasketItems}
+            mode={rightSidebarMode}
             onAddSource={handleAddSource}
             onAssistantAction={handleAssistantAction}
             onAssistantUndo={handleAssistantUndo}
             onClearBasket={handleClearBasket}
             onClearSelection={handleClearSelection}
             onConvertScoutObservation={handleConvertScoutObservation}
+            onModeChange={setRightSidebarMode}
             onObserveCandidate={handleObserveCandidateSource}
             onOpenCandidateAsSeek={handleOpenCandidateAsSeek}
             onReplaceFailedSource={handleReplaceFailedSourceCandidate}
@@ -1905,10 +1965,10 @@ function TileActionChooser({
         <strong>{node.title}</strong>
         <div>
           <button onClick={onEnterDeepLens} type="button">
-            进入DeepLens
+            Open Deep Lens
           </button>
           <button onClick={onEnterBrowser} type="button">
-            进入浏览器模式
+            Open browser mode
           </button>
         </div>
       </div>

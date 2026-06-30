@@ -24,7 +24,7 @@ import type {
   CartographerRuntimeViewportExpansionRequest,
   CartographerRuntimeViewportExpansionResult,
 } from "../main/cartographerRuntimeBridge";
-import type { TabRuntimeSnapshot, TabWorkspaceSyncInput } from "../main/tabRuntimeManager";
+import type { CanvasTool, TabCanvasToolChangeEvent, TabRuntimeSnapshot, TabWorkspaceSyncInput } from "../main/tabRuntimeManager";
 import type { TileSurfaceDeepLensSnapshot, TileSurfaceLinkEvent, TileSurfaceThumbnailEvent } from "../main/tileSurfaceManager";
 
 export type WindowAction =
@@ -71,7 +71,13 @@ contextBridge.exposeInMainWorld("seekstar", {
     createFolder: (title: string): Promise<TabRuntimeSnapshot> => ipcRenderer.invoke("tabs:create-folder", { title }),
     deleteFolder: (folderId: string): Promise<TabRuntimeSnapshot> => ipcRenderer.invoke("tabs:delete-folder", folderId),
     detach: (tabId: string): Promise<TabRuntimeSnapshot> => ipcRenderer.invoke("tabs:detach", tabId),
+    getActiveCanvasTool: (tabId: string): Promise<CanvasTool> => ipcRenderer.invoke("tabs:get-active-canvas-tool", tabId),
     list: (): Promise<TabRuntimeSnapshot> => ipcRenderer.invoke("tabs:list"),
+    onCanvasToolChanged: (callback: (event: TabCanvasToolChangeEvent) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: TabCanvasToolChangeEvent): void => callback(payload);
+      ipcRenderer.on("tabs:canvas-tool-changed", listener);
+      return () => ipcRenderer.removeListener("tabs:canvas-tool-changed", listener);
+    },
     onChanged: (callback: (snapshot: TabRuntimeSnapshot) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, snapshot: TabRuntimeSnapshot): void => callback(snapshot);
       ipcRenderer.on("tabs:changed", listener);
@@ -81,6 +87,8 @@ contextBridge.exposeInMainWorld("seekstar", {
     renameWorkspace: (name: string): Promise<TabRuntimeSnapshot> => ipcRenderer.invoke("tabs:rename-workspace", name),
     reorder: (sourceTabId: string, targetTabId: string): Promise<TabRuntimeSnapshot> =>
       ipcRenderer.invoke("tabs:reorder", { sourceTabId, targetTabId }),
+    setActiveCanvasTool: (tabId: string, tool: CanvasTool): Promise<CanvasTool> =>
+      ipcRenderer.invoke("tabs:set-active-canvas-tool", { tabId, tool }),
     setDockBounds: (bounds?: { x: number; y: number; width: number; height: number }): Promise<TabRuntimeSnapshot> =>
       ipcRenderer.invoke("tabs:set-dock-bounds", bounds),
     syncWorkspaceTabs: (input: TabWorkspaceSyncInput): Promise<TabRuntimeSnapshot> => ipcRenderer.invoke("tabs:sync-workspace-tabs", input),

@@ -118,6 +118,10 @@ export function MainContentStatusOverlay({
 }
 
 function filterRenderableMainContentNodes(nodes: TerrainNode[], mode: MainContentProjection["mode"]): TerrainNode[] {
+  if (mode === "source_tile_field" || mode === "browser_absorbed") {
+    return nodes.filter((node) => !isSourceTileSurfaceNode(node) && !isMainContentScaffoldPlaceholder(node));
+  }
+
   if (mode === "cartographer_chunk_field" || mode === "source_candidate_field") {
     const hasCartographerTerrain = nodes.some(isCartographerTerrainNode);
 
@@ -141,6 +145,15 @@ function filterRenderableMainContentNodes(nodes: TerrainNode[], mode: MainConten
 
 function isCartographerTerrainNode(node: TerrainNode): boolean {
   return node.source_state === "cartographer_primary" || node.tags?.includes("cartographer") === true;
+}
+
+function isSourceTileSurfaceNode(node: TerrainNode): boolean {
+  return Boolean(
+    node.layer === "L3" &&
+      node.source_state === "source_backed" &&
+      node.source_url &&
+      (node.type === "webpage" || node.type === "document"),
+  );
 }
 
 function isMainContentScaffoldPlaceholder(node: TerrainNode): boolean {

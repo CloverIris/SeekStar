@@ -20,9 +20,13 @@ import { formatSourceState, formatTimestamp, getActiveLayer, getJobStatusCounts,
 import type { SearchResult } from "../../search/localSceneSearch";
 import type { SelectionBasketItem } from "../../selection/selectionBasket";
 import { SearchResultsPanel } from "../SearchResultsPanel";
+
+export type AiMapControlMode = "collapsed" | "compact" | "expanded";
+
 export function AiMapControlSidebar({
   activeTab,
   basketItems,
+  mode,
   onBacklinkFocus,
   onAddSource,
   onAssistantAction,
@@ -39,6 +43,7 @@ export function AiMapControlSidebar({
   onReplaceFailedSource,
   onScoutSourceLinks,
   onLayerSelect,
+  onModeChange,
   onResetWorkspace,
   onSaveSelectionToTray,
   onSearchResultSelect,
@@ -56,6 +61,7 @@ export function AiMapControlSidebar({
   assistantActionPermissionMode: SeekStarSettings["assistant_action_permission_mode"];
   assistantActionPermissionRules: SeekStarSettings["assistant_action_permission_rules"];
   basketItems: SelectionBasketItem[];
+  mode: AiMapControlMode;
   onBacklinkFocus: (backlink: NonNullable<ExplorationTab["parent_backlink"]>) => void;
   onAddSource: (input: SourceIngestionInput) => void;
   onAssistantAction: (action: AiAssistantAction) => Promise<AssistantActionExecutionResult | void>;
@@ -70,6 +76,7 @@ export function AiMapControlSidebar({
   onRunScoutPlan: (plan: ScoutPlan) => void;
   onScoutSourceLinks: (node: TerrainNode, source: SourceRef) => void;
   onLayerSelect: (layer: LayerId, focusNodeId?: string) => void;
+  onModeChange: (mode: AiMapControlMode) => void;
   onResetWorkspace: () => void;
   onSaveSelectionToTray: () => void;
   onSearchResultSelect: (nodeId: string) => void;
@@ -87,38 +94,69 @@ export function AiMapControlSidebar({
   const scoutObservations = scene.scout_observations ?? [];
   const contextTitle = selectedRelation ? "Relation" : selectedNodes.length > 1 ? "Selection" : selectedNode ? "Node" : searchQuery ? "Search" : "Map";
   const hasClearTarget = Boolean(selectedRelation || selectedNode || searchQuery);
-  const shouldOpenSourceReview =
-    Boolean(selectedObservationId) ||
-    scoutObservations.some((observation) => observation.status === "source_candidate" || observation.status === "failed");
+  const sourceReviewObservation = selectPrimarySourceReviewObservation(scoutObservations, selectedObservationId);
 
   return (
-    <div className="inspector-sidebar">
+    <div className={`inspector-sidebar inspector-sidebar-${mode}`} data-mode={mode}>
       <header className="inspector-sidebar-header">
         <div>
           <span>AI Map Control</span>
           <small>{contextTitle}</small>
         </div>
-        {hasClearTarget ? (
-          <button aria-label="Clear selection" onClick={onClearSelection} type="button">
-            Clear
+        <div className="inspector-sidebar-header-actions">
+          <button
+            aria-label="Collapse AI Map Control"
+            onClick={() => onModeChange("collapsed")}
+            type="button"
+          >
+            Collapse
           </button>
-        ) : null}
+          <button
+            aria-label={mode === "expanded" ? "Use compact AI Map Control" : "Expand AI Map Control"}
+            className="inspector-sidebar-mode-button"
+            onClick={() => onModeChange(mode === "expanded" ? "compact" : "expanded")}
+            type="button"
+          >
+            {mode === "expanded" ? "Compact" : "Expand"}
+          </button>
+          {hasClearTarget ? (
+            <button aria-label="Clear selection" onClick={onClearSelection} type="button">
+              Clear
+            </button>
+          ) : null}
+        </div>
       </header>
       <div className="inspector-sidebar-body">
         <AiMapAssistantPanel
           activeTab={activeTab}
           assistantActionPermissionMode={assistantActionPermissionMode}
           assistantActionPermissionRules={assistantActionPermissionRules}
+          mode={mode}
           scene={scene}
           selectedNodes={selectedNodes}
           onAssistantAction={onAssistantAction}
           onAssistantUndo={onAssistantUndo}
         />
-        <details className="inspector-context-section" open>
-          <summary>
-            <span>Map context</span>
-            <small>{contextTitle}</small>
-          </summary>
+        <MapContextSummaryPanel
+          activeTab={activeTab}
+          contextTitle={contextTitle}
+          fogCount={fogCount}
+          onLayerSelect={onLayerSelect}
+          onSaveSelectionToTray={onSaveSelectionToTray}
+          onUseNodeAsSeed={onUseNodeAsSeed}
+          scene={scene}
+          searchQuery={searchQuery}
+          searchResultCount={searchResults.length}
+          selectedNode={selectedNode}
+          selectedNodes={selectedNodes}
+          selectedRelation={selectedRelation}
+        />
+        {mode === "expanded" ? (
+          <details className="inspector-context-section">
+            <summary>
+              <span>Map context details</span>
+              <small>{contextTitle}</small>
+            </summary>
           {selectedRelation ? (
             <SelectedRelationPanel fromNode={selectedRelationNodes?.from} relation={selectedRelation} toNode={selectedRelationNodes?.to} />
           ) : selectedNodes.length > 1 ? (
@@ -143,11 +181,22 @@ export function AiMapControlSidebar({
             />
           )}
           <SearchResultsPanel query={searchQuery} results={searchResults} onResultSelect={onSearchResultSelect} />
-        </details>
+          </details>
+        ) : null}
         {scoutObservations.length > 0 ? (
-          <details className="inspector-source-section" open={shouldOpenSourceReview}>
+          <SourceReviewQueueSummary
+            observation={sourceReviewObservation}
+            observations={scoutObservations}
+            onConvertObservation={onConvertScoutObservation}
+            onObserveCandidate={onObserveCandidate}
+            onOpenCandidateAsSeek={onOpenCandidateAsSeek}
+            onReplaceFailedSource={onReplaceFailedSource}
+          />
+        ) : null}
+        {scoutObservations.length > 0 ? (
+          <details className="inspector-source-section">
             <summary>
-              <span>Source review</span>
+              <span>View source queue</span>
               <small>{scoutObservations.length} observations</small>
             </summary>
             <ScoutObservationPanel
@@ -276,6 +325,7 @@ function AiMapAssistantPanel({
   activeTab,
   assistantActionPermissionMode,
   assistantActionPermissionRules,
+  mode,
   onAssistantAction,
   onAssistantUndo,
   scene,
@@ -284,11 +334,13 @@ function AiMapAssistantPanel({
   activeTab: ExplorationTab;
   assistantActionPermissionMode: SeekStarSettings["assistant_action_permission_mode"];
   assistantActionPermissionRules: SeekStarSettings["assistant_action_permission_rules"];
+  mode: AiMapControlMode;
   onAssistantAction: (action: AiAssistantAction) => Promise<AssistantActionExecutionResult | void>;
   onAssistantUndo: (context: AssistantOperationUndoContext) => Promise<string | void>;
   scene: TerrainScene;
   selectedNodes: TerrainNode[];
 }): ReactElement {
+  const isCompact = mode === "compact";
   const [prompt, setPrompt] = useState("");
   const [status, setStatus] = useState<"idle" | "asking" | "error">("idle");
   const [actionStatus, setActionStatus] = useState<"idle" | "running" | "error" | "done">("idle");
@@ -318,6 +370,8 @@ function AiMapAssistantPanel({
     permissionMode: formatAssistantPermissionMode(assistantActionPermissionMode),
   };
   const quickPrompts = createAssistantQuickPrompts(activeTab, selectedNodes, assistantContext);
+  const visibleQuickPrompts = isCompact ? quickPrompts.slice(0, 4) : quickPrompts;
+  const visibleChatHistory = isCompact ? chatHistory.slice(0, 1) : chatHistory;
   const canAsk = prompt.trim().length > 0 && status !== "asking";
 
   useEffect(() => {
@@ -642,7 +696,7 @@ function AiMapAssistantPanel({
   }
 
   return (
-    <section className="inspect-section ai-map-assistant-panel">
+    <section className={`inspect-section ai-map-assistant-panel ${isCompact ? "is-compact" : "is-expanded"}`}>
       <div className="ai-map-assistant-header">
         <h2>AI map assistant</h2>
         <div>
@@ -695,7 +749,7 @@ function AiMapAssistantPanel({
         <strong>{assistantContext.permissionMode}</strong>
       </div>
       <div className="ai-map-assistant-quick-prompts" aria-label="AI map assistant quick prompts">
-        {quickPrompts.map((item) => (
+        {visibleQuickPrompts.map((item) => (
           <button
             key={item.label}
             onClick={() => {
@@ -719,9 +773,9 @@ function AiMapAssistantPanel({
           Ask
         </button>
       </form>
-      {chatHistory.length > 0 ? (
+      {visibleChatHistory.length > 0 ? (
         <div className="ai-map-assistant-history">
-          {chatHistory.map((turn) => (
+          {visibleChatHistory.map((turn) => (
             <AssistantTurnCard
               actionDisabled={status === "asking" || actionStatus === "running"}
               assistantActionPermissionMode={assistantActionPermissionMode}
@@ -1294,6 +1348,199 @@ function ScoutObservationPanel({
       </div>
     </section>
   );
+}
+
+function MapContextSummaryPanel({
+  activeTab,
+  contextTitle,
+  fogCount,
+  onLayerSelect,
+  onSaveSelectionToTray,
+  onUseNodeAsSeed,
+  scene,
+  searchQuery,
+  searchResultCount,
+  selectedNode,
+  selectedNodes,
+  selectedRelation,
+}: {
+  activeTab: ExplorationTab;
+  contextTitle: string;
+  fogCount: number;
+  onLayerSelect: (layer: LayerId, focusNodeId?: string) => void;
+  onSaveSelectionToTray: () => void;
+  onUseNodeAsSeed: (node: TerrainNode) => void;
+  scene: TerrainScene;
+  searchQuery: string;
+  searchResultCount: number;
+  selectedNode?: TerrainNode;
+  selectedNodes: TerrainNode[];
+  selectedRelation?: TerrainRelation;
+}): ReactElement {
+  const activeLayer = getActiveLayer(scene);
+  const sourceCounts = getSourceStateCounts(scene.nodes);
+  const candidateCount = (scene.scout_observations ?? []).filter((observation) => observation.status === "source_candidate").length;
+  const title = selectedRelation
+    ? selectedRelation.type.replace(/_/g, " ")
+    : selectedNodes.length > 1
+      ? "Selected region"
+      : selectedNode?.title ?? activeTab.title;
+  const description = selectedRelation
+    ? selectedRelation.explanation
+    : selectedNodes.length > 1
+      ? `${selectedNodes.length} nodes are selected as a spatial prompt.`
+      : selectedNode?.summary ?? scene.metadata.description;
+  const zoomTarget = selectedNode?.zoom_target;
+  const continuousZoomLayer = selectedNode && !zoomTarget ? resolveContinuousZoomInLayer(selectedNode.layer) : undefined;
+
+  return (
+    <section className="inspect-section map-context-summary-panel">
+      <div className="map-context-summary-header">
+        <span>Map context summary</span>
+        <small>{contextTitle}</small>
+      </div>
+      <strong>{title}</strong>
+      {description ? <p>{description}</p> : null}
+      <dl className="map-context-summary-metrics">
+        <div>
+          <dt>Layer</dt>
+          <dd>{scene.viewport.layer}</dd>
+        </div>
+        <div>
+          <dt>Visible</dt>
+          <dd>{scene.nodes.filter((node) => node.layer === scene.viewport.layer).length}</dd>
+        </div>
+        <div>
+          <dt>Sources</dt>
+          <dd>{sourceCounts.source_backed ?? 0}</dd>
+        </div>
+        <div>
+          <dt>Review</dt>
+          <dd>{candidateCount}</dd>
+        </div>
+        <div>
+          <dt>Fog</dt>
+          <dd>{fogCount}</dd>
+        </div>
+        <div>
+          <dt>Search</dt>
+          <dd>{searchQuery ? searchResultCount : "-"}</dd>
+        </div>
+      </dl>
+      {activeLayer?.breadcrumb ? <small className="map-context-summary-path">{activeLayer.breadcrumb.join(" / ")}</small> : null}
+      <div className="map-context-summary-actions">
+        {zoomTarget ? (
+          <button onClick={() => onLayerSelect(zoomTarget.layer, zoomTarget.node_id)} type="button">
+            Zoom in to {zoomTarget.layer}
+          </button>
+        ) : null}
+        {continuousZoomLayer ? (
+          <button onClick={() => onLayerSelect(continuousZoomLayer, selectedNode?.id)} type="button">
+            Zoom in to {continuousZoomLayer}
+          </button>
+        ) : null}
+        {selectedNode?.can_create_seed ? (
+          <button onClick={() => onUseNodeAsSeed(selectedNode)} type="button">
+            Create seed
+          </button>
+        ) : null}
+        {selectedNodes.length > 1 ? (
+          <button onClick={onSaveSelectionToTray} type="button">
+            Save region
+          </button>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function SourceReviewQueueSummary({
+  observation,
+  observations,
+  onConvertObservation,
+  onObserveCandidate,
+  onOpenCandidateAsSeek,
+  onReplaceFailedSource,
+}: {
+  observation?: ScoutObservation;
+  observations: ScoutObservation[];
+  onConvertObservation: (observation: ScoutObservation) => void;
+  onObserveCandidate: (observation: ScoutObservation) => void;
+  onOpenCandidateAsSeek: (observation: ScoutObservation) => void;
+  onReplaceFailedSource: (observation: ScoutObservation) => void;
+}): ReactElement {
+  const statusCounts = observations.reduce<Partial<Record<ScoutObservation["status"], number>>>((counts, candidate) => {
+    counts[candidate.status] = (counts[candidate.status] ?? 0) + 1;
+    return counts;
+  }, {});
+
+  return (
+    <section className="inspect-section source-review-summary-panel">
+      <div className="source-review-summary-header">
+        <span>Source review</span>
+        <small>{observations.length} observations</small>
+      </div>
+      <p>Candidate URLs are not Tile Field surfaces until Scout/DataService returns source evidence.</p>
+      <div className="source-review-summary-counts" aria-label="Source review queue summary">
+        {(["source_candidate", "pending", "observed", "converted", "failed"] satisfies ScoutObservation["status"][]).map((status) => (
+          <span key={status}>
+            {status.replace("_", " ")} {statusCounts[status] ?? 0}
+          </span>
+        ))}
+      </div>
+      {observation ? (
+        <article className="source-review-primary-card" data-scout-state={observation.status}>
+          <div>
+            <strong>{observation.title}</strong>
+            <small>{observation.url ?? observation.query}</small>
+          </div>
+          {observation.snippet ? <p>{observation.snippet}</p> : null}
+          {observation.failure_reason ? <small>{observation.failure_reason}</small> : null}
+          <div className="source-review-primary-actions">
+            {isReplaceableCandidate(observation) ? (
+              <button onClick={() => onReplaceFailedSource(observation)} type="button">
+                Ask AI replacement
+              </button>
+            ) : observation.source_snapshot ? (
+              <button onClick={() => onConvertObservation(observation)} type="button">
+                Use captured snapshot
+              </button>
+            ) : isObservableCandidate(observation) ? (
+              <button onClick={() => onObserveCandidate(observation)} type="button">
+                Observe source
+              </button>
+            ) : observation.url ? (
+              <button onClick={() => onOpenCandidateAsSeek(observation)} type="button">
+                Open as Seek
+              </button>
+            ) : null}
+          </div>
+        </article>
+      ) : null}
+    </section>
+  );
+}
+
+function selectPrimarySourceReviewObservation(
+  observations: ScoutObservation[],
+  selectedObservationId?: string,
+): ScoutObservation | undefined {
+  const selectedObservation = selectedObservationId ? observations.find((observation) => observation.id === selectedObservationId) : undefined;
+
+  if (selectedObservation) {
+    return selectedObservation;
+  }
+
+  return [...observations]
+    .reverse()
+    .find(
+      (observation) =>
+        observation.status === "source_candidate" ||
+        observation.status === "observed" ||
+        observation.status === "failed" ||
+        Boolean(observation.failure_reason) ||
+        Boolean(observation.source_snapshot),
+    );
 }
 
 function SceneOverviewPanel({

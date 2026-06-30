@@ -6,6 +6,8 @@ import { goBack, goForward } from "../platform/windowApi";
 import { SidebarToggleButton } from "./SidebarToggleButton";
 import { TitleBarMenus, type AppMenuId } from "./TitleBarMenus";
 
+export type SidebarRailMode = "collapsed" | "compact" | "expanded";
+
 export function ShellDockWorkbench({
   activeRuntimeTab,
   dockHostRef,
@@ -37,20 +39,27 @@ export function ShellDockWorkbench({
 
 export function SidebarRail({
   children,
-  collapsed,
   label,
+  mode,
   onResizePointerDown,
   side,
   style,
 }: {
   children: ReactElement;
-  collapsed: boolean;
   label: string;
+  mode: SidebarRailMode;
   onResizePointerDown?: (event: PointerEvent<HTMLElement>) => void;
   side: "left" | "right";
   style?: CSSProperties;
 }): ReactElement {
-  const railClass = collapsed ? `sidebar-rail sidebar-rail-${side} collapsed` : `sidebar-rail sidebar-rail-${side}`;
+  const railClass = [
+    "sidebar-rail",
+    `sidebar-rail-${side}`,
+    `sidebar-rail-${mode}`,
+    mode === "collapsed" ? "collapsed" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
     <aside aria-label={label} className={railClass} style={style}>
@@ -108,13 +117,9 @@ export function DetachedTabTitleBar({
 export function WindowTitleBar({
   leftSidebarExpanded,
   onToggleLeftSidebar,
-  onToggleRightSidebar,
-  rightSidebarExpanded,
 }: {
   leftSidebarExpanded: boolean;
   onToggleLeftSidebar: () => void;
-  onToggleRightSidebar?: () => void;
-  rightSidebarExpanded?: boolean;
 }): ReactElement {
   const [openMenuId, setOpenMenuId] = useState<AppMenuId | null>(null);
 
@@ -144,16 +149,6 @@ export function WindowTitleBar({
         <span className="window-titlebar-brand-lens">AI Explorer lens</span>
       </p>
       <div aria-hidden="true" className="window-drag-region" />
-      <div className="window-titlebar-side-actions">
-        {onToggleRightSidebar ? (
-          <SidebarToggleButton
-            expanded={rightSidebarExpanded ?? true}
-            label="AI Map Control"
-            onClick={onToggleRightSidebar}
-            side="right"
-          />
-        ) : null}
-      </div>
     </header>
   );
 }
