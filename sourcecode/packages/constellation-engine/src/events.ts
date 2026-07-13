@@ -78,7 +78,9 @@ export interface ExplorationEventResult {
 export function applyExplorationEvent(scene: TerrainScene, event: ExplorationEvent): ExplorationEventResult {
   switch (event.type) {
     case "selection.changed":
-      return applySceneSelection(scene, event.nodeIds, event.focusNodeId);
+      return applySceneSelection(scene, event.nodeIds, event.focusNodeId, {
+        centerOnFocus: event.intent === "backlink" || event.intent === "cartographer" || event.intent === "search",
+      });
     case "viewport.changed":
       return {
         scene: applySceneViewport(scene, event.viewport, event.selectedNodeIds),

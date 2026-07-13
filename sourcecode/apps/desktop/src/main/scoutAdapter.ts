@@ -15,6 +15,12 @@ export function registerScoutAdapter(): void {
   ipcMain.handle(SCOUT_RUN_PLAN_CHANNEL, async (_event, request: unknown): Promise<ScoutRunResult> => scoutService.run(parseScoutRunRequest(request)));
 }
 
+// Main-process producers (such as WorldPoolCoordinator) share the same
+// throttled worker and provider configuration as renderer-initiated Scout work.
+export function runScoutPlanInMain(request: ScoutRunRequest): Promise<ScoutRunResult> {
+  return scoutService.run(request);
+}
+
 class ScoutService {
   private readonly fallbackRuntime = new ScoutWorkerRuntime();
   private readonly pendingByRequestId = new Map<

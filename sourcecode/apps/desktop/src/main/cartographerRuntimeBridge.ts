@@ -143,7 +143,10 @@ export interface CartographerRuntimeCancelResult {
   transactionIds: string[];
 }
 
-const CARTOGRAPHER_BOOTSTRAP_LEVELS: readonly CartographerRuntimeRequest["level_id"][] = ["supra_macro", "L0", "L1", "L2", "L3"];
+// A seed opens as a broad field. L1-L3 are intentionally generated only after
+// telescope focus reaches a concrete neighbourhood; eagerly creating all of
+// them spends model budget before the user has expressed that direction.
+const CARTOGRAPHER_BOOTSTRAP_LEVELS: readonly CartographerRuntimeRequest["level_id"][] = ["supra_macro", "L0"];
 const DEFAULT_TONIGHT_SKY_BOOTSTRAP_LEVELS: readonly CartographerRuntimeRequest["level_id"][] = ["supra_macro", "L0"];
 
 let coordinator: CartographerChunkCoordinator | undefined;
@@ -727,7 +730,9 @@ function getCoordinator(): CartographerChunkCoordinator {
           signal: options?.signal,
         });
       },
-      maxPreloadChunks: 4,
+      // Keep just one speculative neighbour for macro smoothness. Additional
+      // terrain is generated only after the user actually crosses into it.
+      maxPreloadChunks: 1,
       maxStoredChunks: 160,
       storage: new JsonLevelChunkStorage(join(app.getPath("userData"), "seekstar-level-chunks.json")),
     });
@@ -806,12 +811,7 @@ function isSeekStarTraceEnabled(): boolean {
     return false;
   }
 
-  return (
-    process.env.SEEKSTAR_TRACE === "1" ||
-    process.env.SEEKSTAR_TRACE === "true" ||
-    process.env.npm_lifecycle_event === "dev" ||
-    process.env.NODE_ENV === "development"
-  );
+  return process.env.SEEKSTAR_TRACE === "1" || process.env.SEEKSTAR_TRACE === "true";
 }
 
 function stringifyTracePayload(payload: unknown): string {

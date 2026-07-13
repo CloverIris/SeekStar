@@ -85,6 +85,7 @@ export function CommandComposer({
   commandKind,
   commandInputRef,
   commandValue,
+  intent,
   isCommandModalOpen,
   onAddToCurrentPage,
   onCommandChange,
@@ -96,6 +97,7 @@ export function CommandComposer({
   commandKind: "keyword" | "url";
   commandInputRef: RefObject<HTMLInputElement | null>;
   commandValue: string;
+  intent?: "new_seek" | "search_current";
   isCommandModalOpen: boolean;
   onAddToCurrentPage: () => void;
   onCommandChange: (event: ChangeEvent<HTMLInputElement>) => void;
@@ -107,6 +109,7 @@ export function CommandComposer({
   return (
     <div className="command-composer">
       <div className="command-composer-inner">
+        {intent ? <span className="command-intent">{intent === "new_seek" ? "New Seek" : "Search this map"}</span> : null}
         {isCommandModalOpen ? (
           <CommandActionCard
             kind={commandKind}
@@ -127,7 +130,7 @@ export function CommandComposer({
             ref={commandInputRef}
             type="text"
             value={commandValue}
-            placeholder="Add a keyword, start a new Seek, or search this map"
+            placeholder={intent === "new_seek" ? "Name a new field to explore" : intent === "search_current" ? "Search this map" : "Add a keyword, start a new Seek, or search this map"}
           />
           <button
             aria-label="Submit"

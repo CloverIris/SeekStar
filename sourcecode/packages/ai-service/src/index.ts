@@ -178,6 +178,32 @@ export interface CartographerGenerationOutput {
   generated_at: string;
 }
 
+export type WorldSegmentBandId = "L0" | "L1" | "L2" | "L3";
+
+export interface WorldSegmentGenerationInput {
+  seed: string;
+  segment: { key: string; x: number; y: number };
+  nearby_anchors?: Array<{ id: string; layer: string; title: string; x: number; y: number }>;
+  prompt_revision?: string;
+}
+
+export interface WorldSegmentBandOutput {
+  nodes: CartographerGeneratedNode[];
+}
+
+export interface WorldSegmentGenerationOutput {
+  status: CartographerGenerationStatus;
+  seed: string;
+  segment: WorldSegmentGenerationInput["segment"];
+  bands: Record<WorldSegmentBandId, WorldSegmentBandOutput>;
+  source_candidates: CartographerGeneratedSourceCandidate[];
+  diagnostics: CartographerDiagnostic[];
+  telemetry?: AiModelTelemetry;
+  provider_id?: string;
+  model?: string;
+  generated_at: string;
+}
+
 export interface AiAssistantSelectedNode {
   id: string;
   title: string;
@@ -292,6 +318,10 @@ export class AiCartographerService implements AiService {
     return output;
   }
 
+  async generateWorldSegment(input: WorldSegmentGenerationInput, options: AiRequestOptions = {}): Promise<WorldSegmentGenerationOutput> {
+    return this.provider.generateWorldSegment(input, options);
+  }
+
   async assist(input: AiAssistantInput, options: AiRequestOptions = {}): Promise<AiAssistantOutput> {
     return this.provider.assist(input, options);
   }
@@ -363,6 +393,7 @@ export class UnconfiguredAiService implements AiService {
 
 interface AiModelProvider {
   generate(input: CartographerGenerationInput, options?: AiRequestOptions): Promise<CartographerGenerationOutput>;
+  generateWorldSegment(input: WorldSegmentGenerationInput, options?: AiRequestOptions): Promise<WorldSegmentGenerationOutput>;
   assist(input: AiAssistantInput, options?: AiRequestOptions): Promise<AiAssistantOutput>;
 }
 
@@ -458,6 +489,54 @@ export class OpenAiCompatibleProvider implements AiModelProvider {
       ...validation.output,
       telemetry: modelResponse.telemetry,
     };
+  }
+
+  async generateWorldSegment(input: WorldSegmentGenerationInput, options: AiRequestOptions = {}): Promise<WorldSegmentGenerationOutput> {
+    if (isAbortSignalCancelled(options.signal)) {
+      return createFailedWorldSegmentOutput(input, "cancelled", [createAiDiagnostic("ai.cancelled", "AI world-segment generation was cancelled before completion.", this.config)]);
+    }
+
+    const key = resolveApiKey(this.config);
+
+    if (!key.key) {
+      return createFailedWorldSegmentOutput(input, "missing_key", [createAiDiagnostic("ai.missing_key", "No AI API key was found for world-segment generation.", this.config)]);
+    }
+
+    const modelResponse = await requestOpenAiCompatibleModel(
+      {
+        provider: this.config,
+        messages: buildWorldSegmentMessages(input),
+        response_format: "json_object",
+        signal: options.signal,
+        temperature: 0.2,
+        max_tokens: 1_800,
+        timeout_ms: this.config.timeout_ms,
+      },
+      key.key,
+    );
+
+    if (modelResponse.status !== "completed") {
+      return {
+        ...createFailedWorldSegmentOutput(
+          input,
+          modelResponse.status === "cancelled" ? "cancelled" : "provider_error",
+          modelResponse.diagnostics,
+          this.config,
+        ),
+        telemetry: modelResponse.telemetry,
+      };
+    }
+
+    const validation = validateWorldSegmentGenerationOutput(modelResponse.json, input, this.config);
+
+    if (!validation.valid) {
+      return {
+        ...createFailedWorldSegmentOutput(input, "invalid_output", validation.diagnostics, this.config),
+        telemetry: modelResponse.telemetry,
+      };
+    }
+
+    return { ...validation.output, telemetry: modelResponse.telemetry };
   }
 
   async assist(input: AiAssistantInput, options: AiRequestOptions = {}): Promise<AiAssistantOutput> {
@@ -760,6 +839,86 @@ export function validateCartographerGenerationOutput(
   };
 }
 
+export function validateWorldSegmentGenerationOutput(
+  value: unknown,
+  input: WorldSegmentGenerationInput,
+  providerConfig: Partial<AiProviderConfig> = {},
+): { valid: true; output: WorldSegmentGenerationOutput } | { valid: false; diagnostics: CartographerDiagnostic[] } {
+  if (!isRecord(value) || !isRecord(value.bands)) {
+    return {
+      valid: false,
+      diagnostics: [createAiDiagnostic("world_segment.invalid_json_shape", "World segment output must contain a bands object.", providerConfig)],
+    };
+  }
+
+  const diagnostics: CartographerDiagnostic[] = [];
+  const limits: Record<WorldSegmentBandId, number> = { L0: 4, L1: 4, L2: 4, L3: 0 };
+  const bands = {} as Record<WorldSegmentBandId, WorldSegmentBandOutput>;
+
+  for (const levelId of ["L0", "L1", "L2", "L3"] as const) {
+    const rawNodes = readWorldSegmentBandNodes(value.bands, levelId);
+    const nodes = rawNodes.flatMap((node): CartographerGeneratedNode[] => {
+      if (!isRecord(node) || typeof node.title !== "string" || !node.title.trim() || looksLikeMojibake(node.title)) {
+        return [];
+      }
+
+      return [{
+        id: typeof node.id === "string" ? node.id : undefined,
+        title: node.title.trim(),
+        node_type: isNodeType(node.node_type) ? node.node_type : levelId === "L0" ? "domain" : levelId === "L1" ? "topic" : "concept",
+        source_state: "cartographer_primary",
+        confidence: toUnitNumber(node.confidence, 0.72),
+        importance: toUnitNumber(node.importance, 0.65),
+        tags: Array.isArray(node.tags) ? node.tags.filter((tag): tag is string => typeof tag === "string").slice(0, 4) : [],
+        level_id: levelId,
+        can_create_seed: true,
+      }];
+    }).slice(0, limits[levelId]);
+
+    if (levelId !== "L3" && nodes.length === 0) {
+      diagnostics.push(createAiDiagnostic("world_segment.empty_band", `World segment ${levelId} contains no usable nodes.`, providerConfig, "warning"));
+    }
+
+    bands[levelId] = { nodes };
+  }
+
+  const sourceCandidates = (Array.isArray(value.source_candidates) ? value.source_candidates : []).flatMap((candidate): CartographerGeneratedSourceCandidate[] => {
+    if (!isRecord(candidate) || typeof candidate.title !== "string" || typeof candidate.url !== "string" || !isProbablyUrl(candidate.url) || looksLikeMojibake(candidate.title)) {
+      return [];
+    }
+
+    return [{
+      id: typeof candidate.id === "string" ? candidate.id : undefined,
+      title: candidate.title.trim(),
+      url: candidate.url.trim(),
+      snippet: typeof candidate.snippet === "string" ? candidate.snippet : undefined,
+      provider_id: typeof candidate.provider_id === "string" ? candidate.provider_id : providerConfig.id,
+      source_type: isSourceType(candidate.source_type) ? candidate.source_type : "webpage",
+      confidence: toUnitNumber(candidate.confidence, 0.55),
+      reason: typeof candidate.reason === "string" ? candidate.reason : undefined,
+    }];
+  }).slice(0, 2);
+
+  if (bands.L0.nodes.length === 0 && bands.L1.nodes.length === 0 && bands.L2.nodes.length === 0) {
+    return { valid: false, diagnostics: [...diagnostics, createAiDiagnostic("world_segment.empty", "World segment has no usable terrain.", providerConfig)] };
+  }
+
+  return {
+    valid: true,
+    output: {
+      status: "ok",
+      seed: input.seed,
+      segment: input.segment,
+      bands,
+      source_candidates: sourceCandidates,
+      diagnostics,
+      provider_id: providerConfig.id,
+      model: providerConfig.model,
+      generated_at: new Date().toISOString(),
+    },
+  };
+}
+
 export function createFailedGenerationOutput(
   input: CartographerGenerationInput,
   status: Exclude<CartographerGenerationStatus, "ok">,
@@ -780,6 +939,34 @@ export function createFailedGenerationOutput(
     telemetry: undefined,
     generated_at: new Date().toISOString(),
   };
+}
+
+function createFailedWorldSegmentOutput(
+  input: WorldSegmentGenerationInput,
+  status: Exclude<CartographerGenerationStatus, "ok">,
+  diagnostics: CartographerDiagnostic[],
+  providerConfig: Partial<AiProviderConfig> = {},
+): WorldSegmentGenerationOutput {
+  return {
+    status,
+    seed: input.seed,
+    segment: input.segment,
+    bands: { L0: { nodes: [] }, L1: { nodes: [] }, L2: { nodes: [] }, L3: { nodes: [] } },
+    source_candidates: [],
+    diagnostics,
+    provider_id: providerConfig.id,
+    model: providerConfig.model,
+    generated_at: new Date().toISOString(),
+  };
+}
+
+function createAiDiagnostic(
+  code: string,
+  message: string,
+  providerConfig: Partial<AiProviderConfig>,
+  severity: CartographerDiagnostic["severity"] = "error",
+): CartographerDiagnostic {
+  return { severity, code, message, provider_id: providerConfig.id };
 }
 
 export function createCancelledGenerationOutput(
@@ -1375,6 +1562,57 @@ function buildL3SourceCandidateMessages(
   ];
 }
 
+export function buildWorldSegmentMessages(input: WorldSegmentGenerationInput): AiModelMessage[] {
+  return [
+    {
+      role: "system",
+      content:
+        "You are SeekStar World Cartographer. Return one compact JSON object only, with keys bands and source_candidates. " +
+        "bands must have L0, L1, L2, L3; each band has nodes. Return at most 4 L0 domain nodes, 4 L1 topic nodes, 4 L2 concept/source-direction nodes, and no L3 nodes. " +
+        "Return at most 2 real public URLs in source_candidates. Titles must be readable Simplified Chinese UTF-8. " +
+        "This is one continuous world segment: do not create nested scenes, radial hubs, summaries, relations, or positions. " +
+        "Use only title, node_type, confidence, importance, and optional short tags on nodes. URLs remain unverified candidates. " +
+        "Use this exact band shape: {\\\"bands\\\":{\\\"L0\\\":{\\\"nodes\\\":[{\\\"title\\\":\\\"...\\\",\\\"node_type\\\":\\\"domain\\\"}]},\\\"L1\\\":{\\\"nodes\\\":[]},\\\"L2\\\":{\\\"nodes\\\":[]},\\\"L3\\\":{\\\"nodes\\\":[]}},\\\"source_candidates\\\":[]}.",
+    },
+    {
+      role: "user",
+      content: JSON.stringify({
+        task: "world_segment",
+        seed: createPromptSeed(input.seed),
+        segment: input.segment,
+        nearby_anchors: input.nearby_anchors?.slice(0, 8),
+        prompt_revision: input.prompt_revision,
+        output_contract: {
+          bands: {
+            L0: { max_nodes: 4, node_type: "domain" },
+            L1: { max_nodes: 4, node_type: "topic" },
+            L2: { max_nodes: 4, node_type: "concept|source" },
+            L3: { nodes: [] },
+          },
+          source_candidates: { max_items: 2, shape: { title: "short title", url: "https://...", source_type: "webpage" } },
+        },
+      }),
+    },
+  ];
+}
+
+/**
+ * Providers occasionally return a band directly as an array, or use a lowercase
+ * level key, despite an otherwise valid world-segment response. Both variants are
+ * harmless structural differences, so normalize them before deciding a chunk is
+ * empty. Unknown shapes still fail validation.
+ */
+function readWorldSegmentBandNodes(bands: Record<string, unknown>, levelId: WorldSegmentBandId): unknown[] {
+  const numericLevel = levelId.slice(1);
+  const rawBand = bands[levelId] ?? bands[levelId.toLowerCase()] ?? bands[`level_${numericLevel}`] ?? bands[`level${numericLevel}`];
+
+  if (Array.isArray(rawBand)) {
+    return rawBand;
+  }
+
+  return isRecord(rawBand) && Array.isArray(rawBand.nodes) ? rawBand.nodes : [];
+}
+
 export function buildAssistantMessages(input: AiAssistantInput): AiModelMessage[] {
   return [
     {
@@ -1629,12 +1867,7 @@ function isSeekStarTraceEnabled(): boolean {
     return false;
   }
 
-  return (
-    process.env.SEEKSTAR_TRACE === "1" ||
-    process.env.SEEKSTAR_TRACE === "true" ||
-    process.env.npm_lifecycle_event === "dev" ||
-    process.env.NODE_ENV === "development"
-  );
+  return process.env.SEEKSTAR_TRACE === "1" || process.env.SEEKSTAR_TRACE === "true";
 }
 
 function isSeekStarVerboseTraceEnabled(): boolean {

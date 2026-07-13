@@ -1,4 +1,5 @@
 import type {
+  LayerId,
   TerrainNode,
   TerrainRelation,
   TerrainScene,
@@ -10,7 +11,7 @@ import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent, ReactE
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LocateFixed, Maximize2, RotateCcw } from "lucide-react";
 import "pixi.js/unsafe-eval";
-import { Application, Container, Graphics, Rectangle, Sprite, Text } from "pixi.js";
+import { Application, Container, FederatedPointerEvent, Graphics, Rectangle, Sprite, Text } from "pixi.js";
 import {
   createTileAbsorptionTransition,
   type CanvasPoint,
@@ -21,8 +22,10 @@ import {
   fitViewportToNodes,
   normalizeRect,
   resetViewport,
+  resolveZoomForLayer,
   screenToWorld,
   selectNodesInRect,
+  worldToScreen,
   zoomViewportAtScreenPoint,
 } from "@seekstar/constellation-engine";
 import type { CartographerChunkRuntimeRecord, CartographerRuntimeStatus } from "../exploration/cartographerRuntimeClient";
@@ -39,7 +42,9 @@ interface TerrainCanvasProps {
   onFrontierDiscovery: (viewport: ViewportState) => void;
   onBrowserModeExit: () => void;
   onCurrentPageDeepLens: (nodeId: string) => void;
+  onSemanticZoomRequest: (request: SemanticZoomRequest) => void;
   onNodeSelect: (nodeId: string) => void;
+  onNodeOpen: (nodeId: string, context?: NodeActivationContext) => void;
   onRelationSelect: (relationId: string) => void;
   onSelectionChange: (nodeIds: string[], focusNodeId?: string, showSelectionActions?: boolean) => void;
   onTileAbsorptionComplete: (nodeId: string, trigger: TileAbsorptionTrigger) => void;
@@ -47,6 +52,10 @@ interface TerrainCanvasProps {
   scene: TerrainScene;
   selectedNodeIds: string[];
   selectedRelationId?: string;
+  semanticTransitionActive: boolean;
+  semanticTransitionDirection?: "in" | "out";
+  semanticTransitionOrigin?: CanvasPoint;
+  semanticTransitionStage: "exiting" | "idle" | "revealing";
   tileAbsorptionRequest?: TileAbsorptionRequest;
   tileFieldTargetCount?: number;
   viewport: ViewportState;
@@ -70,6 +79,21 @@ export interface TileAbsorptionRequest {
   nodeId: string;
   requestId: number;
   trigger: TileAbsorptionTrigger;
+}
+
+export interface SemanticZoomRequest {
+  direction: "in" | "out";
+  focusKind: "interstitial" | "node";
+  focusNodeId?: string;
+  fromLayer: LayerId;
+  origin: CanvasPoint;
+  snapshotDataUrl?: string;
+  viewport: ViewportState;
+}
+
+export interface NodeActivationContext {
+  origin: CanvasPoint;
+  snapshotDataUrl?: string;
 }
 
 type CanvasDragState =
@@ -109,6 +133,27 @@ interface RenderableTileSurface extends TerrainTileSurface {
   sourceTitle?: string;
 }
 
+interface ReticleTarget {
+  nodeId: string;
+  title: string;
+  type: string;
+}
+
+interface SemanticZoomPressureState {
+  direction?: "in" | "out";
+  pressure: number;
+  updatedAt: number;
+}
+
+interface SoftZoomProfile {
+  cooldownMs: number;
+  maxFactor: number;
+  minFactor: number;
+  pressureResetMs: number;
+  pressureThreshold: number;
+  zoomExponent: number;
+}
+
 export function TerrainCanvas({
   activeTool,
   focusedNodeId,
@@ -116,7 +161,9 @@ export function TerrainCanvas({
   onBrowserModeExit,
   onCurrentPageDeepLens,
   onFrontierDiscovery,
+  onSemanticZoomRequest,
   onNodeSelect,
+  onNodeOpen,
   onRelationSelect,
   onSelectionChange,
   onTileAbsorptionComplete,
@@ -124,6 +171,10 @@ export function TerrainCanvas({
   scene,
   selectedNodeIds,
   selectedRelationId,
+  semanticTransitionActive,
+  semanticTransitionDirection,
+  semanticTransitionOrigin,
+  semanticTransitionStage,
   tileAbsorptionRequest,
   tileFieldTargetCount,
   viewport,
@@ -131,10 +182,17 @@ export function TerrainCanvas({
   const hostRef = useRef<HTMLElement | null>(null);
   const appRef = useRef<Application | null>(null);
   const viewportRef = useRef(viewport);
+  const semanticTransitionActiveRef = useRef(semanticTransitionActive);
   const onViewportChangeRef = useRef(onViewportChange);
   const onFrontierDiscoveryRef = useRef(onFrontierDiscovery);
   const onNodeSelectRef = useRef(onNodeSelect);
+  const onNodeOpenRef = useRef(onNodeOpen);
   const onRelationSelectRef = useRef(onRelationSelect);
+  const onSemanticZoomRequestRef = useRef(onSemanticZoomRequest);
+  const semanticZoomCooldownUntilRef = useRef(0);
+  const semanticZoomPressureRef = useRef<SemanticZoomPressureState>({ pressure: 0, updatedAt: 0 });
+  const visibleNodesRef = useRef<TerrainNode[]>([]);
+  const tileSurfacesRef = useRef<RenderableTileSurface[]>([]);
   const [pixiReady, setPixiReady] = useState(false);
   const [viewportBounds, setViewportBounds] = useState<ProjectionViewportBounds | undefined>();
   const [dragState, setDragState] = useState<CanvasDragState | undefined>();
@@ -162,6 +220,14 @@ export function TerrainCanvas({
     visibleRelations,
   } = mainContentRuntime;
   const tileSurfaces = sourceTileSurfaces as RenderableTileSurface[];
+  const reticleTarget = viewportBounds
+    ? resolveReticleTarget({
+        bounds: viewportBounds,
+        nodes: visibleNodes,
+        tileSurfaces,
+        viewport,
+      })
+    : undefined;
   const isBrowserAbsorbed = scene.runtime.browser_absorption.status === "absorbed";
   const absorbedTileSurface = isBrowserAbsorbed
     ? tileSurfaces.find((surface) => surface.nodeId === scene.runtime.browser_absorption.node_id && surface.sourceUrl)
@@ -250,11 +316,60 @@ export function TerrainCanvas({
 
   useEffect(() => {
     viewportRef.current = viewport;
+    semanticTransitionActiveRef.current = semanticTransitionActive;
     onViewportChangeRef.current = onViewportChange;
     onFrontierDiscoveryRef.current = onFrontierDiscovery;
     onNodeSelectRef.current = onNodeSelect;
+    onNodeOpenRef.current = onNodeOpen;
     onRelationSelectRef.current = onRelationSelect;
-  }, [onFrontierDiscovery, onNodeSelect, onRelationSelect, onViewportChange, viewport]);
+    onSemanticZoomRequestRef.current = onSemanticZoomRequest;
+    visibleNodesRef.current = visibleNodes;
+    tileSurfacesRef.current = tileSurfaces;
+  }, [
+    onFrontierDiscovery,
+    onNodeOpen,
+    onNodeSelect,
+    onRelationSelect,
+    onSemanticZoomRequest,
+    onViewportChange,
+    semanticTransitionActive,
+    tileSurfaces,
+    viewport,
+    visibleNodes,
+  ]);
+
+  const captureCanvasSnapshot = useCallback((): string | undefined => {
+    const canvas = appRef.current?.renderer?.canvas;
+
+    if (!canvas) {
+      return undefined;
+    }
+
+    try {
+      return canvas.toDataURL("image/png");
+    } catch (error) {
+      console.warn("[SeekStar] Canvas snapshot capture skipped.", error);
+      return undefined;
+    }
+  }, []);
+
+  const createNodeActivationContext = useCallback(
+    (origin?: CanvasPoint): NodeActivationContext => {
+      const host = hostRef.current;
+      const fallbackOrigin = host
+        ? {
+            x: host.clientWidth / 2,
+            y: host.clientHeight / 2,
+          }
+        : { x: 0, y: 0 };
+
+      return {
+        origin: origin ?? fallbackOrigin,
+        snapshotDataUrl: captureCanvasSnapshot(),
+      };
+    },
+    [captureCanvasSnapshot],
+  );
 
   useEffect(() => {
     const host = hostRef.current;
@@ -331,11 +446,14 @@ export function TerrainCanvas({
 
     renderPixiScene({
       app,
+      createNodeActivationContext,
+      enableEdgeCompression: isMacroLayer(viewport.layer) && activeTool !== "lasso",
       focusedNodeId,
       highlightedNodeIds,
       host,
       onHover: setHoverPreview,
       onHoverClear: () => setHoverPreview(undefined),
+      onNodeOpen: (nodeId, context) => onNodeOpenRef.current(nodeId, context),
       onNodeSelect: (nodeId) => onNodeSelectRef.current(nodeId),
       onRelationSelect: (relationId) => onRelationSelectRef.current(relationId),
       renderedNodes,
@@ -348,6 +466,8 @@ export function TerrainCanvas({
       viewport,
     });
   }, [
+    activeTool,
+    createNodeActivationContext,
     focusedNodeId,
     highlightedNodeIds,
     pixiReady,
@@ -374,15 +494,90 @@ export function TerrainCanvas({
     function handleNativeWheel(event: WheelEvent): void {
       event.preventDefault();
 
+      if (semanticTransitionActiveRef.current) {
+        return;
+      }
+
       const currentViewport = viewportRef.current;
       const bounds = target.getBoundingClientRect();
       const pointer = {
         x: event.clientX - bounds.left,
         y: event.clientY - bounds.top,
       };
-      const scaleFactor = event.deltaY > 0 ? 0.9 : 1.1;
+      const zoomProfile = resolveSoftZoomProfile(currentViewport.layer);
+      const wheelStep = normalizeWheelStep(event);
+      const scaleFactor = Math.exp(-wheelStep * zoomProfile.zoomExponent);
+      const softBand = resolveLayerSoftZoomBand(currentViewport.layer, zoomProfile);
+      const requestedZoom = currentViewport.zoom * scaleFactor;
+      const nextZoom = Math.min(softBand.max, Math.max(softBand.min, requestedZoom));
+      const nextViewport = preserveViewportLayer(
+        zoomViewportAtScreenPoint(currentViewport, pointer, bounds, nextZoom),
+        currentViewport.layer,
+      );
 
-      onViewportChangeRef.current(zoomViewportAtScreenPoint(currentViewport, pointer, bounds, currentViewport.zoom * scaleFactor));
+      onViewportChangeRef.current(nextViewport);
+
+      const direction = requestedZoom > softBand.max ? "in" : requestedZoom < softBand.min ? "out" : undefined;
+      const now = performance.now();
+
+      if (!direction) {
+        semanticZoomPressureRef.current = {
+          direction: undefined,
+          pressure: 0,
+          updatedAt: now,
+        };
+        return;
+      }
+
+      if (now < semanticZoomCooldownUntilRef.current) {
+        return;
+      }
+
+      const previousPressure = semanticZoomPressureRef.current;
+      const overflow = direction === "in"
+        ? Math.max(0, requestedZoom / softBand.max - 1)
+        : Math.max(0, softBand.min / Math.max(requestedZoom, 0.001) - 1);
+      const shouldResetPressure =
+        previousPressure.direction !== direction || now - previousPressure.updatedAt > zoomProfile.pressureResetMs;
+      const nextPressure = shouldResetPressure
+        ? Math.abs(wheelStep) * 0.62 + overflow * 2.4
+        : previousPressure.pressure + Math.abs(wheelStep) * 0.62 + overflow * 2.4;
+
+      semanticZoomPressureRef.current = {
+        direction,
+        pressure: nextPressure,
+        updatedAt: now,
+      };
+
+      if (nextPressure < zoomProfile.pressureThreshold) {
+        return;
+      }
+
+      semanticZoomPressureRef.current = {
+        direction: undefined,
+        pressure: 0,
+        updatedAt: now,
+      };
+      semanticZoomCooldownUntilRef.current = now + zoomProfile.cooldownMs;
+      const targetAtReticle = resolveReticleTarget({
+        bounds,
+        nodes: visibleNodesRef.current,
+        tileSurfaces: tileSurfacesRef.current,
+        viewport: nextViewport,
+      });
+
+      onSemanticZoomRequestRef.current({
+        direction,
+        focusKind: targetAtReticle ? "node" : "interstitial",
+        focusNodeId: targetAtReticle?.nodeId,
+        fromLayer: currentViewport.layer,
+        origin: {
+          x: bounds.width / 2,
+          y: bounds.height / 2,
+        },
+        snapshotDataUrl: captureCanvasSnapshot(),
+        viewport: nextViewport,
+      });
     }
 
     target.addEventListener("wheel", handleNativeWheel, { passive: false });
@@ -510,7 +705,9 @@ export function TerrainCanvas({
       if (!isCanvasEntityAtScreenPoint(point, bounds, visibleNodes, tileSurfaces, viewport)) {
         const zoomFactor = event.shiftKey ? 0.85 : 1.18;
 
-        onViewportChange(zoomViewportAtScreenPoint(viewport, point, bounds, viewport.zoom * zoomFactor));
+        const softBand = resolveLayerSoftZoomBand(viewport.layer);
+        const nextZoom = Math.min(softBand.max, Math.max(softBand.min, viewport.zoom * zoomFactor));
+        onViewportChange(preserveViewportLayer(zoomViewportAtScreenPoint(viewport, point, bounds, nextZoom), viewport.layer));
         setHoverPreview(undefined);
       }
       return;
@@ -623,7 +820,7 @@ export function TerrainCanvas({
       return;
     }
 
-    onViewportChange(fitViewportToNodes(visibleNodes, bounds, viewport));
+    onViewportChange(preserveViewportLayer(fitViewportToNodes(visibleNodes, bounds, viewport), viewport.layer));
     setHoverPreview(undefined);
   }
 
@@ -635,11 +832,14 @@ export function TerrainCanvas({
     }
 
     onViewportChange(
-      fitViewportToNodes(visibleNodes, bounds, viewport, {
-        maxZoom: selectedNodeIds.length === 1 ? 1.35 : 1.2,
-        nodeIds: selectedNodeIds,
-        padding: 140,
-      }),
+      preserveViewportLayer(
+        fitViewportToNodes(visibleNodes, bounds, viewport, {
+          maxZoom: selectedNodeIds.length === 1 ? 1.35 : 1.2,
+          nodeIds: selectedNodeIds,
+          padding: 140,
+        }),
+        viewport.layer,
+      ),
     );
     setHoverPreview(undefined);
   }
@@ -657,7 +857,7 @@ export function TerrainCanvas({
 
   return (
     <section
-      className={`canvas-plane pixi-canvas-plane canvas-tool-${activeTool}`}
+      className={`canvas-plane pixi-canvas-plane canvas-tool-${activeTool} semantic-transition-${semanticTransitionStage}${semanticTransitionDirection ? ` semantic-direction-${semanticTransitionDirection}` : ""}`}
       aria-label="Cognitive canvas"
       onContextMenu={preventCanvasContextMenu}
       onPointerCancel={handlePointerCancel}
@@ -665,6 +865,14 @@ export function TerrainCanvas({
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       ref={hostRef}
+      style={
+        semanticTransitionOrigin
+          ? ({
+              "--semantic-origin-x": `${Math.round(semanticTransitionOrigin.x)}px`,
+              "--semantic-origin-y": `${Math.round(semanticTransitionOrigin.y)}px`,
+            } as CSSProperties)
+          : undefined
+      }
     >
       {lassoRect ? (
         <div
@@ -704,6 +912,7 @@ export function TerrainCanvas({
           </button>
         </div>
       ) : null}
+      <CanvasReticle target={reticleTarget} />
       {hoverPreview ? <NodeHoverPreview preview={hoverPreview} /> : null}
     </section>
   );
@@ -728,13 +937,29 @@ function createAbsorptionTransitionStyle(transition: TileAbsorptionTransition): 
   } as CSSProperties;
 }
 
+function CanvasReticle({ target }: { target?: ReticleTarget }): ReactElement {
+  return (
+    <div
+      aria-hidden="true"
+      className={target ? "canvas-reticle is-active" : "canvas-reticle"}
+    >
+      <span className="canvas-reticle-ring" />
+      <span className="canvas-reticle-dot" />
+      <span className="canvas-reticle-label">{target?.title ?? "Neighborhood"}</span>
+    </div>
+  );
+}
+
 function renderPixiScene({
   app,
+  createNodeActivationContext,
+  enableEdgeCompression,
   focusedNodeId,
   highlightedNodeIds,
   host,
   onHover,
   onHoverClear,
+  onNodeOpen,
   onNodeSelect,
   onRelationSelect,
   renderedNodes,
@@ -747,11 +972,14 @@ function renderPixiScene({
   viewport,
 }: {
   app: Application;
+  createNodeActivationContext: (origin?: CanvasPoint) => NodeActivationContext;
+  enableEdgeCompression: boolean;
   focusedNodeId?: string;
   highlightedNodeIds: string[];
   host: HTMLElement;
   onHover: (preview: HoverPreviewState) => void;
   onHoverClear: () => void;
+  onNodeOpen: (nodeId: string, context?: NodeActivationContext) => void;
   onNodeSelect: (nodeId: string) => void;
   onRelationSelect: (relationId: string) => void;
   renderedNodes: TerrainNode[];
@@ -795,14 +1023,21 @@ function renderPixiScene({
       continue;
     }
 
+    const renderFrom = enableEdgeCompression && visibleNodeIds.has(fromNode.id)
+      ? projectMacroWorldPoint(from, viewport, bounds)
+      : from;
+    const renderTo = enableEdgeCompression && visibleNodeIds.has(toNode.id)
+      ? projectMacroWorldPoint(to, viewport, bounds)
+      : to;
+
     relationLayer.addChild(
       createRelationLine({
-        from,
+        from: renderFrom,
         isHighlighted: highlightedNodeIds.includes(fromNode.id) || highlightedNodeIds.includes(toNode.id),
         isSelected: relation.id === selectedRelationId || selectedNodeIds.includes(fromNode.id) || selectedNodeIds.includes(toNode.id),
         onRelationSelect,
         relation,
-        to,
+        to: renderTo,
       }),
     );
   }
@@ -811,8 +1046,11 @@ function renderPixiScene({
     const position = node.position_hint ?? { x: 0, y: 0 };
     const isMacro = isMacroBubbleNode(node);
     const radius = isMacro ? getMacroBubbleRadius(node, viewport) : 0;
+    const edgeProjection = enableEdgeCompression && isMacro && visibleNodeIds.has(node.id)
+      ? projectMacroNodeDisplay(position, viewport, bounds)
+      : undefined;
     const displayObject = isMacro
-      ? createMacroBubble({
+        ? createMacroBubble({
           isFocused: focusedNodeId === node.id,
           isGhost: !visibleNodeIds.has(node.id),
           isHighlighted: highlightedNodeIds.includes(node.id),
@@ -820,6 +1058,7 @@ function renderPixiScene({
           node,
           onHover,
           onHoverClear,
+          onNodeOpen: (nodeId, context) => onNodeOpen(nodeId, createNodeActivationContext(context?.origin)),
           onNodeSelect,
           radius,
           viewport,
@@ -832,10 +1071,17 @@ function renderPixiScene({
           node,
           onHover,
           onHoverClear,
+          onNodeOpen: (nodeId, context) => onNodeOpen(nodeId, createNodeActivationContext(context?.origin)),
           onNodeSelect,
         });
 
-    displayObject.position.set(position.x, position.y);
+    if (edgeProjection) {
+      displayObject.position.set(edgeProjection.worldPoint.x, edgeProjection.worldPoint.y);
+      displayObject.scale.set(edgeProjection.scale);
+      displayObject.alpha *= edgeProjection.alpha;
+    } else {
+      displayObject.position.set(position.x, position.y);
+    }
     nodeLayer.addChild(displayObject);
   }
 
@@ -1074,7 +1320,9 @@ function createRelationLine({
   hitLine.moveTo(from.x, from.y).lineTo(to.x, to.y).stroke({ color: 0xffffff, alpha: 0.001, width: 12 });
   hitLine.eventMode = "static";
   hitLine.cursor = "pointer";
-  bindPrimaryCanvasActivation(hitLine, () => onRelationSelect(relation.id));
+  bindPrimaryCanvasActivation(hitLine, {
+    onSelect: () => onRelationSelect(relation.id),
+  });
   container.addChild(hitLine, line);
 
   return container;
@@ -1088,6 +1336,7 @@ function createMacroBubble({
   node,
   onHover,
   onHoverClear,
+  onNodeOpen,
   onNodeSelect,
   radius,
   viewport,
@@ -1099,6 +1348,7 @@ function createMacroBubble({
   node: TerrainNode;
   onHover: (preview: HoverPreviewState) => void;
   onHoverClear: () => void;
+  onNodeOpen: (nodeId: string, context?: NodeActivationContext) => void;
   onNodeSelect: (nodeId: string) => void;
   radius: number;
   viewport: ViewportState;
@@ -1139,7 +1389,10 @@ function createMacroBubble({
   container.eventMode = isGhost ? "none" : "static";
   container.cursor = isGhost ? "default" : "pointer";
   container.hitArea = new Rectangle(-radius, -radius, radius * 2, radius * 2);
-  bindPrimaryCanvasActivation(container, () => onNodeSelect(node.id));
+  bindPrimaryCanvasActivation(container, {
+    onOpen: (origin) => onNodeOpen(node.id, origin),
+    onSelect: () => onNodeSelect(node.id),
+  });
   container.on("pointerover", (event) => onHover(createHoverPreview(node.title, node.type, node.source_state, node.summary, event.global)));
   container.on("pointerout", onHoverClear);
 
@@ -1154,6 +1407,7 @@ function createDetailCard({
   node,
   onHover,
   onHoverClear,
+  onNodeOpen,
   onNodeSelect,
 }: {
   isFocused: boolean;
@@ -1163,6 +1417,7 @@ function createDetailCard({
   node: TerrainNode;
   onHover: (preview: HoverPreviewState) => void;
   onHoverClear: () => void;
+  onNodeOpen: (nodeId: string, context?: NodeActivationContext) => void;
   onNodeSelect: (nodeId: string) => void;
 }): Container {
   const container = new Container();
@@ -1205,7 +1460,10 @@ function createDetailCard({
   container.eventMode = isGhost ? "none" : "static";
   container.cursor = isGhost ? "default" : "pointer";
   container.hitArea = new Rectangle(-width / 2, -height / 2, width, height);
-  bindPrimaryCanvasActivation(container, () => onNodeSelect(node.id));
+  bindPrimaryCanvasActivation(container, {
+    onOpen: (origin) => onNodeOpen(node.id, origin),
+    onSelect: () => onNodeSelect(node.id),
+  });
   container.on("pointerover", (event) => onHover(createHoverPreview(node.title, node.type, node.source_state, node.summary, event.global)));
   container.on("pointerout", onHoverClear);
 
@@ -1250,17 +1508,33 @@ function createTileSurfaceText(text: string, options: { color: number; fontSize:
   });
 }
 
-function bindPrimaryCanvasActivation(target: Container | Graphics, onActivate: () => void): void {
+function bindPrimaryCanvasActivation(
+  target: Container | Graphics,
+  handlers: {
+    onOpen?: (context?: NodeActivationContext) => void;
+    onSelect: () => void;
+  },
+): void {
   let lastActivationAt = 0;
-  const invoke = (): void => {
+  const invoke = (event: FederatedPointerEvent): void => {
     const now = performance.now();
 
     if (now - lastActivationAt < 40) {
       return;
     }
 
+    const isDoubleActivation = now - lastActivationAt < 320;
     lastActivationAt = now;
-    onActivate();
+    handlers.onSelect();
+
+    if (isDoubleActivation) {
+      handlers.onOpen?.({
+        origin: {
+          x: event.global.x,
+          y: event.global.y,
+        },
+      });
+    }
   };
 
   target.on("click", invoke);
@@ -1273,6 +1547,222 @@ function isCanvasPrimaryCompatibleButton(button: number): boolean {
 
 function preventCanvasContextMenu(event: ReactMouseEvent<HTMLElement>): void {
   event.preventDefault();
+}
+
+function normalizeWheelStep(event: WheelEvent): number {
+  const modeMultiplier = event.deltaMode === 1
+    ? 16
+    : event.deltaMode === 2
+      ? 600
+      : 1;
+  const pixelDelta = event.deltaY * modeMultiplier;
+
+  return Math.max(-1.8, Math.min(1.8, pixelDelta / 140));
+}
+
+function resolveSoftZoomProfile(layer: LayerId): SoftZoomProfile {
+  if (layer === "L2") {
+    return {
+      cooldownMs: 900,
+      maxFactor: 1.18,
+      minFactor: 0.86,
+      pressureResetMs: 260,
+      pressureThreshold: 1.28,
+      zoomExponent: 0.075,
+    };
+  }
+
+  if (layer === "L3") {
+    return {
+      cooldownMs: 920,
+      maxFactor: 1.12,
+      minFactor: 0.88,
+      pressureResetMs: 260,
+      pressureThreshold: 1.18,
+      zoomExponent: 0.08,
+    };
+  }
+
+  return {
+    cooldownMs: 860,
+    maxFactor: 1.22,
+    minFactor: 0.82,
+    pressureResetMs: 280,
+    pressureThreshold: 1.34,
+    zoomExponent: 0.072,
+  };
+}
+
+function resolveLayerSoftZoomBand(layer: LayerId, profile = resolveSoftZoomProfile(layer)): { max: number; min: number } {
+  const baseZoom = resolveZoomForLayer(layer);
+
+  return {
+    max: baseZoom * profile.maxFactor,
+    min: baseZoom * profile.minFactor,
+  };
+}
+
+function preserveViewportLayer(viewport: ViewportState, layer: LayerId): ViewportState {
+  return {
+    ...viewport,
+    layer,
+  };
+}
+
+function resolveReticleTarget(input: {
+  bounds: { height: number; width: number };
+  nodes: TerrainNode[];
+  tileSurfaces: RenderableTileSurface[];
+  viewport: ViewportState;
+}): ReticleTarget | undefined {
+  const center = {
+    x: input.bounds.width / 2,
+    y: input.bounds.height / 2,
+  };
+  const worldPoint = screenToWorld(center, input.viewport, input.bounds);
+  const tileSurface = [...input.tileSurfaces]
+    .reverse()
+    .find((surface) => surface.visibility !== "off_viewport" && isPointInRect(worldPoint, surface.worldBounds));
+
+  if (tileSurface) {
+    return {
+      nodeId: tileSurface.nodeId,
+      title: tileSurface.title,
+      type: tileSurface.type,
+    };
+  }
+
+  const node = [...input.nodes].reverse().find((candidate) => isWorldPointInsideNode(worldPoint, candidate, input.viewport));
+
+  return node
+    ? {
+        nodeId: node.id,
+        title: node.title,
+        type: node.type,
+      }
+    : undefined;
+}
+
+function projectMacroWorldPoint(
+  point: CanvasPoint,
+  viewport: ViewportState,
+  bounds: { height: number; width: number },
+): CanvasPoint {
+  return projectMacroNodeDisplay(point, viewport, bounds).worldPoint;
+}
+
+function projectMacroNodeDisplay(
+  point: CanvasPoint,
+  viewport: ViewportState,
+  bounds: { height: number; width: number },
+  baseScreenPoint = worldToScreen(point, viewport, bounds),
+): { alpha: number; scale: number; worldPoint: CanvasPoint } {
+  const overscanX = 180;
+  const overscanY = 140;
+
+  if (
+    baseScreenPoint.x < -overscanX ||
+    baseScreenPoint.x > bounds.width + overscanX ||
+    baseScreenPoint.y < -overscanY ||
+    baseScreenPoint.y > bounds.height + overscanY
+  ) {
+    return {
+      alpha: 1,
+      scale: 1,
+      worldPoint: point,
+    };
+  }
+
+  const warpedX = compressScreenAxis({
+    edgeOverscan: overscanX,
+    end: bounds.width - 28,
+    start: 132,
+    value: baseScreenPoint.x,
+  });
+  const warpedY = compressScreenAxis({
+    edgeOverscan: overscanY,
+    end: bounds.height - 28,
+    start: 118,
+    value: baseScreenPoint.y,
+  });
+  const edgeInfluence = Math.max(
+    resolveEdgeCompressionProgress({
+      edgeOverscan: overscanX,
+      end: bounds.width - 28,
+      start: 132,
+      value: baseScreenPoint.x,
+    }),
+    resolveEdgeCompressionProgress({
+      edgeOverscan: overscanY,
+      end: bounds.height - 28,
+      start: 118,
+      value: baseScreenPoint.y,
+    }),
+  );
+  const eased = 1 - Math.pow(1 - edgeInfluence, 2);
+  const warpedScreenPoint = {
+    x: warpedX,
+    y: warpedY,
+  };
+
+  return {
+    alpha: lerp(1, 0.86, eased),
+    scale: lerp(1, 0.76, eased),
+    worldPoint: screenToWorld(warpedScreenPoint, viewport, bounds),
+  };
+}
+
+function compressScreenAxis(input: {
+  edgeOverscan: number;
+  end: number;
+  start: number;
+  value: number;
+}): number {
+  const { edgeOverscan, end, start, value } = input;
+
+  if (value >= start && value <= end - start) {
+    return value;
+  }
+
+  if (value < start) {
+    const edge = -edgeOverscan * 0.24;
+    const progress = resolveEdgeCompressionProgress(input);
+    const target = edge + (value - edge) * 0.46;
+
+    return lerp(value, target, progress);
+  }
+
+  const edge = end + edgeOverscan * 0.24;
+  const mirroredValue = end - value;
+  const mirroredInput = {
+    edgeOverscan,
+    end,
+    start,
+    value: mirroredValue,
+  };
+  const progress = resolveEdgeCompressionProgress(mirroredInput);
+  const target = edge + (value - edge) * 0.46;
+
+  return lerp(value, target, progress);
+}
+
+function resolveEdgeCompressionProgress(input: {
+  edgeOverscan: number;
+  end: number;
+  start: number;
+  value: number;
+}): number {
+  const { edgeOverscan, end, start, value } = input;
+
+  if (value >= start && value <= end - start) {
+    return 0;
+  }
+
+  if (value < start) {
+    return clamp01((start - value) / (start + edgeOverscan));
+  }
+
+  return clamp01((value - (end - start)) / (start + edgeOverscan));
 }
 
 function isCanvasEntityAtScreenPoint(
@@ -1445,17 +1935,11 @@ function isCartographerTerrainNode(node: TerrainNode): boolean {
 
 function traceTerrainCanvas(event: string, payload?: unknown): void {
   try {
-    if (window.localStorage.getItem("seekstar.trace") === "0") {
-      return;
-    }
-
-    if (!import.meta.env.DEV && window.localStorage.getItem("seekstar.trace") !== "1") {
+    if (window.localStorage.getItem("seekstar.trace") !== "1") {
       return;
     }
   } catch {
-    if (!import.meta.env.DEV) {
-      return;
-    }
+    return;
   }
 
   const suffix = payload === undefined ? "" : ` ${stringifyTerrainCanvasTracePayload(payload)}`;
@@ -1584,4 +2068,12 @@ function getMacroLensDistance(node: TerrainNode, viewport: ViewportState): numbe
   const distance = Math.hypot(position.x - viewport.x, position.y - viewport.y);
 
   return Math.min(1, distance / 620);
+}
+
+function lerp(from: number, to: number, amount: number): number {
+  return from + (to - from) * amount;
+}
+
+function clamp01(value: number): number {
+  return Math.min(1, Math.max(0, value));
 }

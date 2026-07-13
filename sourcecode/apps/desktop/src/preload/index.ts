@@ -26,6 +26,7 @@ import type {
 } from "../main/cartographerRuntimeBridge";
 import type { CanvasTool, TabCanvasToolChangeEvent, TabRuntimeSnapshot, TabWorkspaceSyncInput } from "../main/tabRuntimeManager";
 import type { TileSurfaceDeepLensSnapshot, TileSurfaceLinkEvent, TileSurfaceThumbnailEvent } from "../main/tileSurfaceManager";
+import type { WorldPoolSnapshot } from "../main/worldPoolCoordinator";
 
 export type WindowAction =
   | "reload"
@@ -141,6 +142,25 @@ contextBridge.exposeInMainWorld("seekstar", {
     runViewportExpansionTransaction: (
       input: CartographerRuntimeViewportExpansionRequest,
     ): Promise<CartographerRuntimeViewportExpansionResult> => ipcRenderer.invoke("cartographer:run-viewport-expansion-transaction", input),
+  },
+  worldPool: {
+    open: (input: { tabId: string; seed: string; scene: unknown; camera: unknown }): Promise<WorldPoolSnapshot> =>
+      ipcRenderer.invoke("world-pool:open", input),
+    reportCamera: (input: { tabId: string; camera: unknown; scene?: unknown }): Promise<void> => ipcRenderer.invoke("world-pool:report-camera", input),
+    subscribe: (tabId: string, callback: (snapshot: WorldPoolSnapshot) => void): (() => void) => {
+      let active = true;
+      const listener = (_event: Electron.IpcRendererEvent, snapshot: WorldPoolSnapshot): void => {
+        if (active && snapshot.tab_id === tabId) callback(snapshot);
+      };
+      ipcRenderer.on("world-pool:changed", listener);
+      void ipcRenderer.invoke("world-pool:subscribe", tabId).then((snapshot: WorldPoolSnapshot | undefined) => {
+        if (active && snapshot) callback(snapshot);
+      });
+      return () => {
+        active = false;
+        ipcRenderer.removeListener("world-pool:changed", listener);
+      };
+    },
   },
   ai: {
     assist: (input: AiAssistantInput): Promise<AiAssistantOutput> => ipcRenderer.invoke("ai:assist", input),

@@ -356,6 +356,36 @@ async function runAiLevelRuntimeSmoke() {
   assert(fixtureAssistantOutput.status === "ok", `AI fixture assistant status: ${fixtureAssistantOutput.status}`);
   assert(fixtureAssistantOutput.actions.length > 0, "AI fixture assistant returned no actions");
   assert(fixtureAssistantOutput.telemetry?.attempts === 1, "AI fixture assistant telemetry missing attempts");
+  const worldSegmentValidation = aiModule.validateWorldSegmentGenerationOutput(
+    {
+      bands: {
+        L0: { nodes: [{ title: "计算", node_type: "domain" }, { title: "材料", node_type: "domain" }] },
+        L1: { nodes: [{ title: "处理器", node_type: "topic" }] },
+        L2: { nodes: [{ title: "官方文档", node_type: "concept" }] },
+        L3: { nodes: [{ title: "must be removed", node_type: "webpage" }] },
+      },
+      source_candidates: [{ title: "CPU reference", url: "https://example.com/cpu", source_type: "webpage" }],
+    },
+    { seed: "CPU", segment: { key: "0:0", x: 0, y: 0 } },
+  );
+  assert(worldSegmentValidation.valid, `World segment output invalid: ${JSON.stringify(worldSegmentValidation.diagnostics)}`);
+  assert(worldSegmentValidation.output.bands.L0.nodes.length === 2, "World segment L0 nodes were not retained");
+  assert(worldSegmentValidation.output.bands.L3.nodes.length === 0, "World segment must not create L3 canvas nodes");
+  assert(worldSegmentValidation.output.source_candidates.length === 1, "World segment source candidates were not retained");
+  const tolerantWorldSegmentValidation = aiModule.validateWorldSegmentGenerationOutput(
+    {
+      bands: {
+        l0: [{ title: "天文学", node_type: "domain" }],
+        level_1: [{ title: "恒星", node_type: "topic" }],
+        L2: { nodes: [{ title: "光谱", node_type: "concept" }] },
+        l3: [],
+      },
+      source_candidates: [],
+    },
+    { seed: "astronomy", segment: { key: "0:0", x: 0, y: 0 } },
+  );
+  assert(tolerantWorldSegmentValidation.valid, `Tolerant world segment output invalid: ${JSON.stringify(tolerantWorldSegmentValidation.diagnostics)}`);
+  assert(tolerantWorldSegmentValidation.output.bands.L0.nodes.length === 1, "Lowercase/direct-array L0 world segment nodes were not retained");
   assert(cancelledGenerationOutput.status === "cancelled", `AI cancelled generation status: ${cancelledGenerationOutput.status}`);
   assert(cancelledGenerationOutput.diagnostics[0]?.code === "ai.cancelled", "AI cancelled generation diagnostic mismatch");
   assert(cancelledAssistantOutput.status === "cancelled", `AI cancelled assistant status: ${cancelledAssistantOutput.status}`);
@@ -617,6 +647,33 @@ async function runAiLevelRuntimeSmoke() {
   assert(focusAOutput.nodes.length > 0 && focusBOutput.nodes.length > 0, "Focused continuous L2 smoke returned no nodes");
   assert(focusBOutput.nodes.every((node) => !focusAIds.has(node.id)), "Focused continuous L2 node ids collided across parent anchors");
   assert(focusBX - focusAX > 600, `Focused continuous L2 anchors did not separate terrain: ${focusAX} -> ${focusBX}`);
+
+  const offsetFocusAnchor = { id: "focus-offset", title: "Focus Offset", level_id: "L1" };
+  const offsetFocusOutput = await levelRuntimeModule.runLevelRuntime(
+    {
+      mode: "decompose_down",
+      level_id: "L2",
+      seed: "CPU",
+      chunk: levelRuntimeModule.createLevelChunkKey(1, 0, 1),
+      focus: offsetFocusAnchor,
+      context: {
+        focus_anchor: { ...offsetFocusAnchor, layer: "L1", x: 1320, y: 0 },
+        scale_model: "continuous",
+      },
+    },
+    { generate: fixtureGenerator },
+  );
+  const offsetAppliedScene = applyLevelRuntimeOutputToScene(
+    createSeedScene("Offset focus", { tabId: "tab-offset-focus", timestamp: new Date().toISOString() }),
+    offsetFocusOutput,
+    { focus: offsetFocusAnchor },
+  ).scene;
+  const offsetAppliedX = averageNodeX(offsetAppliedScene.nodes);
+
+  assert(
+    Math.abs(offsetAppliedX - 1320) < 260,
+    `Focused non-origin L2 terrain drifted from its parent anchor: ${offsetAppliedX} vs 1320`,
+  );
 
   let promptOverrideGenerationInput;
   const promptOverrideOutput = await levelRuntimeModule.runLevelRuntime(
@@ -1081,6 +1138,11 @@ async function runAiLevelRuntimeSmoke() {
     missingKeyStatus: missingKeyOutput.status,
     fixtureNodes: fixtureOutput.nodes.length,
     fixtureAssistantActions: fixtureAssistantOutput.actions.length,
+    worldSegment: {
+      l0Nodes: worldSegmentValidation.output.bands.L0.nodes.length,
+      l3Nodes: worldSegmentValidation.output.bands.L3.nodes.length,
+      sourceCandidates: worldSegmentValidation.output.source_candidates.length,
+    },
     invalidOutputValid: invalidValidation.valid,
     invalidAssistantValid: invalidAssistantValidation.valid,
     fixtureTelemetryAttempts: fixtureOutput.telemetry.attempts,
@@ -1102,6 +1164,7 @@ async function runAiLevelRuntimeSmoke() {
       promptOverrideNodes: promptOverrideOutput.nodes.length,
       promptOverrideBrief: promptOverrideGenerationInput.context.level_module.prompt_brief,
       focusedAnchorDelta: Math.round(focusBX - focusAX),
+      focusedNonOriginAnchorX: Math.round(offsetAppliedX),
     },
     levels: levelOutputs,
     constellationBridge: {

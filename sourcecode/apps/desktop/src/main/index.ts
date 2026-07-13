@@ -11,6 +11,7 @@ import { TabRuntimeManager } from "./tabRuntimeManager";
 import { TileSurfaceManager } from "./tileSurfaceManager";
 import { registerWindowBridge } from "./windowBridge";
 import { registerWorkspaceStore } from "./workspaceStore";
+import { clearWorldPoolData, registerWorldPoolCoordinator } from "./worldPoolCoordinator";
 
 const tabRuntimeManager = new TabRuntimeManager();
 const tileSurfaceManager = new TileSurfaceManager((tabId) => tabRuntimeManager.getTabSurfaceHost(tabId));
@@ -27,10 +28,12 @@ registerWorkspaceStore({
     await clearAiCostLedgerData();
     await clearAssistantSessionData();
     await clearCartographerChunkData();
+    await clearWorldPoolData();
   },
 });
 registerScoutAdapter();
 registerCartographerRuntimeBridge();
+registerWorldPoolCoordinator();
 registerCartographerChunkStore();
 registerAiCostLedgerStore();
 registerAiAssistantBridge();

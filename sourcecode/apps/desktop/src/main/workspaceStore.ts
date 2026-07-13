@@ -5,6 +5,7 @@ import { isWorkspaceSnapshot, type WorkspaceSnapshot } from "@seekstar/constella
 import { JsonWorkspaceStorage, type WorkspaceChangeEvent, type WorkspaceChangeKind } from "@seekstar/storage-service";
 import { getAssistantSessionStorePath } from "./assistantSessionStore";
 import { getCartographerChunkStorePath } from "./cartographerChunkStore";
+import { getWorldPoolStorePath } from "./worldPoolCoordinator";
 
 const STORE_FILE_NAME = "seekstar-workspace-snapshot.json";
 const TAB_RUNTIME_FILE_NAME = "seekstar-tab-runtime.json";
@@ -13,6 +14,7 @@ const SETTINGS_FILE_NAME = "seekstar-settings.json";
 export interface WorkspaceStorePaths {
   assistant_sessions: string;
   cartographer_chunks: string;
+  world_pool: string;
   workspace_snapshot: string;
   tab_runtime: string;
   settings: string;
@@ -26,6 +28,12 @@ export interface WorkspaceStore {
   saveSnapshot: (snapshot: unknown) => Promise<void>;
 }
 
+/** A recoverable result used when Windows temporarily locks the snapshot file. */
+export interface WorkspaceStorageUnavailable {
+  code: "workspace_storage_unavailable";
+  message: string;
+}
+
 export interface RegisterWorkspaceStoreOptions {
   onClearDevelopmentData?: () => Promise<void> | void;
   store?: WorkspaceStore;
@@ -37,15 +45,26 @@ export class JsonWorkspaceStore implements WorkspaceStore {
     quarantineInvalidSchema: false,
   });
 
-  async loadSnapshot(): Promise<WorkspaceSnapshot<unknown> | undefined> {
-    const inspection = await this.storage.inspectWorkspaceSnapshot();
+  async loadSnapshot(): Promise<WorkspaceSnapshot<unknown> | WorkspaceStorageUnavailable | undefined> {
+    try {
+      const inspection = await this.storage.inspectWorkspaceSnapshot();
 
-    if (inspection.status === "invalid_json" || inspection.status === "invalid_schema") {
-      const quarantineNote = inspection.quarantine_path ? ` moved to ${inspection.quarantine_path}` : "";
-      console.warn(`[SeekStar] Ignored ${inspection.status.replace(/_/g, " ")} workspace snapshot at ${inspection.path}${quarantineNote}: ${inspection.error_message ?? "unknown error"}`);
+      if (inspection.status === "invalid_json" || inspection.status === "invalid_schema") {
+        const quarantineNote = inspection.quarantine_path ? ` moved to ${inspection.quarantine_path}` : "";
+        console.warn(`[SeekStar][storage] state=ignored event=workspace.snapshot_invalid ${JSON.stringify({ path: inspection.path, reason: inspection.status, quarantine_path: inspection.quarantine_path, note: quarantineNote || undefined })}`);
+      }
+
+      // Await inside this try block: a second read can race with an atomic save on Windows.
+      return await this.storage.loadWorkspaceSnapshot();
+    } catch (error) {
+      if (!isTransientWorkspaceFileError(error)) {
+        throw error;
+      }
+
+      const message = "Workspace storage is temporarily unavailable. Existing data will not be overwritten; retry shortly.";
+      logWorkspaceUnavailable(error);
+      return { code: "workspace_storage_unavailable", message };
     }
-
-    return this.storage.loadWorkspaceSnapshot();
   }
 
   saveSnapshot(snapshot: unknown): Promise<void> {
@@ -65,6 +84,7 @@ export class JsonWorkspaceStore implements WorkspaceStore {
       unlinkIfPresent(getStorePath()),
       unlinkIfPresent(getUserDataPath(TAB_RUNTIME_FILE_NAME)),
       unlinkIfPresent(getUserDataPath(SETTINGS_FILE_NAME)),
+      unlinkIfPresent(getWorldPoolStorePath()),
       clearSeekStarTabPartitions(),
     ]);
   }
@@ -73,11 +93,34 @@ export class JsonWorkspaceStore implements WorkspaceStore {
     return {
       assistant_sessions: getAssistantSessionStorePath(),
       cartographer_chunks: getCartographerChunkStorePath(),
+      world_pool: getWorldPoolStorePath(),
       workspace_snapshot: getStorePath(),
       tab_runtime: getUserDataPath(TAB_RUNTIME_FILE_NAME),
       settings: getUserDataPath(SETTINGS_FILE_NAME),
     };
   }
+}
+
+let lastWorkspaceUnavailableLogAt = 0;
+
+function isTransientWorkspaceFileError(error: unknown): boolean {
+  if (!error || typeof error !== "object" || !("code" in error)) {
+    return false;
+  }
+
+  const code = (error as { code?: unknown }).code;
+  return code === "EACCES" || code === "EBUSY" || code === "EPERM";
+}
+
+function logWorkspaceUnavailable(error: unknown): void {
+  const now = Date.now();
+  if (now - lastWorkspaceUnavailableLogAt < 5_000) {
+    return;
+  }
+
+  lastWorkspaceUnavailableLogAt = now;
+  const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
+  console.warn(`[SeekStar][storage] state=unavailable event=workspace.load ${JSON.stringify({ code: typeof code === "string" ? code : "unknown" })}`);
 }
 
 export function registerWorkspaceStore(options: RegisterWorkspaceStoreOptions = {}): void {

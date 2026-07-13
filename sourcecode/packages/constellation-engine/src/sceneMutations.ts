@@ -98,13 +98,14 @@ export function applySceneSelection(
   scene: TerrainScene,
   nodeIds: string[],
   focusNodeId?: string,
+  options: { centerOnFocus?: boolean } = {},
 ): { scene: TerrainScene; focusNodeId?: string } {
   const focusNode = focusNodeId ? scene.nodes.find((node) => node.id === focusNodeId) : undefined;
   const updatedAt = new Date().toISOString();
   const nextViewport: ViewportState = {
     ...scene.viewport,
-    x: focusNode?.position_hint?.x ?? scene.viewport.x,
-    y: focusNode?.position_hint?.y ?? scene.viewport.y,
+    x: options.centerOnFocus ? focusNode?.position_hint?.x ?? scene.viewport.x : scene.viewport.x,
+    y: options.centerOnFocus ? focusNode?.position_hint?.y ?? scene.viewport.y : scene.viewport.y,
   };
 
   return {
@@ -164,9 +165,19 @@ function resolveContinuousViewportFocusNodeId(
     return layerSelectedNodeIds[0];
   }
 
+  const anchorLayer = resolveContinuousFocusAnchorLayer(viewport.layer);
+  const nearestAnchor = anchorLayer ? findNearestNodeOnLayer(scene.nodes, anchorLayer, viewport) : undefined;
+
+  // In a deeper band, the nearest visible parent is the active semantic
+  // anchor. This lets a lateral L2/L3 move hand focus from (for example) a
+  // car neighbourhood to an adjacent aircraft neighbourhood instead of
+  // keeping the node that originally opened the band forever.
+  if (nearestAnchor) {
+    return nearestAnchor.id;
+  }
+
   const currentFocusId = scene.runtime.focused_node_id ?? selectedNodeIds[0] ?? scene.selection.node_ids[0];
   const currentFocusNode = currentFocusId ? scene.nodes.find((node) => node.id === currentFocusId) : undefined;
-  const anchorLayer = resolveContinuousFocusAnchorLayer(viewport.layer);
 
   if (currentFocusNode && (currentFocusNode.layer === viewport.layer || currentFocusNode.layer === anchorLayer)) {
     return currentFocusNode.id;

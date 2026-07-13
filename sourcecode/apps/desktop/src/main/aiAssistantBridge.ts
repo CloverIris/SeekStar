@@ -374,12 +374,7 @@ function isSeekStarTraceEnabled(): boolean {
     return false;
   }
 
-  return (
-    process.env.SEEKSTAR_TRACE === "1" ||
-    process.env.SEEKSTAR_TRACE === "true" ||
-    process.env.npm_lifecycle_event === "dev" ||
-    process.env.NODE_ENV === "development"
-  );
+  return process.env.SEEKSTAR_TRACE === "1" || process.env.SEEKSTAR_TRACE === "true";
 }
 
 function stringifyBridgeTracePayload(payload: unknown): string {

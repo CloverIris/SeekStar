@@ -979,10 +979,19 @@ function createAnchoredLevelPosition(
   }
 
   const scale = input.level_id === "L1" ? 0.78 : input.level_id === "L2" ? 0.68 : 0.58;
+  const chunkPolicy = normalizeLevelRuntimeChunkPolicy(input.settings?.chunk_policy);
+  const chunkOrigin = {
+    x: input.chunk.x * chunkPolicy.chunk_width,
+    y: input.chunk.y * chunkPolicy.chunk_height,
+  };
 
   return {
-    x: Math.round(anchor.x + position.x * scale),
-    y: Math.round(anchor.y + position.y * scale),
+    // Runtime drafts are chunk-local and the Constellation Engine adds the
+    // chunk origin when they become TerrainNodes. Keep the parent anchor local
+    // here so a focused child field remains around its parent even outside the
+    // origin chunk, rather than receiving the chunk offset twice.
+    x: Math.round(anchor.x - chunkOrigin.x + position.x * scale),
+    y: Math.round(anchor.y - chunkOrigin.y + position.y * scale),
     z: position.z,
   };
 }
@@ -1075,12 +1084,7 @@ function isSeekStarTraceEnabled(): boolean {
     return false;
   }
 
-  return (
-    process.env.SEEKSTAR_TRACE === "1" ||
-    process.env.SEEKSTAR_TRACE === "true" ||
-    process.env.npm_lifecycle_event === "dev" ||
-    process.env.NODE_ENV === "development"
-  );
+  return process.env.SEEKSTAR_TRACE === "1" || process.env.SEEKSTAR_TRACE === "true";
 }
 
 function stringifyLevelRuntimeTracePayload(payload: unknown): string {

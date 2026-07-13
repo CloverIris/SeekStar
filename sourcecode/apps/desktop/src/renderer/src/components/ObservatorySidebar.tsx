@@ -2,7 +2,6 @@ import type { TabRecord, TerrainScene, WorkspaceFolder } from "@seekstar/core-sc
 import type { DragEvent, ReactElement } from "react";
 import { useState } from "react";
 import {
-  Brush,
   Circle,
   Compass,
   Copy,
@@ -32,7 +31,9 @@ interface ObservatorySidebarProps {
   activeTool: CanvasTool;
   folderCounts: Map<string, number>;
   folders: WorkspaceFolder[];
-  onFocusCommand: () => void;
+  onNewFieldSearch: () => void;
+  onSearchCurrentMap: () => void;
+  onStarterSeed: (seed: string) => void;
   onFolderCreate: () => void;
   onFolderDelete: (folderId: string) => void;
   onOpenSettings: () => void;
@@ -52,14 +53,13 @@ interface ObservatorySidebarProps {
   workspaceName: string;
 }
 
-const favoriteSeeds = ["Cognitive maps", "Source trails", "Domain gallery"];
+const starterFields = ["Cognitive maps", "Source trails", "Domain gallery"];
 
-const canvasTools: Array<{ id: CanvasTool; label: string; icon: LucideIcon; disabled?: boolean }> = [
+const canvasTools: Array<{ id: CanvasTool; label: string; icon: LucideIcon }> = [
   { id: "pointer", label: "Pointer", icon: MousePointer2 },
   { id: "pan", label: "Pan", icon: Hand },
   { id: "lens", label: "Lens", icon: ZoomIn },
   { id: "lasso", label: "Lasso", icon: Lasso },
-  { id: "brush", label: "Brush", icon: Brush, disabled: true },
 ];
 
 export function ObservatorySidebar({
@@ -67,10 +67,12 @@ export function ObservatorySidebar({
   activeTabId,
   folderCounts,
   folders,
-  onFocusCommand,
   onFolderCreate,
   onFolderDelete,
   onOpenSettings,
+  onNewFieldSearch,
+  onSearchCurrentMap,
+  onStarterSeed,
   onTabClose,
   onTabCopyCrashLog,
   onTabDetach,
@@ -88,17 +90,21 @@ export function ObservatorySidebar({
 }: ObservatorySidebarProps): ReactElement {
   const [draggingTabId, setDraggingTabId] = useState<string | undefined>();
   const [dragStartScreenPosition, setDragStartScreenPosition] = useState<{ x: number; y: number } | undefined>();
+  const [activeFolderId, setActiveFolderId] = useState<string | undefined>();
+  const visibleScenes = activeFolderId
+    ? scenes.filter((scene) => runtimeTabsById.get(getActiveTab(scene).id)?.folder_id === activeFolderId)
+    : scenes;
 
   return (
     <div className="observatory-sidebar" aria-label="SeekStar observatory sidebar">
       <section className="sidebar-nav">
-        <button className="sidebar-nav-item" onClick={onFocusCommand} type="button">
+        <button className="sidebar-nav-item" onClick={onNewFieldSearch} type="button">
           <span className="sidebar-icon">
             <Compass aria-hidden="true" size={15} strokeWidth={1.8} />
           </span>
           New field search
         </button>
-        <button className="sidebar-nav-item" onClick={onFocusCommand} type="button">
+        <button className="sidebar-nav-item" onClick={onSearchCurrentMap} type="button">
           <span className="sidebar-icon">
             <Search aria-hidden="true" size={15} strokeWidth={1.8} />
           </span>
@@ -126,13 +132,32 @@ export function ObservatorySidebar({
           </span>
         </button>
         <div className="folder-list">
+          <button
+            aria-pressed={!activeFolderId}
+            className={!activeFolderId ? "folder-filter active" : "folder-filter"}
+            onClick={() => setActiveFolderId(undefined)}
+            type="button"
+          >
+            <span className="sidebar-icon">
+              <Folder aria-hidden="true" size={13} strokeWidth={1.8} />
+            </span>
+            <span className="folder-row-title">All fields</span>
+            <small>{scenes.length}</small>
+          </button>
           {folders.map((folder) => (
             <div className="folder-row" key={folder.id}>
-              <span className="sidebar-icon">
-                <Folder aria-hidden="true" size={13} strokeWidth={1.8} />
-              </span>
-              <span className="folder-row-title">{folder.title}</span>
-              <small>{folderCounts.get(folder.id) ?? 0}</small>
+              <button
+                aria-pressed={activeFolderId === folder.id}
+                className={activeFolderId === folder.id ? "folder-filter active" : "folder-filter"}
+                onClick={() => setActiveFolderId(folder.id)}
+                type="button"
+              >
+                <span className="sidebar-icon">
+                  <Folder aria-hidden="true" size={13} strokeWidth={1.8} />
+                </span>
+                <span className="folder-row-title">{folder.title}</span>
+                <small>{folderCounts.get(folder.id) ?? 0}</small>
+              </button>
               <button aria-label={`Delete ${folder.title}`} onClick={() => onFolderDelete(folder.id)} title="Delete folder" type="button">
                 <X aria-hidden="true" size={11} strokeWidth={2} />
               </button>
@@ -146,10 +171,10 @@ export function ObservatorySidebar({
       </section>
 
       <section className="sidebar-section">
-        <h2>Star fields</h2>
+        <h2>Starter fields</h2>
         <div className="sidebar-list">
-          {favoriteSeeds.map((seed) => (
-            <button className="sidebar-list-item" key={seed} onClick={onFocusCommand} type="button">
+          {starterFields.map((seed) => (
+            <button className="sidebar-list-item" key={seed} onClick={() => onStarterSeed(seed)} type="button">
               <span className="sidebar-icon">
                 <Sparkles aria-hidden="true" size={14} strokeWidth={1.8} />
               </span>
@@ -166,7 +191,6 @@ export function ObservatorySidebar({
             <button
               aria-pressed={activeTool === tool.id}
               className={activeTool === tool.id ? "canvas-tool active" : "canvas-tool"}
-              disabled={tool.disabled}
               key={tool.id}
               onClick={() => onToolSelect(tool.id)}
               type="button"
@@ -183,7 +207,7 @@ export function ObservatorySidebar({
       <section className="sidebar-section sidebar-section-tabs">
         <h2>Exploration tabs</h2>
         <div className="exploration-tab-list">
-          {scenes.map((scene) => {
+          {visibleScenes.map((scene) => {
             const tab = getActiveTab(scene);
             const runtimeTab = runtimeTabsById.get(tab.id);
             const isActive = tab.id === activeTabId;
@@ -277,7 +301,8 @@ export function ObservatorySidebar({
               </div>
             );
           })}
-          <button className="exploration-tab-new" onClick={onFocusCommand} type="button">
+          {visibleScenes.length === 0 ? <p className="exploration-tab-empty">No Seeks in this field yet.</p> : null}
+          <button className="exploration-tab-new" onClick={onNewFieldSearch} type="button">
             <span className="exploration-tab-icon" aria-hidden="true">
               <Plus size={13} strokeWidth={2} />
             </span>

@@ -25,6 +25,8 @@ import type {
 } from "../../main/cartographerRuntimeBridge";
 import type { CanvasTool, TabCanvasToolChangeEvent, TabRuntimeSnapshot, TabWorkspaceSyncInput } from "../../main/tabRuntimeManager";
 import type { TileSurfaceDeepLensSnapshot, TileSurfaceLinkEvent, TileSurfaceThumbnailEvent } from "../../main/tileSurfaceManager";
+import type { WorldPoolSnapshot } from "../../main/worldPoolCoordinator";
+import type { TerrainScene, ViewportState } from "@seekstar/core-schema";
 
 export type WindowAction =
   | "reload"
@@ -106,6 +108,12 @@ export interface SeekStarCartographerApi {
   ) => Promise<CartographerRuntimeViewportExpansionResult>;
 }
 
+export interface SeekStarWorldPoolApi {
+  open: (input: { tabId: string; seed: string; scene: TerrainScene; camera: ViewportState }) => Promise<WorldPoolSnapshot>;
+  reportCamera: (input: { tabId: string; camera: ViewportState; scene?: TerrainScene }) => Promise<void>;
+  subscribe: (tabId: string, callback: (snapshot: WorldPoolSnapshot) => void) => () => void;
+}
+
 export interface SeekStarAiApi {
   assist: (input: AiAssistantInput) => Promise<AiAssistantOutput>;
   clearCostLedger: () => Promise<AiCostLedgerSnapshot>;
@@ -149,6 +157,7 @@ export interface SeekStarBridge {
   cartographer: SeekStarCartographerApi;
   scaffoldVersion: string;
   scout: SeekStarScoutApi;
+  worldPool: SeekStarWorldPoolApi;
   settings: SeekStarSettingsApi;
   tabs: SeekStarTabsApi;
   tiles: SeekStarTilesApi;

@@ -16,34 +16,16 @@ import type { AiAdapterTestResult, AiCartographerPromptPreviewResult } from "../
 import type { AiCostLedgerSnapshot } from "../../../../main/aiCostLedgerStore";
 import type { AiAssistantActionType, CartographerGenerationMode } from "@seekstar/ai-service";
 import type { ReactElement } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { SETTINGS_SECTION_META, filterSettingsNavigation, type SettingsSectionId } from "./settingsNavigation";
 import {
   ArrowLeft,
-  Bot,
-  Compass,
-  Folder,
-  Globe2,
-  KeyRound,
   Plus,
   RefreshCw,
   Search,
-  Settings,
-  Sparkles,
   Star,
   Trash2,
-  type LucideIcon,
 } from "lucide-react";
-
-type SettingsSectionId =
-  | "general"
-  | "domainLexicon"
-  | "contentProviders"
-  | "apiAdapter"
-  | "aiCartographer"
-  | "runtime"
-  | "scout"
-  | "storage"
-  | "development";
 type AiProviderSettingsDraft = SeekStarSettings["ai_providers"][number];
 type AiRouteSettingsDraft = SeekStarSettings["ai_routes"][number];
 type AssistantActionPermissionRuleDraft = SeekStarSettings["assistant_action_permission_rules"][number];
@@ -60,45 +42,6 @@ interface SettingsPageProps {
   settings?: SeekStarSettings;
   storePaths: Record<string, string>;
 }
-
-const settingsSectionMeta: Record<SettingsSectionId, { title: string; description: string }> = {
-  general: {
-    title: "General",
-    description: "Workspace status and SeekStar shell preferences.",
-  },
-  domainLexicon: {
-    title: "Domain lexicon",
-    description: "Configure the L0 field vocabulary used by the default New Seek tab.",
-  },
-  contentProviders: {
-    title: "Content providers",
-    description: "Configure URL-first authority discovery and browser-assisted source candidates.",
-  },
-  apiAdapter: {
-    title: "API Adapter",
-    description: "Configure and test the real OpenAI-compatible adapter used by the telescope runtime.",
-  },
-  aiCartographer: {
-    title: "AI Cartographer",
-    description: "Tune prompt profiles, chunk scheduling, action policy, and cost visibility.",
-  },
-  runtime: {
-    title: "Runtime",
-    description: "Tab memory behavior, inactive cooling, and content tile density.",
-  },
-  scout: {
-    title: "Scout service",
-    description: "Background Playwright concurrency per app instance.",
-  },
-  storage: {
-    title: "Storage",
-    description: "Current local development store paths.",
-  },
-  development: {
-    title: "Development",
-    description: "Prototype data controls for clean iteration.",
-  },
-};
 
 const domainLexiconLanguages = [
   { id: "en", label: "EN" },
@@ -149,6 +92,7 @@ export function SettingsPage({
   storePaths,
 }: SettingsPageProps): ReactElement {
   const [draft, setDraft] = useState<SeekStarSettings | undefined>(settings);
+  const [savedDraftFingerprint, setSavedDraftFingerprint] = useState(() => settingsFingerprint(settings));
   const [searchValue, setSearchValue] = useState("");
   const [statusText, setStatusText] = useState("Ready");
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("general");
@@ -160,6 +104,7 @@ export function SettingsPage({
 
   useEffect(() => {
     setDraft(settings);
+    setSavedDraftFingerprint(settingsFingerprint(settings));
     setSelectedLexiconId(settings?.active_domain_lexicon_id ?? DEFAULT_DOMAIN_LEXICON_ID);
     setSelectedTermId(undefined);
   }, [settings]);
@@ -209,6 +154,8 @@ export function SettingsPage({
     domainLexicons.find((lexicon) => lexicon.active) ??
     domainLexicons[0];
   const selectedTerm = selectedLexicon?.terms.find((term) => term.id === selectedTermId) ?? selectedLexicon?.terms[0];
+  const isDirty = useMemo(() => settingsFingerprint(draft) !== savedDraftFingerprint, [draft, savedDraftFingerprint]);
+  const displayedStatus = isDirty ? "Unsaved changes" : statusText;
 
   function updateDraft(patch: Partial<SeekStarSettings>): void {
     setDraft((current) => ({
@@ -544,7 +491,16 @@ export function SettingsPage({
 
     setStatusText("Saving settings...");
     await onSave(draft);
+    setSavedDraftFingerprint(settingsFingerprint(draft));
     setStatusText("Settings saved");
+  }
+
+  function handleDiscard(): void {
+    setDraft(settings);
+    setSavedDraftFingerprint(settingsFingerprint(settings));
+    setSelectedLexiconId(settings?.active_domain_lexicon_id ?? DEFAULT_DOMAIN_LEXICON_ID);
+    setSelectedTermId(undefined);
+    setStatusText("Changes discarded");
   }
 
   async function handleApplyDomainLexicon(): Promise<void> {
@@ -593,22 +549,12 @@ export function SettingsPage({
     setStatusText("AI cost ledger exported");
   }
 
-  const settingsNavItems: Array<{ id: SettingsSectionId; label: string; icon: LucideIcon }> = [
-    { id: "general", label: "General", icon: Settings },
-    { id: "domainLexicon", label: "Domain lexicon", icon: Star },
-    { id: "contentProviders", label: "Content providers", icon: Globe2 },
-    { id: "apiAdapter", label: "API Adapter", icon: KeyRound },
-    { id: "aiCartographer", label: "AI Cartographer", icon: Bot },
-    { id: "runtime", label: "Runtime", icon: Compass },
-    { id: "scout", label: "Scout service", icon: Sparkles },
-    { id: "storage", label: "Storage", icon: Folder },
-    { id: "development", label: "Development", icon: Trash2 },
-  ];
-  const visibleNavItems = settingsNavItems.filter((item) => item.label.toLowerCase().includes(searchValue.trim().toLowerCase()));
+  const visibleNavItems = filterSettingsNavigation(searchValue);
+  const visibleNavGroups = Array.from(new Set(visibleNavItems.map((item) => item.group)));
   const resolvedActiveSection = visibleNavItems.some((item) => item.id === activeSection)
     ? activeSection
     : (visibleNavItems[0]?.id ?? "general");
-  const activeMeta = settingsSectionMeta[resolvedActiveSection];
+  const activeMeta = SETTINGS_SECTION_META[resolvedActiveSection];
 
   return (
     <section className="settings-page" aria-label="SeekStar settings">
@@ -627,18 +573,22 @@ export function SettingsPage({
           />
         </label>
         <nav className="settings-nav" aria-label="Settings sections">
-          <span>Personal</span>
-          {visibleNavItems.map((item) => (
-            <button
-              aria-current={resolvedActiveSection === item.id ? "page" : undefined}
-              className={resolvedActiveSection === item.id ? "active" : ""}
-              key={item.id}
-              onClick={() => setActiveSection(item.id)}
-              type="button"
-            >
-              <item.icon aria-hidden="true" size={14} strokeWidth={1.8} />
-              {item.label}
-            </button>
+          {visibleNavGroups.map((group) => (
+            <div className="settings-nav-group" key={group}>
+              <span>{group}</span>
+              {visibleNavItems.filter((item) => item.group === group).map((item) => (
+                <button
+                  aria-current={resolvedActiveSection === item.id ? "page" : undefined}
+                  className={resolvedActiveSection === item.id ? "active" : ""}
+                  key={item.id}
+                  onClick={() => setActiveSection(item.id)}
+                  type="button"
+                >
+                  <item.icon aria-hidden="true" size={14} strokeWidth={1.8} />
+                  {item.label}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
       </aside>
@@ -647,9 +597,9 @@ export function SettingsPage({
         <div className="settings-content-scroll">
           <div className="settings-panel">
             <header className="settings-hero">
-              <p>SeekStar Settings</p>
+              <p>CONTROL CENTER</p>
               <h1>{activeMeta.title}</h1>
-              <span>{statusText}</span>
+              <span className={isDirty ? "is-dirty" : ""}>{displayedStatus}</span>
               <p>{activeMeta.description}</p>
             </header>
 
@@ -658,14 +608,14 @@ export function SettingsPage({
                 <div className="settings-card">
                   <div className="settings-row">
                     <span>
-                      <strong>Shell surface</strong>
-                      <small>Acrylic-backed observatory shell with glass sidebars and transparent workbench.</small>
+                      <strong>Settings draft</strong>
+                      <small>{isDirty ? "Changes are local to this page until you save them." : "Your local control settings are saved and active."}</small>
                     </span>
                   </div>
                   <div className="settings-row">
                     <span>
-                      <strong>Status</strong>
-                      <small>Settings changes apply to tab runtime, Scout service, and local workspace stores.</small>
+                      <strong>Product boundary</strong>
+                      <small>Opening field controls the first map; Connections configure external services; Intelligence controls terrain production and Scout.</small>
                     </span>
                   </div>
                 </div>
@@ -870,7 +820,8 @@ export function SettingsPage({
           <button onClick={onBack} type="button">
             Back
           </button>
-          <button className="primary" disabled={!draft} onClick={handleSave} type="button">
+          {isDirty ? <button onClick={handleDiscard} type="button">Discard</button> : null}
+          <button className="primary" disabled={!draft || !isDirty} onClick={handleSave} type="button">
             Save settings
           </button>
         </footer>
@@ -1994,6 +1945,10 @@ function createSettingsDraft(settings?: SeekStarSettings): SeekStarSettings {
     ai_providers: settings?.ai_providers ?? createDefaultAiProviderSettings(),
     ai_routes: settings?.ai_routes ?? createDefaultAiRouteSettings(activeAiProviderId),
   };
+}
+
+function settingsFingerprint(settings?: SeekStarSettings): string {
+  return settings ? JSON.stringify(settings) : "";
 }
 
 function createDefaultAssistantActionPermissionRules(): SeekStarSettings["assistant_action_permission_rules"] {

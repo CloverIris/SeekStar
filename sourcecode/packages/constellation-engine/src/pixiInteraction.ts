@@ -54,6 +54,7 @@ export function zoomViewportAtScreenPoint(
   point: CanvasPoint,
   bounds: ViewportBounds,
   nextZoom: number,
+  options: { preserveLayer?: boolean } = {},
 ): ViewportState {
   const zoom = clampZoom(nextZoom);
   const worldBefore = screenToWorld(point, viewport, bounds);
@@ -63,7 +64,7 @@ export function zoomViewportAtScreenPoint(
     x: worldBefore.x - (point.x - bounds.width / 2) / zoom,
     y: worldBefore.y - (point.y - bounds.height / 2) / zoom,
     zoom,
-    layer: resolveLayerForZoom(zoom),
+    layer: options.preserveLayer ? viewport.layer : resolveLayerForZoom(zoom),
   };
 }
 
@@ -134,6 +135,7 @@ export function fitViewportToNodes(
     maxZoom?: number;
     nodeIds?: string[];
     padding?: number;
+    preserveLayer?: boolean;
   } = {},
 ): ViewportState {
   const nodeBounds = getNodeBounds(nodes, options.nodeIds);
@@ -159,7 +161,7 @@ export function fitViewportToNodes(
     x: nodeBounds.x + nodeBounds.width / 2,
     y: nodeBounds.y + nodeBounds.height / 2,
     zoom,
-    layer: resolveLayerForZoom(zoom),
+    layer: options.preserveLayer ? fallback.layer : resolveLayerForZoom(zoom),
   };
 }
 

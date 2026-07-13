@@ -11,7 +11,7 @@ import { DetachedTabTitleBar, ShellDockWorkbench, SidebarRail, WindowTitleBar, t
 import type { CanvasTool } from "./components/canvasTools";
 import { ObservatorySidebar } from "./components/ObservatorySidebar";
 import { TerrainCanvas } from "./components/TerrainCanvas";
-import type { TileAbsorptionRequest } from "./components/TerrainCanvas";
+import type { NodeActivationContext, SemanticZoomRequest, TileAbsorptionRequest } from "./components/TerrainCanvas";
 import { CommandComposer, SelectionActionCard, StatusStrip, WorkbenchHeader } from "./components/WorkbenchChrome";
 import { AiMapControlSidebar, type AssistantActionExecutionResult, type AssistantOperationUndoContext, type AssistantSceneRollbackPatch } from "./components/ai-map-control/AiMapControlSidebar";
 import { SettingsPage } from "./components/settings/SettingsPage";
@@ -29,9 +29,35 @@ import { type SearchResult, searchScene } from "./search/localSceneSearch";
 import { type SelectionBasketItem, createSelectionBasketItem } from "./selection/selectionBasket";
 
 type RightSidebarMode = Extract<SidebarRailMode, "collapsed" | "compact" | "expanded">;
+type SelectionIntent = "backlink" | "cartographer" | "inspect" | "lasso" | "search";
+
+interface SemanticLayerTransitionState {
+  direction: "in" | "out";
+  focusKind: "interstitial" | "node";
+  focusTitle?: string;
+  fromLayer: LayerId;
+  id: number;
+  origin?: { x: number; y: number };
+  phase: "exiting" | "revealing";
+  snapshotDataUrl?: string;
+  toLayer: LayerId;
+}
+
+interface SemanticLayerTransitionRequest {
+  direction: "in" | "out";
+  focusKind: "interstitial" | "node";
+  focusNodeId?: string;
+  focusTitle?: string;
+  fromLayer: LayerId;
+  origin?: { x: number; y: number };
+  snapshotDataUrl?: string;
+  toLayer: LayerId;
+}
 
 const RIGHT_SIDEBAR_COMPACT_WIDTH = 340;
 const RIGHT_SIDEBAR_EXPANDED_WIDTH = 500;
+const SEMANTIC_LAYER_APPLY_DELAY_MS = 220;
+const SEMANTIC_LAYER_TRANSITION_MS = 760;
 
 export function App(): ReactElement {
   const runtimeParams = useMemo(() => new URLSearchParams(window.location.search), []);
@@ -60,7 +86,6 @@ export function App(): ReactElement {
     syncSceneSelection,
     syncSceneViewport,
     handleLayerSelect: selectLayer,
-    handleTileFocus,
     handleTileAbsorptionEnter,
     handleTileAbsorptionExit,
     handleEnterDeepLens,
@@ -94,6 +119,7 @@ export function App(): ReactElement {
   } = exploration;
 
   const [commandValue, setCommandValue] = useState("");
+  const [commandIntent, setCommandIntent] = useState<"new_seek" | "search_current" | undefined>();
   const [isCommandModalOpen, setIsCommandModalOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -109,8 +135,12 @@ export function App(): ReactElement {
   const [activeCanvasTool, setActiveCanvasTool] = useState<CanvasTool>("pointer");
   const [tileAbsorptionRequest, setTileAbsorptionRequest] = useState<TileAbsorptionRequest | undefined>();
   const [tileActionNodeId, setTileActionNodeId] = useState<string | undefined>();
+  const [semanticLayerTransition, setSemanticLayerTransition] = useState<SemanticLayerTransitionState | undefined>();
   const [chunkAutoDiscoveryOverride, setChunkAutoDiscoveryOverride] = useState<boolean | undefined>();
   const tileAbsorptionRequestCounterRef = useRef(0);
+  const semanticLayerTransitionCounterRef = useRef(0);
+  const semanticLayerTransitionLockRef = useRef(false);
+  const semanticLayerTransitionTimeoutsRef = useRef<number[]>([]);
   const [isSelectionActionCardOpen, setIsSelectionActionCardOpen] = useState(false);
   const [tabRuntimeSnapshot, setTabRuntimeSnapshot] = useState<TabRuntimeSnapshot | undefined>();
   const [pendingRuntimeActiveTabId, setPendingRuntimeActiveTabId] = useState<string | undefined>();
@@ -120,6 +150,7 @@ export function App(): ReactElement {
   const commandInputRef = useRef<HTMLInputElement>(null);
   const dockHostRef = useRef<HTMLElement | null>(null);
   const activeTabIdRef = useRef(activeTabId);
+  const sceneRef = useRef(scene);
   const autoLayerTerrainRequestsRef = useRef<Set<string>>(new Set());
   const autoLayerTerrainTimerRef = useRef<number | undefined>(undefined);
   const lastViewportTraceKeyRef = useRef("");
@@ -140,6 +171,19 @@ export function App(): ReactElement {
   useEffect(() => {
     activeTabIdRef.current = activeTabId;
   }, [activeTabId]);
+
+  useEffect(() => {
+    sceneRef.current = scene;
+  }, [scene]);
+
+  useEffect(
+    () => () => {
+      semanticLayerTransitionTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+      semanticLayerTransitionTimeoutsRef.current = [];
+      semanticLayerTransitionLockRef.current = false;
+    },
+    [],
+  );
 
   useEffect(() => {
     return window.seekstar.tiles.onLinkActivated((event) => {
@@ -384,7 +428,7 @@ export function App(): ReactElement {
   }, [tabRuntimeSnapshot]);
 
   useEffect(() => {
-    if (isShellWindow || !workspaceHydrated) {
+    if (isShellWindow || !workspaceHydrated || semanticLayerTransition) {
       return;
     }
 
@@ -476,6 +520,7 @@ export function App(): ReactElement {
     handleFocusedLayerGeneration,
     isShellWindow,
     scene,
+    semanticLayerTransition,
     workspaceHydrated,
   ]);
   const orderedScenes = useMemo(() => {
@@ -518,11 +563,20 @@ export function App(): ReactElement {
     });
   }, [isShellWindow, scenesByTabId, syncWorkspaceFromStore, tabRuntimeSnapshot, workspaceHydrated]);
 
-  function handleSceneSelection(nodeIds: string[], focusNodeId?: string, showSelectionActions = false): void {
-    applySelection(syncSceneSelection(nodeIds, focusNodeId), showSelectionActions);
+  function handleSceneSelection(
+    nodeIds: string[],
+    focusNodeId?: string,
+    showSelectionActions = false,
+    intent: SelectionIntent = "inspect",
+  ): void {
+    applySelection(syncSceneSelection(nodeIds, focusNodeId, intent), showSelectionActions);
   }
 
   function handleSceneViewport(viewport: TerrainScene["viewport"]): void {
+    if (semanticLayerTransition && viewport.layer !== scene.viewport.layer) {
+      return;
+    }
+
     const nextSelectedNodeIds = syncSceneViewport(viewport, selectedNodeIds);
     const chunk = createCartographerChunkKeyForViewport(
       viewport,
@@ -575,6 +629,80 @@ export function App(): ReactElement {
     applySelection(result);
   }
 
+  function beginSemanticLayerTransition(request: SemanticLayerTransitionRequest): void {
+    if (semanticLayerTransition || semanticLayerTransitionLockRef.current) {
+      return;
+    }
+
+    const currentScene = sceneRef.current;
+
+    if (currentScene.viewport.layer !== request.fromLayer || request.toLayer === request.fromLayer) {
+      return;
+    }
+
+    const transitionId = semanticLayerTransitionCounterRef.current + 1;
+    semanticLayerTransitionCounterRef.current = transitionId;
+    semanticLayerTransitionLockRef.current = true;
+    semanticLayerTransitionTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+    semanticLayerTransitionTimeoutsRef.current = [];
+
+    setSemanticLayerTransition({
+      direction: request.direction,
+      focusKind: request.focusKind,
+      focusTitle: request.focusTitle,
+      fromLayer: request.fromLayer,
+      id: transitionId,
+      origin: request.origin,
+      phase: "exiting",
+      snapshotDataUrl: request.snapshotDataUrl,
+      toLayer: request.toLayer,
+    });
+
+    const applyTimeoutId = window.setTimeout(() => {
+      if (sceneRef.current.active_tab_id !== currentScene.active_tab_id || sceneRef.current.viewport.layer !== request.fromLayer) {
+        return;
+      }
+
+      setSemanticLayerTransition((current) =>
+        current?.id === transitionId
+          ? {
+              ...current,
+              phase: "revealing",
+            }
+          : current,
+      );
+      handleLayerSelect(request.toLayer, request.focusNodeId);
+    }, SEMANTIC_LAYER_APPLY_DELAY_MS);
+    const clearTimeoutId = window.setTimeout(() => {
+      semanticLayerTransitionLockRef.current = false;
+      setSemanticLayerTransition((current) => (current?.id === transitionId ? undefined : current));
+    }, SEMANTIC_LAYER_TRANSITION_MS);
+
+    semanticLayerTransitionTimeoutsRef.current = [applyTimeoutId, clearTimeoutId];
+  }
+
+  function handleSemanticZoomRequest(request: SemanticZoomRequest): void {
+    const currentScene = sceneRef.current;
+
+    const toLayer = resolveSemanticZoomTargetLayer(request.fromLayer, request.direction);
+
+    if (!toLayer) {
+      return;
+    }
+
+    const focusNode = request.focusNodeId ? currentScene.nodes.find((node) => node.id === request.focusNodeId) : undefined;
+    beginSemanticLayerTransition({
+      direction: request.direction,
+      focusKind: request.focusKind,
+      focusNodeId: request.direction === "in" ? focusNode?.id : undefined,
+      focusTitle: focusNode?.title,
+      fromLayer: request.fromLayer,
+      origin: request.origin,
+      snapshotDataUrl: request.snapshotDataUrl,
+      toLayer,
+    });
+  }
+
   function handleCommandChange(event: ChangeEvent<HTMLInputElement>): void {
     const nextValue = event.target.value;
     setCommandValue(nextValue);
@@ -590,7 +718,13 @@ export function App(): ReactElement {
 
     if (event.key === "Enter") {
       event.preventDefault();
-      void handleAddKeywordToCurrentPage();
+      if (commandIntent === "new_seek") {
+        void handleUseAsSeed();
+      } else if (commandIntent === "search_current") {
+        handleSearchCurrentTab();
+      } else {
+        void handleAddKeywordToCurrentPage();
+      }
     }
   }
 
@@ -713,32 +847,47 @@ export function App(): ReactElement {
       tab_id: activeTabId,
     });
 
-    if (node && isAbsorbableCanvasTile(node)) {
-      const isSameFocusedTile = scene.runtime.focused_node_id === nodeId || (selectedNodeIds.length === 1 && selectedNodeIds[0] === nodeId);
+    handleSceneSelection([nodeId], nodeId, false, "inspect");
+    setTileActionNodeId(undefined);
+    showRightSidebar();
+  }
 
-      if (isSameFocusedTile) {
-        setTileActionNodeId(nodeId);
-      } else {
-        applySelection(handleTileFocus(nodeId));
-        setTileActionNodeId(undefined);
-      }
+  function handleNodeOpen(nodeId: string, activation?: NodeActivationContext): void {
+    const node = scene.nodes.find((candidate) => candidate.id === nodeId);
+
+    traceTelescopeUi("node.open", {
+      layer: scene.viewport.layer,
+      node: summarizeNodeForTrace(node),
+      tab_id: activeTabId,
+    });
+
+    if (node && isAbsorbableCanvasTile(node)) {
+      handleSceneSelection([nodeId], nodeId, false, "inspect");
+      setTileActionNodeId(nodeId);
       showRightSidebar();
       return;
     }
 
-    if (node && selectedNodeIds.length === 1 && selectedNodeIds[0] === nodeId && node.zoom_target) {
+    if (node?.zoom_target) {
       traceTelescopeUi("node.zoom_target", {
         node: summarizeNodeForTrace(node),
         target: node.zoom_target,
         tab_id: activeTabId,
       });
-      handleLayerSelect(node.zoom_target.layer, node.zoom_target.node_id);
+      beginSemanticLayerTransition({
+        direction: resolveSemanticTransitionDirection(scene.viewport.layer, node.zoom_target.layer),
+        focusKind: "node",
+        focusNodeId: node.zoom_target.node_id,
+        focusTitle: node.title,
+        fromLayer: scene.viewport.layer,
+        origin: activation?.origin,
+        snapshotDataUrl: activation?.snapshotDataUrl,
+        toLayer: node.zoom_target.layer,
+      });
       return;
     }
 
-    const continuousZoomLayer = node && selectedNodeIds.length === 1 && selectedNodeIds[0] === nodeId
-      ? resolveContinuousZoomInLayer(node.layer)
-      : undefined;
+    const continuousZoomLayer = node ? resolveContinuousZoomInLayer(node.layer) : undefined;
 
     if (node && continuousZoomLayer) {
       traceTelescopeUi("node.zoom_continuous", {
@@ -747,7 +896,16 @@ export function App(): ReactElement {
         tab_id: activeTabId,
         to_layer: continuousZoomLayer,
       });
-      handleLayerSelect(continuousZoomLayer, node.id);
+      beginSemanticLayerTransition({
+        direction: "in",
+        focusKind: "node",
+        focusNodeId: node.id,
+        focusTitle: node.title,
+        fromLayer: scene.viewport.layer,
+        origin: activation?.origin,
+        snapshotDataUrl: activation?.snapshotDataUrl,
+        toLayer: continuousZoomLayer,
+      });
       return;
     }
 
@@ -780,7 +938,7 @@ export function App(): ReactElement {
   }
 
   function handleSearchResultSelect(nodeId: string): void {
-    handleSceneSelection([nodeId], nodeId);
+    handleSceneSelection([nodeId], nodeId, false, "search");
     showRightSidebar();
   }
 
@@ -917,9 +1075,36 @@ export function App(): ReactElement {
     showRightSidebar();
   }
 
-  function handleFocusCommand(): void {
-    commandInputRef.current?.focus();
-    setIsCommandModalOpen(commandValue.trim().length > 0);
+  function handleNewFieldSearch(): void {
+    setCommandIntent("new_seek");
+    setCommandValue("");
+    setIsCommandModalOpen(false);
+    window.setTimeout(() => commandInputRef.current?.focus(), 0);
+  }
+
+  function handleSearchCurrentMap(): void {
+    setCommandIntent("search_current");
+    setCommandValue("");
+    setIsCommandModalOpen(false);
+    window.setTimeout(() => commandInputRef.current?.focus(), 0);
+  }
+
+  function handleStarterSeed(seed: string): void {
+    setCommandIntent(undefined);
+    setCommandValue(seed);
+    setIsCommandModalOpen(false);
+    void handleCreateStarterSeed(seed);
+  }
+
+  async function handleCreateStarterSeed(seed: string): Promise<void> {
+    resetCommandAndSearch();
+    resetSelection();
+    const result = await createSeedTab(seed);
+
+    if (result) {
+      applySelection(result);
+    }
+    showRightSidebar();
   }
 
   function handleClearSelection(): void {
@@ -930,6 +1115,7 @@ export function App(): ReactElement {
   }
 
   function resetCommandAndSearch(): void {
+    setCommandIntent(undefined);
     setCommandValue("");
     setIsCommandModalOpen(false);
     setSearchQuery("");
@@ -1444,7 +1630,9 @@ export function App(): ReactElement {
             <ObservatorySidebar
               activeTabId={activeTabId}
               activeTool={activeCanvasTool}
-              onFocusCommand={handleFocusCommand}
+              onNewFieldSearch={handleNewFieldSearch}
+              onSearchCurrentMap={handleSearchCurrentMap}
+              onStarterSeed={handleStarterSeed}
               folders={tabRuntimeSnapshot?.folders ?? []}
               folderCounts={folderCounts}
               onOpenSettings={() => setSettingsOpen(true)}
@@ -1519,7 +1707,13 @@ export function App(): ReactElement {
                   handleCanvasFrontierDiscovery(viewport, cartographerChunkScheduling);
                   setRightSidebarMode("compact");
                 }}
+                onSemanticZoomRequest={handleSemanticZoomRequest}
+                semanticTransitionActive={Boolean(semanticLayerTransition)}
+                semanticTransitionDirection={semanticLayerTransition?.direction}
+                semanticTransitionOrigin={semanticLayerTransition?.origin}
+                semanticTransitionStage={semanticLayerTransition?.phase ?? "idle"}
                 onNodeSelect={handleNodeSelect}
+                onNodeOpen={handleNodeOpen}
                 onRelationSelect={handleRelationSelect}
                 onSelectionChange={handleSceneSelection}
                 onTileAbsorptionComplete={(nodeId, trigger) => {
@@ -1533,6 +1727,7 @@ export function App(): ReactElement {
                 tileFieldTargetCount={settings?.tile_field_target_count}
                 viewport={scene.viewport}
               />
+              {semanticLayerTransition ? <SemanticLayerTransitionOverlay transition={semanticLayerTransition} /> : null}
               {openingSkyStatus ? <OpeningSkyStatus status={openingSkyStatus} /> : null}
               {workspaceLoadError ? (
                 <aside className="workspace-load-error" aria-live="polite">
@@ -1577,6 +1772,7 @@ export function App(): ReactElement {
             commandKind={commandKind}
             commandInputRef={commandInputRef}
             commandValue={commandValue}
+            intent={commandIntent}
             isCommandModalOpen={isCommandModalOpen}
             onCommandChange={handleCommandChange}
             onCommandFocus={() => setIsCommandModalOpen(commandValue.trim().length > 0)}
@@ -1680,6 +1876,46 @@ interface OpeningSkyStatusModel {
   body: string;
   title: string;
   tone: "error" | "generating" | "idle";
+}
+
+function SemanticLayerTransitionOverlay({ transition }: { transition: SemanticLayerTransitionState }): ReactElement {
+  const label = transition.focusTitle ?? (transition.focusKind === "interstitial" ? "Neighborhood" : "Focus");
+  const style = {
+    "--semantic-origin-x": transition.origin ? `${Math.round(transition.origin.x)}px` : "50%",
+    "--semantic-origin-y": transition.origin ? `${Math.round(transition.origin.y)}px` : "50%",
+    "--semantic-transition-duration": `${SEMANTIC_LAYER_TRANSITION_MS}ms`,
+  } as CSSProperties;
+
+  return (
+    <div
+      aria-hidden="true"
+      className={`semantic-layer-transition semantic-layer-transition-${transition.direction} semantic-layer-transition-${transition.phase}`}
+      style={style}
+    >
+      {transition.snapshotDataUrl ? (
+        <img
+          alt=""
+          className="semantic-layer-transition-snapshot"
+          src={transition.snapshotDataUrl}
+        />
+      ) : null}
+      <div className="semantic-layer-transition-veil" />
+      <div
+        className="semantic-layer-transition-origin"
+        style={{
+          left: transition.origin ? `${Math.round(transition.origin.x)}px` : "50%",
+          top: transition.origin ? `${Math.round(transition.origin.y)}px` : "50%",
+        }}
+      >
+        <div className="semantic-layer-transition-disc">
+          <span>{label}</span>
+        </div>
+      </div>
+      <div className="semantic-layer-transition-caption">
+        {transition.fromLayer} → {transition.toLayer}
+      </div>
+    </div>
+  );
 }
 
 function OpeningSkyStatus({ status }: { status: OpeningSkyStatusModel }): ReactElement {
@@ -1872,19 +2108,63 @@ function resolveContinuousZoomInLayer(layer: LayerId): LayerId | undefined {
   return undefined;
 }
 
+function resolveSemanticTransitionDirection(fromLayer: LayerId, toLayer: LayerId): "in" | "out" {
+  const layerOrder: Record<string, number> = {
+    supra_macro: -1,
+    L0: 0,
+    L1: 1,
+    L2: 2,
+    L3: 3,
+    L4: 4,
+    L5: 5,
+    L6: 6,
+    L7: 7,
+    L8: 8,
+    L9: 9,
+    L10: 10,
+    L11: 11,
+  };
+  const fromIndex = layerOrder[fromLayer];
+  const toIndex = layerOrder[toLayer];
+
+  if (fromIndex === undefined || toIndex === undefined) {
+    return "in";
+  }
+
+  return toIndex > fromIndex ? "in" : "out";
+}
+
+function resolveSemanticZoomTargetLayer(layer: LayerId, direction: "in" | "out"): LayerId | undefined {
+  if (direction === "in") {
+    return resolveContinuousZoomInLayer(layer);
+  }
+
+  if (layer === "L3") {
+    return "L2";
+  }
+
+  if (layer === "L2") {
+    return "L1";
+  }
+
+  if (layer === "L1") {
+    return "L0";
+  }
+
+  if (layer === "L0") {
+    return "supra_macro";
+  }
+
+  return undefined;
+}
+
 function traceTelescopeUi(event: string, payload?: unknown): void {
   try {
-    if (window.localStorage.getItem("seekstar.trace") === "0") {
-      return;
-    }
-
-    if (!import.meta.env.DEV && window.localStorage.getItem("seekstar.trace") !== "1") {
+    if (window.localStorage.getItem("seekstar.trace") !== "1") {
       return;
     }
   } catch {
-    if (!import.meta.env.DEV) {
-      return;
-    }
+    return;
   }
 
   const suffix = payload === undefined ? "" : ` ${stringifyTelescopeTracePayload(payload)}`;

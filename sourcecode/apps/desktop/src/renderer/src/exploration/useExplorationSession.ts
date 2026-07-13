@@ -149,8 +149,14 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         resolveFallbackScene: () => loadConfiguredDefaultScene(initialScene),
         storage: {
           clearWorkspaceSnapshot: () => window.seekstar.workspace.clearSnapshot(),
-          loadWorkspaceSnapshot: async () =>
-            (await window.seekstar.workspace.loadSnapshot()) as WorkspaceSnapshot<SelectionBasketItem> | undefined,
+          loadWorkspaceSnapshot: async () => {
+            const snapshot = await window.seekstar.workspace.loadSnapshot();
+            if (isWorkspaceStorageUnavailable(snapshot)) {
+              throw new Error(snapshot.message);
+            }
+
+            return snapshot as WorkspaceSnapshot<SelectionBasketItem> | undefined;
+          },
           saveWorkspaceSnapshot: (snapshot) => window.seekstar.workspace.saveSnapshot(snapshot),
         },
       }),
@@ -399,12 +405,12 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
   }, [activeTabId, basketByTabId, initialScene, runtimeTabId, scenesByTabId, workspaceHydrated, workspacePersistence]);
 
   const syncSceneSelection = useCallback(
-    (nodeIds: string[], focusNodeId?: string): SelectionSyncResult => {
+    (nodeIds: string[], focusNodeId?: string, intent: "backlink" | "cartographer" | "inspect" | "lasso" | "search" = "inspect"): SelectionSyncResult => {
       const result = applyExplorationEvent(scene, {
         type: "selection.changed",
         nodeIds,
         focusNodeId,
-        intent: "inspect",
+        intent,
       });
       replaceScene(activeTabId, result.scene);
       return {
@@ -425,6 +431,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       const nextScene = result.scene;
       const nextSelectedNodeIds = nextScene.selection.node_ids;
       replaceScene(activeTabId, nextScene);
+      void window.seekstar.worldPool.reportCamera({ tabId: activeTabId, camera: viewport, scene: nextScene });
       return nextSelectedNodeIds;
     },
     [activeTabId, replaceScene, scene],
@@ -527,23 +534,24 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         });
 
         try {
-          const orphanSeed = createHyperlinkOrphanSeed(nextScene, parentBacklink);
-          const cartographerResult = await window.seekstar.cartographer.runBootstrapTransaction({
-            forceRefresh: false,
+          const world = await window.seekstar.worldPool.open({
+            camera: nextScene.viewport,
             scene: nextScene,
-            seed: orphanSeed,
+            seed: createHyperlinkOrphanSeed(nextScene, parentBacklink),
             tabId,
           });
-          applyCartographerChunkSnapshot(cartographerResult.snapshot);
-          const cartographerScene = cartographerResult.scene;
-          const cartographerScenesByTabId = replaceScene(tabId, cartographerScene);
+          const worldScenesByTabId = replaceScene(tabId, world.scene);
           await workspacePersistence.persist({
             activeTabId: tabId,
             basketByTabId: basketByTabIdRef.current,
             fallbackScene: initialScene,
-            scenesByTabId: cartographerScenesByTabId,
+            scenesByTabId: worldScenesByTabId,
           });
-          setCartographerStatus(cartographerResult.status);
+          setCartographerStatus({
+            message: world.status === "expanding" ? "World pool is preparing hyperlink context" : "World pool ready",
+            phase: world.status === "expanding" ? "generating" : world.status === "error" ? "error" : "applied",
+            updatedAt: world.updated_at,
+          });
         } catch {
           setCartographerStatus({
             message: `Cartographer orphan context failed for ${url}`,
@@ -604,6 +612,25 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     [initialScene, workspacePersistence],
   );
 
+  useEffect(() => {
+    if (!workspaceHydrated) {
+      return undefined;
+    }
+
+    return window.seekstar.worldPool.subscribe(activeTabId, (snapshot) => {
+      if (!scenesByTabIdRef.current[activeTabId]) {
+        return;
+      }
+      const nextScenes = replaceScene(activeTabId, snapshot.scene);
+      setCartographerStatus({
+        message: snapshot.status === "expanding" ? "World pool is extending nearby terrain" : snapshot.status === "error" ? "World pool paused after an error" : "World pool ready",
+        phase: snapshot.status === "expanding" ? "generating" : snapshot.status === "error" ? "error" : "applied",
+        updatedAt: snapshot.updated_at,
+      });
+      void persistWorkspaceAfterSceneChange(activeTabId, nextScenes);
+    });
+  }, [activeTabId, persistWorkspaceAfterSceneChange, replaceScene, workspaceHydrated]);
+
   const bootstrapCartographerTerrain = useCallback(
     async (input: {
       entryMode?: "default_tonight_sky";
@@ -633,6 +660,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       setPersistenceStatus("saving");
 
       try {
+        const revisionAtRequest = localNavigationRevisionRef.current;
         const latestScene = scenesByTabIdRef.current[input.tabId] ?? input.scene;
         traceExplorationSession("bootstrap.start", {
           entry_mode: input.entryMode,
@@ -641,12 +669,11 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
           seed,
           tab_id: input.tabId,
         });
-        const result = await window.seekstar.cartographer.runBootstrapTransaction({
-          entryMode: input.entryMode,
-          forceRefresh: input.forceRefresh,
+        const result = await window.seekstar.worldPool.open({
           scene: latestScene,
           seed,
           tabId: input.tabId,
+          camera: latestScene.viewport,
         });
 
         if (!scenesByTabIdRef.current[input.tabId]) {
@@ -657,12 +684,24 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
           return undefined;
         }
 
-        applyCartographerChunkSnapshot(result.snapshot);
+        if (localNavigationRevisionRef.current !== revisionAtRequest) {
+          traceExplorationSession("bootstrap.drop_stale_result", {
+            current_scene: summarizeExplorationScene(scenesByTabIdRef.current[input.tabId] ?? latestScene),
+            seed,
+            tab_id: input.tabId,
+          });
+          setPersistenceStatus("saved");
+          return undefined;
+        }
+
         const nextScene = result.scene;
-        markBootstrapCartographerChunksDiscovered(input.tabId, nextScene, discoveredFrontiersRef.current);
         const nextScenesByTabId = replaceScene(input.tabId, nextScene);
         await persistWorkspaceAfterSceneChange(input.tabId, nextScenesByTabId);
-        setCartographerStatus(result.status);
+        setCartographerStatus({
+          message: result.status === "expanding" ? "World pool is preparing the surrounding field" : "World pool ready",
+          phase: result.status === "expanding" ? "generating" : result.status === "error" ? "error" : "applied",
+          updatedAt: result.updated_at,
+        });
         setPersistenceStatus("saved");
 
         traceExplorationSession("bootstrap.applied", {
@@ -716,6 +755,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       setPersistenceStatus("saving");
 
       let pendingScene: TerrainScene | undefined;
+      let revisionAfterPendingScene: number | undefined;
 
       try {
         const pendingObservation = createPendingDirectUrlObservation({
@@ -737,6 +777,7 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         });
         pendingScene = pendingResult.scene;
         const pendingScenesByTabId = replaceScene(input.tabId, pendingScene);
+        revisionAfterPendingScene = localNavigationRevisionRef.current;
         await persistWorkspaceAfterSceneChange(input.tabId, pendingScenesByTabId);
 
         const result = await withTimeout(
@@ -768,6 +809,15 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
           return undefined;
         }
 
+        if (revisionAfterPendingScene !== undefined && localNavigationRevisionRef.current !== revisionAfterPendingScene) {
+          traceExplorationSession("direct_url.drop_stale_result", {
+            tab_id: input.tabId,
+            url,
+          });
+          setPersistenceStatus("saved");
+          return undefined;
+        }
+
         const settledScene = input.candidateObservationId
           ? settleScoutObservation(result.scene, input.candidateObservationId, result.sourceCandidate ? "converted" : "failed")
           : result.scene;
@@ -782,6 +832,11 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
         };
       } catch (error) {
         const sourceScene = pendingScene ?? input.scene;
+
+        if (revisionAfterPendingScene !== undefined && localNavigationRevisionRef.current !== revisionAfterPendingScene) {
+          setPersistenceStatus("saved");
+          return undefined;
+        }
 
         if (scenesByTabIdRef.current[input.tabId]) {
           const failedResult = createDirectUrlIntakeFailureResult({
@@ -1063,7 +1118,9 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
   }, [activeTabId, bootstrapCartographerTerrain, cartographerAutomationEnabled, scenesByTabId, workspaceHydrated]);
 
   useEffect(() => {
-    if (!cartographerAutomationEnabled || !workspaceHydrated || autoCandidateVerificationInFlightRef.current) {
+    // WorldPoolCoordinator owns proactive L3 validation. Keep this legacy
+    // renderer-side loop disabled so the same candidate is never observed twice.
+    if (cartographerAutomationEnabled || !workspaceHydrated || autoCandidateVerificationInFlightRef.current) {
       return;
     }
 
@@ -1599,6 +1656,13 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       tabId: string;
       viewport: TerrainScene["viewport"];
     }): Promise<SelectionSyncResult | undefined> => {
+      // Layer changes are consumer-only in the world-pool model. The camera
+      // signal has already scheduled the shared multi-scale segment window.
+      if (cartographerAutomationEnabled) {
+        void window.seekstar.worldPool.reportCamera({ tabId: input.tabId, camera: input.viewport, scene: input.scene });
+        return undefined;
+      }
+
       if (!isFocusedCartographerLayer(input.viewport.layer)) {
         return undefined;
       }
@@ -1757,6 +1821,10 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
 
   const handleCartographerChunkRefresh = useCallback(
     (viewport: TerrainScene["viewport"], scheduling?: CartographerChunkSchedulingPolicy): void => {
+      if (cartographerAutomationEnabled) {
+        void window.seekstar.worldPool.reportCamera({ tabId: activeTabIdRef.current, camera: viewport });
+        return;
+      }
       const tabId = activeTabIdRef.current;
       const currentScene = scenesByTabIdRef.current[tabId] ?? scene;
       const policy = normalizeCartographerChunkSchedulingPolicy(scheduling);
@@ -1778,6 +1846,10 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
   );
 
   const handleCartographerTransactionCancel = useCallback((): void => {
+    if (cartographerAutomationEnabled) {
+      setCartographerStatus({ message: "World pool keeps completed terrain cached; queued work follows the latest camera", phase: "idle", updatedAt: new Date().toISOString() });
+      return;
+    }
     const tabId = activeTabIdRef.current;
 
     void window.seekstar.cartographer
@@ -1808,6 +1880,14 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       viewport: TerrainScene["viewport"],
       scheduling?: CartographerChunkSchedulingPolicy,
     ): void => {
+      if (cartographerAutomationEnabled) {
+        const policy = normalizeCartographerChunkSchedulingPolicy(scheduling);
+        void window.seekstar.worldPool.reportCamera({
+          tabId: activeTabIdRef.current,
+          camera: createAdjacentCartographerViewport(viewport, direction, 1, policy),
+        });
+        return;
+      }
       if (isFocusRequiredExpansionLayer(viewport.layer)) {
         traceExplorationSession("direction_expansion.skip_focus_required", {
           direction,
@@ -1841,6 +1921,11 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
       viewport: TerrainScene["viewport"],
       scheduling?: CartographerChunkSchedulingPolicy,
     ): Promise<SelectionSyncResult | undefined> => {
+      if (cartographerAutomationEnabled) {
+        void window.seekstar.worldPool.reportCamera({ tabId: activeTabIdRef.current, camera: viewport });
+        return undefined;
+      }
+
       if (!isCartographerExpandableLayer(viewport.layer)) {
         return undefined;
       }
@@ -1947,6 +2032,11 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
 
   const handleCanvasFrontierDiscovery = useCallback(
     (nextViewport: TerrainScene["viewport"], scheduling?: CartographerChunkSchedulingPolicy) => {
+      if (cartographerAutomationEnabled) {
+        void window.seekstar.worldPool.reportCamera({ tabId: activeTabIdRef.current, camera: nextViewport });
+        return;
+      }
+
       if (isCartographerExpandableLayer(nextViewport.layer)) {
         const policy = normalizeCartographerChunkSchedulingPolicy(scheduling);
 
@@ -2061,6 +2151,10 @@ export function useExplorationSession(options: UseExplorationSessionOptions = {}
     async (observationId: string): Promise<SelectionSyncResult | undefined> => {
       const tabId = activeTabIdRef.current;
       const currentScene = scenesByTabIdRef.current[tabId] ?? scene;
+      if (cartographerAutomationEnabled) {
+        void window.seekstar.worldPool.reportCamera({ tabId, camera: currentScene.viewport, scene: currentScene });
+        return undefined;
+      }
       const observation = (currentScene.scout_observations ?? []).find((candidate) => candidate.id === observationId);
 
       if (!observation || (observation.status !== "failed" && !observation.failure_reason)) {
@@ -2524,21 +2618,26 @@ function createRecursiveSeedBacklinkExcerpt(node: TerrainNode, source?: SourceRe
 
 function traceExplorationSession(event: string, payload?: unknown): void {
   try {
-    if (window.localStorage.getItem("seekstar.trace") === "0") {
-      return;
-    }
-
-    if (!import.meta.env.DEV && window.localStorage.getItem("seekstar.trace") !== "1") {
+    if (window.localStorage.getItem("seekstar.trace") !== "1") {
       return;
     }
   } catch {
-    if (!import.meta.env.DEV) {
-      return;
-    }
+    return;
   }
 
   const suffix = payload === undefined ? "" : ` ${stringifyExplorationTracePayload(payload)}`;
   console.info(`[SeekStar][exploration-session] ${event}${suffix}`);
+}
+
+function isWorkspaceStorageUnavailable(value: unknown): value is { code: "workspace_storage_unavailable"; message: string } {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      "code" in value &&
+      (value as { code?: unknown }).code === "workspace_storage_unavailable" &&
+      "message" in value &&
+      typeof (value as { message?: unknown }).message === "string",
+  );
 }
 
 function stringifyExplorationTracePayload(payload: unknown): string {
@@ -2588,22 +2687,6 @@ function summarizeTerrainNodeForTrace(node: TerrainNode | undefined): Record<str
     x: node.position_hint?.x === undefined ? undefined : Math.round(node.position_hint.x),
     y: node.position_hint?.y === undefined ? undefined : Math.round(node.position_hint.y),
   };
-}
-
-function markBootstrapCartographerChunksDiscovered(tabId: string, scene: TerrainScene, discovered: Set<string>): void {
-  for (const layer of ["supra_macro", "L0", "L1", "L2", "L3"] as const) {
-    if (!scene.nodes.some((node) => node.layer === layer)) {
-      continue;
-    }
-
-    const chunk = createCartographerChunkKeyForViewport({
-      ...scene.viewport,
-      layer,
-      x: 0,
-      y: 0,
-    });
-    discovered.add(`${tabId}:${layer}:${chunk.key}`);
-  }
 }
 
 function isCartographerExpandableLayer(layer: LayerId): layer is CartographerLevelBandId {
