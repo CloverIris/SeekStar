@@ -2,20 +2,16 @@
   "name": "@seekstar/storage-service",
   "version": "0.0.0",
   "private": true,
-  "description": "SeekStar storage and cache service contracts with JSON adapter CLI.",
+  "description": "SeekStar atomic JSON world repository.",
   "type": "module",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "bin": {
-    "seekstar-storage": "dist/cli.js"
-  },
+  "types": "src/index.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\""
   },
   "dependencies": {
-    "@seekstar/constellation-engine": "0.0.0",
     "@seekstar/core-schema": "0.0.0"
   },
   "devDependencies": {

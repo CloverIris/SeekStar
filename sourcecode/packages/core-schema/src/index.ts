@@ -58,19 +58,11 @@ export type RelationType =
   | "agent_inferred";
 
 export type LayerId =
+  | "supra_macro"
   | "L0"
   | "L1"
   | "L2"
-  | "L3"
-  | "L4"
-  | "L5"
-  | "L6"
-  | "L7"
-  | "L8"
-  | "L9"
-  | "L10"
-  | "L11"
-  | (string & {});
+  | "L3";
 
 export type SourceType =
   | "webpage"
@@ -153,30 +145,6 @@ export interface SourcePositionRange {
   excerpt?: string;
 }
 
-export interface DeepLensTextGrainSnapshot {
-  locator: string;
-  text: string;
-  kind: "section" | "paragraph" | "phrase" | "word";
-  start: number;
-  end: number;
-  rects?: Array<{
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  }>;
-}
-
-export interface DeepLensSnapshot {
-  node_id: string;
-  source_id?: string;
-  source_url?: string;
-  title: string;
-  captured_at: string;
-  text: string;
-  grains: DeepLensTextGrainSnapshot[];
-}
-
 export interface TokenRangeRef {
   source_id?: string;
   node_id?: string;
@@ -209,6 +177,23 @@ export interface ViewportState {
 }
 
 export type CameraState = ViewportState;
+
+/** The exploration runtime deliberately supports one compact, continuous scale stack. */
+export type ExplorationLayerId = "L0" | "L1" | "L2" | "L3";
+
+export interface ExplorationCamera {
+  x: number;
+  y: number;
+  zoom: number;
+  layer: ExplorationLayerId;
+}
+
+export interface ExplorationViewState {
+  camera: ExplorationCamera;
+  selected_node_ids: string[];
+  focused_node_id?: string;
+  browser_absorption: BrowserTileAbsorptionState;
+}
 
 export type TileAbsorptionTrigger = "threshold" | "click" | "command";
 export type TileAbsorptionStatus = "idle" | "absorbed";
@@ -766,6 +751,88 @@ export interface TerrainScene {
   metadata: TerrainSceneMetadata;
 }
 
+export type WorldSegmentPhase = "queued" | "generating" | "ready" | "failed";
+export type ExplorationJobKind = "segment" | "scout";
+export type ExplorationJobStatus = "queued" | "running" | "completed" | "failed";
+
+export interface WorldSegment {
+  key: string;
+  chunk_x: number;
+  chunk_y: number;
+  revision: number;
+  phase: WorldSegmentPhase;
+  nodes: TerrainNode[];
+  relations: TerrainRelation[];
+  source_candidates: ScoutObservation[];
+  error?: string;
+  attempts: number;
+  updated_at: string;
+}
+
+export interface ExplorationJobState {
+  id: string;
+  kind: ExplorationJobKind;
+  status: ExplorationJobStatus;
+  segment_key?: string;
+  candidate_id?: string;
+  error?: string;
+  updated_at: string;
+}
+
+/** Persistent world content. View state is intentionally absent. */
+export interface WorldDocument {
+  world_id: string;
+  tab_id: string;
+  seed: string;
+  policy_revision: string;
+  world_revision: number;
+  segments_by_key: Record<string, WorldSegment>;
+  sources: Record<string, SourceRef>;
+  scout_observations: Record<string, ScoutObservation>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExplorationViewCheckpoint {
+  tab_id: string;
+  view_revision: number;
+  view: ExplorationViewState;
+  updated_at: string;
+}
+
+/** Ephemeral renderer projection. It is never persisted or sent through IPC. */
+export interface TerrainProjection {
+  tab_id: string;
+  world_revision: number;
+  view: ExplorationViewState;
+  visible_segment_keys: string[];
+  nodes: TerrainNode[];
+  relations: TerrainRelation[];
+  sources: SourceRef[];
+  scout_observations: ScoutObservation[];
+  fog_segment_keys: string[];
+}
+
+export type ExplorationWorldEvent =
+  | { type: "segment_upsert"; world_revision: number; segment: WorldSegment }
+  | { type: "source_upsert"; world_revision: number; source: SourceRef; observation?: ScoutObservation }
+  | { type: "job_changed"; world_revision: number; job: ExplorationJobState }
+  | { type: "world_error"; world_revision: number; code: string; message: string; segment_key?: string };
+
+export interface ExplorationOpenResult {
+  lease_id: string;
+  tab_id: string;
+  world: WorldDocument;
+  view_checkpoint: ExplorationViewCheckpoint;
+  jobs: ExplorationJobState[];
+}
+
+export type ExplorationCommand =
+  | { type: "ensure_working_set" }
+  | { type: "retry_segment"; segment_key: string }
+  | { type: "observe_candidate"; candidate_id: string }
+  | { type: "replace_candidate"; candidate_id: string; url: string };
+
 export {
   assertValidTerrainScene,
   normalizeTerrainScene,
@@ -782,7 +849,6 @@ export {
   getLayerFocalBand,
   getLayerOrder,
   isMacroLayer,
-  isTextGrainLayer,
   isTileLayer,
   type SemanticFocalBand,
   type SemanticLayerDefinition,

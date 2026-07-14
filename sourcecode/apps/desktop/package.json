@@ -16,7 +16,6 @@
     "@seekstar/constellation-engine": "0.0.0",
     "@seekstar/core-schema": "0.0.0",
     "@seekstar/ai-service": "0.0.0",
-    "@seekstar/level-runtime": "0.0.0",
     "@seekstar/scout-service": "0.0.0",
     "@seekstar/storage-service": "0.0.0",
     "lucide-react": "^1.21.0",

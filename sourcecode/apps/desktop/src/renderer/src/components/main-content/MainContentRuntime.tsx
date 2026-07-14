@@ -123,18 +123,18 @@ function filterRenderableMainContentNodes(nodes: TerrainNode[], mode: MainConten
   }
 
   if (mode === "cartographer_chunk_field" || mode === "source_candidate_field") {
-    const hasCartographerTerrain = nodes.some(isCartographerTerrainNode);
+    const hasCartographerTerrain = nodes.some(isWorldTerrainNode);
 
     if (hasCartographerTerrain) {
-      return nodes.filter((node) => isCartographerTerrainNode(node) || node.source_state === "source_backed" || node.source_state === "user_seed");
+      return nodes.filter((node) => isWorldTerrainNode(node) || node.source_state === "source_backed" || node.source_state === "user_seed");
     }
   }
 
   if (mode === "domain_gallery") {
-    const hasCartographerTerrain = nodes.some(isCartographerTerrainNode);
+    const hasCartographerTerrain = nodes.some(isWorldTerrainNode);
 
     if (hasCartographerTerrain) {
-      return nodes.filter((node) => isCartographerTerrainNode(node) || node.source_state === "user_seed");
+      return nodes.filter((node) => isWorldTerrainNode(node) || node.source_state === "user_seed");
     }
 
     return nodes.filter((node) => !isMainContentScaffoldPlaceholder(node));
@@ -143,8 +143,8 @@ function filterRenderableMainContentNodes(nodes: TerrainNode[], mode: MainConten
   return nodes.filter((node) => !isMainContentScaffoldPlaceholder(node));
 }
 
-function isCartographerTerrainNode(node: TerrainNode): boolean {
-  return node.source_state === "cartographer_primary" || node.tags?.includes("cartographer") === true;
+function isWorldTerrainNode(node: TerrainNode): boolean {
+  return node.tags?.includes("exploration-world") === true || node.source_state === "source_backed";
 }
 
 function isSourceTileSurfaceNode(node: TerrainNode): boolean {

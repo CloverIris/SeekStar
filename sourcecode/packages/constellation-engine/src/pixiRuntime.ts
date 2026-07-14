@@ -1,4 +1,4 @@
-import { getLayerFocalBand, isMacroLayer, isTileLayer } from "@seekstar/core-schema";
+import { isMacroLayer, isTileLayer } from "@seekstar/core-schema";
 import type { LayerId, ScoutObservation, SourceState, TerrainNode, TerrainRelation, TerrainScene, ViewportState } from "@seekstar/core-schema";
 import { resolveZoomForLayer } from "./lens.js";
 
@@ -24,7 +24,6 @@ export type MainContentMode =
   | "source_intake_failed"
   | "source_tile_field"
   | "browser_absorbed"
-  | "text_grain"
   | "empty_source_field";
 
 export interface ProjectionRect {
@@ -277,15 +276,6 @@ function createMainContentProjection(
       emptyReason: "No source-backed webpage/document/PDF/image tile exists on this layer yet.",
       intakeStatus: "idle",
       mode: "empty_source_field",
-      candidateTileSurfaces,
-      sourceTileSurfaces,
-    };
-  }
-
-  if (viewport.layer === "L4" || getLayerFocalBand(viewport.layer) === "text_grain" || viewport.layer === "L11") {
-    return {
-      intakeStatus: "idle",
-      mode: "text_grain",
       candidateTileSurfaces,
       sourceTileSurfaces,
     };

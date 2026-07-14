@@ -1,4 +1,4 @@
-import type { TabRecord, TerrainScene, WorkspaceFolder } from "@seekstar/core-schema";
+import type { TabRecord, WorkspaceFolder } from "@seekstar/core-schema";
 import type { DragEvent, ReactElement } from "react";
 import { useState } from "react";
 import {
@@ -24,7 +24,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { CanvasTool } from "./canvasTools";
-import { getActiveTab } from "../exploration/types";
 
 interface ObservatorySidebarProps {
   activeTabId: string;
@@ -49,7 +48,7 @@ interface ObservatorySidebarProps {
   onToolSelect: (tool: CanvasTool) => void;
   onWorkspaceRename: () => void;
   runtimeTabsById: Map<string, TabRecord>;
-  scenes: TerrainScene[];
+  tabs: TabRecord[];
   workspaceName: string;
 }
 
@@ -85,15 +84,19 @@ export function ObservatorySidebar({
   onTabSelect,
   onWorkspaceRename,
   runtimeTabsById,
-  scenes,
+  tabs,
   workspaceName,
 }: ObservatorySidebarProps): ReactElement {
   const [draggingTabId, setDraggingTabId] = useState<string | undefined>();
   const [dragStartScreenPosition, setDragStartScreenPosition] = useState<{ x: number; y: number } | undefined>();
-  const [activeFolderId, setActiveFolderId] = useState<string | undefined>();
-  const visibleScenes = activeFolderId
-    ? scenes.filter((scene) => runtimeTabsById.get(getActiveTab(scene).id)?.folder_id === activeFolderId)
-    : scenes;
+  const [activeView, setActiveView] = useState<"all" | "favorites" | "pinned" | `folder:${string}`>("all");
+  const visibleTabs = tabs.filter((tab) => {
+    if (activeView === "favorites") return tab.favorite;
+    if (activeView === "pinned") return tab.pinned;
+    return activeView === "all" || tab.folder_id === activeView.slice("folder:".length);
+  });
+  const pinnedCount = tabs.filter((tab) => tab.pinned).length;
+  const favoriteCount = tabs.filter((tab) => tab.favorite).length;
 
   return (
     <div className="observatory-sidebar" aria-label="SeekStar observatory sidebar">
@@ -127,29 +130,29 @@ export function ObservatorySidebar({
             <span>Local workspace</span>
             <strong>{workspaceName}</strong>
             <small>
-              {scenes.length} seeks / {folders.length} fields
+              {tabs.length} seeks / {folders.length} fields
             </small>
           </span>
         </button>
         <div className="folder-list">
           <button
-            aria-pressed={!activeFolderId}
-            className={!activeFolderId ? "folder-filter active" : "folder-filter"}
-            onClick={() => setActiveFolderId(undefined)}
+            aria-pressed={activeView === "all"}
+            className={activeView === "all" ? "folder-filter active" : "folder-filter"}
+            onClick={() => setActiveView("all")}
             type="button"
           >
             <span className="sidebar-icon">
               <Folder aria-hidden="true" size={13} strokeWidth={1.8} />
             </span>
             <span className="folder-row-title">All fields</span>
-            <small>{scenes.length}</small>
+            <small>{tabs.length}</small>
           </button>
           {folders.map((folder) => (
             <div className="folder-row" key={folder.id}>
               <button
-                aria-pressed={activeFolderId === folder.id}
-                className={activeFolderId === folder.id ? "folder-filter active" : "folder-filter"}
-                onClick={() => setActiveFolderId(folder.id)}
+                aria-pressed={activeView === `folder:${folder.id}`}
+                className={activeView === `folder:${folder.id}` ? "folder-filter active" : "folder-filter"}
+                onClick={() => setActiveView(`folder:${folder.id}`)}
                 type="button"
               >
                 <span className="sidebar-icon">
@@ -166,6 +169,20 @@ export function ObservatorySidebar({
           <button className="folder-create" onClick={onFolderCreate} type="button">
             <FolderPlus aria-hidden="true" size={13} strokeWidth={1.8} />
             Add field
+          </button>
+        </div>
+      </section>
+
+      <section className="sidebar-section sidebar-quick-views">
+        <h2>Quick views</h2>
+        <div className="sidebar-list">
+          <button className={activeView === "pinned" ? "sidebar-list-item active" : "sidebar-list-item"} onClick={() => setActiveView("pinned")} type="button">
+            <span className="sidebar-icon"><Pin aria-hidden="true" size={14} strokeWidth={1.8} /></span>
+            <span className="sidebar-label">Pinned Seeks</span><small>{pinnedCount}</small>
+          </button>
+          <button className={activeView === "favorites" ? "sidebar-list-item active" : "sidebar-list-item"} onClick={() => setActiveView("favorites")} type="button">
+            <span className="sidebar-icon"><Star aria-hidden="true" size={14} strokeWidth={1.8} /></span>
+            <span className="sidebar-label">Favorites</span><small>{favoriteCount}</small>
           </button>
         </div>
       </section>
@@ -207,9 +224,8 @@ export function ObservatorySidebar({
       <section className="sidebar-section sidebar-section-tabs">
         <h2>Exploration tabs</h2>
         <div className="exploration-tab-list">
-          {visibleScenes.map((scene) => {
-            const tab = getActiveTab(scene);
-            const runtimeTab = runtimeTabsById.get(tab.id);
+          {visibleTabs.map((tab) => {
+            const runtimeTab = runtimeTabsById.get(tab.id) ?? tab;
             const isActive = tab.id === activeTabId;
             const isInactive = isTabVisuallyInactive(runtimeTab);
             const isCrashed = runtimeTab?.runtime_status === "crashed";
@@ -278,7 +294,7 @@ export function ObservatorySidebar({
                   <button aria-label={`Open ${tab.title} in new window`} onClick={() => onTabDetach(tab.id)} title="Detach" type="button">
                     <ExternalLink aria-hidden="true" size={12} strokeWidth={2} />
                   </button>
-                  <button aria-label={`Close ${tab.title}`} disabled={scenes.length <= 1} onClick={() => onTabClose(tab.id)} title="Close" type="button">
+                  <button aria-label={`Close ${tab.title}`} disabled={tabs.length <= 1} onClick={() => onTabClose(tab.id)} title="Close" type="button">
                     <Trash2 aria-hidden="true" size={12} strokeWidth={2} />
                   </button>
                 </div>
@@ -301,7 +317,7 @@ export function ObservatorySidebar({
               </div>
             );
           })}
-          {visibleScenes.length === 0 ? <p className="exploration-tab-empty">No Seeks in this field yet.</p> : null}
+          {visibleTabs.length === 0 ? <p className="exploration-tab-empty">No Seeks in this field yet.</p> : null}
           <button className="exploration-tab-new" onClick={onNewFieldSearch} type="button">
             <span className="exploration-tab-icon" aria-hidden="true">
               <Plus size={13} strokeWidth={2} />

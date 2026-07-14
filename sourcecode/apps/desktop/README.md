@@ -1,55 +1,35 @@
-# SeekStar Desktop App
+# SeekStar Desktop
 
-This app is the Electron observatory shell for the core SeekStar telescope.
+SeekStar Desktop 是连续多尺度探索产品的 Electron 外壳。当前 MVP baseline 以世界文档为核心：主进程生产、验证并持久化世界段，tab surface 只持有视图状态并消费投影。
 
-The first screen is an explorable semantic canvas, not a chat window, generic browser, or ranked search-results page. The shell hosts tab windows, settings, IPC, service bridges, and the dock rectangle. Per-tab telescope surfaces render the map through Pixi and subscribe to Constellation Engine state.
+## 当前闭环
 
-## Current Surface
+1. 在设置页配置 OpenAI-compatible Provider，并用系统 `safeStorage` 加密 API Key。
+2. 新建 Seek 后先生成中心世界段，再补齐相邻的 3×3 工作集。
+3. 摄像机在 L0–L3 间连续切换；后台世界事件不能覆盖 renderer 的 layer、XY、选择或焦点。
+4. AI 只提出 URL 候选；Scout 成功观察后，来源才成为 L3 tile。
+5. 世界文档与最后视图 checkpoint 独立持久化，重启不会重新生成 ready segment。
 
-- Electron title bar and shell window with crash-isolated tab surfaces.
-- Chrome-like exploration tabs with pin, favorite, folder, close, refresh, detach, and attach behavior.
-- Default `New Seek` tab backed by the canonical L0-L11 12Level terrain spine.
-- Left observatory sidebar for workspace, folders, favorites, tools, and exploration tabs.
-- Pixi terrain canvas consuming Constellation Engine projection data.
-- Bottom command composer for adding a keyword to the current Seek, creating a new Seek, or searching the current map.
-- Right inspector for overview, selected terrain, source intake, Scout observations, backlinks, and source readiness.
-- Settings surface for runtime, storage, Scout, and configurable domain lexicons.
-- JSON workspace and tab runtime stores behind preload APIs; SQLite/FTS can replace the storage adapter later.
+## 边界
 
-## Module Boundaries
+- Electron main：世界生产、任务、lease、来源验证、设置和 JSON 持久化的唯一所有者。
+- Tab surface renderer：摄像机、layer、selection、focus 的唯一活动所有者。
+- Constellation Engine：`WorldDocument + ExplorationViewState -> TerrainProjection` 的纯投影与交互计算。
+- AI Service：OpenAI-compatible 请求及紧凑世界段结构校验，不持有会话生命周期。
+- Scout/DataService：真实页面观察与来源快照，不直接生成画布事实。
 
-- App Electron Framework owns windows, tab runtime, settings, IPC, security boundaries, docked WebContentsView surfaces, and service hosting.
-- Constellation Engine owns telescope events, tab scenes, object pools, semantic layers, Scout planning, source terrain construction, and Pixi projection data.
-- Scout/DataService owns Playwright-backed observations and source snapshots. It returns candidate observations; it does not mutate terrain facts.
-- AI Service owns API/key/context/structured-output boundaries. Without configured keys it must return explicit unavailable status.
-- Storage/Cache Service owns the replaceable workspace/cache adapter interface. The current desktop adapter is JSON.
+可见尺度固定为 `supra_macro`、`L0`、`L1`、`L2`、`L3`。旧 L4–L11、逐层 scene mutation、Cartographer chunk/runtime 和 level-runtime 已从执行代码中删除。
 
-## Canonical 12Level Spine
+## 发布门禁
 
-```text
-L0  领域 / Star Gallery / seed pool
-L1  主题
-L2  来源
-L3  网页 / 文档 / PDF / 图片 tile
-L4  章节
-L5  段落
-L6  句子
-L7  短语
-L8  词语 / keyword
-L9  字符
-L10 Unicode / 字典
-L11 新的探索 seed
-```
-
-Star Gallery, Tile Field, and Text Grain are focal bands over this spine. They are not separate replacement layer systems.
-
-## Local Commands
-
-From `sourcecode/`:
+从 `sourcecode/` 运行：
 
 ```bash
+npm run typecheck
 npm run build
-npm run dev
+npm run smoke:modules
+npm run smoke:settings
+npm run smoke:electron
 ```
 
-Development mode starts the Electron shell after building the shared packages so the desktop app does not run against stale package output.
+`smoke:settings` 与 `smoke:electron` 使用隔离的 Electron `userData` 和确定性 AI/Scout adapter，不访问真实 Provider。

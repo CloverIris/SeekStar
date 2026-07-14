@@ -3,7 +3,8 @@ import type { UtilityProcess } from "electron";
 import type { ScoutRunRequest, ScoutRunResult } from "@seekstar/core-schema";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { defaultSettings, loadSettings } from "./appSettingsStore";
+import { defaultSettings } from "../shared/settings";
+import { settingsService } from "./settingsService";
 import { createFailedScoutRunResult, parseScoutRunRequest, ScoutWorkerRuntime } from "./scoutWorkerRuntime";
 import type { ScoutWorkerInboundMessage, ScoutWorkerOutboundMessage } from "./scoutWorkerProtocol";
 
@@ -50,7 +51,7 @@ class ScoutService {
   }
 
   private async runNow(request: ScoutRunRequest): Promise<ScoutRunResult> {
-    const settings = await loadSettings().catch(() => defaultSettings);
+    const settings = await settingsService.load().catch(() => defaultSettings);
 
     return this.withScoutSlot(settings.scout_concurrency, async () => {
       try {

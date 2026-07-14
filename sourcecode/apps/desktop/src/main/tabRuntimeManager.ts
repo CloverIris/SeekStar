@@ -3,10 +3,10 @@ import type { IpcMainInvokeEvent, Rectangle } from "electron";
 import type { TabCachePolicy, TabCrashReport, TabRecord, TabRuntimeStatus, WorkspaceFolder } from "@seekstar/core-schema";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { defaultSettings, loadSettings } from "./appSettingsStore";
-import type { SeekStarSettings } from "./appSettingsStore";
+import { defaultSettings, type SeekStarSettings } from "../shared/settings";
+import { settingsService } from "./settingsService";
 
-const TAB_RUNTIME_FILE_NAME = "seekstar-tab-runtime.json";
+const TAB_RUNTIME_FILE_NAME = "seekstar-tab-catalog-v1.json";
 const DEFAULT_TAB_ID = "tab-default-new-seek";
 const DEFAULT_TAB_TITLE = "New Seek";
 const DEFAULT_WORKSPACE_NAME = "SeekStar local workspace";
@@ -130,6 +130,11 @@ export class TabRuntimeManager {
   private dockBounds: Rectangle | undefined;
   private rendererUrl: string | undefined;
   private saveChain: Promise<void> = Promise.resolve();
+  private onTabClosed?: (tabId: string) => Promise<void> | void;
+
+  setTabClosedHandler(handler: (tabId: string) => Promise<void> | void): void {
+    this.onTabClosed = handler;
+  }
 
   registerIpc(): void {
     this.registerHandler("tabs:list", async () => this.getSnapshot());
@@ -249,7 +254,7 @@ export class TabRuntimeManager {
         updated_at: now,
       };
     } else {
-      const settings = await loadSettings().catch(() => defaultSettings);
+      const settings = await settingsService.load().catch(() => defaultSettings);
       const record = createTabRecord({
         id,
         order: this.entriesByTabId.size,
@@ -280,7 +285,7 @@ export class TabRuntimeManager {
     }
 
     const now = new Date().toISOString();
-    const settings = await loadSettings().catch(() => defaultSettings);
+    const settings = await settingsService.load().catch(() => defaultSettings);
     const syncedTabIds = new Set<string>();
 
     for (const [index, tab] of input.tabs.entries()) {
@@ -375,6 +380,7 @@ export class TabRuntimeManager {
     this.cache.clear(tabId);
     this.activeCanvasToolsByTabId.delete(tabId);
     this.entriesByTabId.delete(tabId);
+    await this.onTabClosed?.(tabId);
 
     if (this.activeTabId === tabId) {
       this.activeTabId = this.getOrderedRecords()[0]?.id ?? DEFAULT_TAB_ID;
@@ -694,15 +700,25 @@ export class TabRuntimeManager {
 
     entry.record.window_state = "main";
     entry.record.updated_at = new Date().toISOString();
+    this.activeTabId = tabId;
+    await this.save();
+    const acknowledged = await this.getSnapshot();
+    setTimeout(() => {
+      void this.finalizeAttachTab(tabId);
+    }, 0);
+    return acknowledged;
+  }
+
+  private async finalizeAttachTab(tabId: string): Promise<void> {
+    const entry = this.entriesByTabId.get(tabId);
+    if (!entry || entry.record.window_state !== "main") return;
     this.closeDetachedWindow(tabId, true);
     entry.owner = undefined;
-    this.activeTabId = tabId;
     this.markActive(tabId);
     this.focusMainWindow();
     this.dockActiveTabView();
     await this.save();
     this.broadcastChange();
-    return this.getSnapshot();
   }
 
   async setDockBounds(bounds: Rectangle | undefined): Promise<TabRuntimeSnapshot> {
@@ -1256,7 +1272,7 @@ function createTabRecord(input: {
     favorite: false,
     window_state: "main",
     runtime_status: "inactive",
-    session_partition: `persist:seekstar-tab-${input.id}`,
+    session_partition: `persist:seekstar-surface-v1-${input.id}`,
     cache_policy: {
       max_bytes: input.maxBytes,
       inactive_grace_ms: input.inactiveGraceMs,
@@ -1338,7 +1354,9 @@ function normalizeTabRecord(value: unknown, order: number): TabRecord {
     workspace_id: typeof candidate.workspace_id === "string" ? candidate.workspace_id : undefined,
     window_state: candidate.window_state === "hidden" ? "hidden" : "main",
     runtime_status: candidate.runtime_status === "crashed" ? "crashed" : "inactive",
-    session_partition: typeof candidate.session_partition === "string" ? candidate.session_partition : `persist:seekstar-tab-${id}`,
+    session_partition: typeof candidate.session_partition === "string" && candidate.session_partition.startsWith("persist:seekstar-surface-v1-")
+      ? candidate.session_partition
+      : `persist:seekstar-surface-v1-${id}`,
     cache_policy: candidate.cache_policy ?? defaultCachePolicy(),
     cache_bytes: typeof candidate.cache_bytes === "number" ? candidate.cache_bytes : 0,
     last_accessed_at: typeof candidate.last_accessed_at === "string" ? candidate.last_accessed_at : timestamp,

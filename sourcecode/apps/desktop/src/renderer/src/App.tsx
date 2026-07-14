@@ -1,21 +1,21 @@
-﻿import type { ExplorationTab, LayerId, ScoutObservation, ScoutPlan, SourceRef, TerrainNode, TerrainScene } from "@seekstar/core-schema";
+import type { ExplorationTab, LayerId, ScoutObservation, TerrainNode, TerrainScene } from "@seekstar/core-schema";
 import type { TileAbsorptionTrigger } from "@seekstar/core-schema";
-import type { DeepLensSnapshot } from "@seekstar/core-schema";
 import type { AiAssistantAction } from "@seekstar/ai-service";
-import { isDirectHttpUrl, type SourceIngestionInput } from "@seekstar/constellation-engine";
-import type { SeekStarSettings } from "../../main/appSettingsStore";
+import { isDirectHttpUrl } from "@seekstar/constellation-engine";
+import type { SeekStarSettings, SettingsSaveRequest } from "../../shared/settings";
 import type { TabRuntimeSnapshot } from "../../main/tabRuntimeManager";
 import type { CSSProperties, ChangeEvent, KeyboardEvent, PointerEvent as ReactPointerEvent, ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DetachedTabTitleBar, ShellDockWorkbench, SidebarRail, WindowTitleBar, type SidebarRailMode } from "./components/AppChrome";
 import type { CanvasTool } from "./components/canvasTools";
 import { ObservatorySidebar } from "./components/ObservatorySidebar";
+import { ShellFeedback, type ShellToast } from "./components/ShellFeedback";
 import { TerrainCanvas } from "./components/TerrainCanvas";
 import type { NodeActivationContext, SemanticZoomRequest, TileAbsorptionRequest } from "./components/TerrainCanvas";
 import { CommandComposer, SelectionActionCard, StatusStrip, WorkbenchHeader } from "./components/WorkbenchChrome";
-import { AiMapControlSidebar, type AssistantActionExecutionResult, type AssistantOperationUndoContext, type AssistantSceneRollbackPatch } from "./components/ai-map-control/AiMapControlSidebar";
+import { AiMapControlSidebar, type AssistantActionExecutionResult, type AssistantOperationUndoContext } from "./components/ai-map-control/AiMapControlSidebar";
 import { SettingsPage } from "./components/settings/SettingsPage";
-import { createCartographerChunkKeyForViewport, type CartographerRuntimeStatus } from "./exploration/cartographerRuntimeClient";
+import { worldSegmentForViewport, type ExplorationRuntimeStatus } from "./exploration/runtimeUi";
 import {
   getActiveLayerBreadcrumb,
   getActiveLayerLabel,
@@ -24,7 +24,7 @@ import {
   getRelationNodes,
   getSourceForNode,
 } from "./exploration/types";
-import { type CartographerChunkSchedulingPolicy, useExplorationSession } from "./exploration/useExplorationSession";
+import { type ExplorationViewModel, type ExplorationWorkingSetPolicy, useExplorationRuntime, useShellViewModel } from "./exploration/useExplorationRuntime";
 import { type SearchResult, searchScene } from "./search/localSceneSearch";
 import { type SelectionBasketItem, createSelectionBasketItem } from "./selection/selectionBasket";
 
@@ -63,57 +63,48 @@ export function App(): ReactElement {
   const runtimeParams = useMemo(() => new URLSearchParams(window.location.search), []);
   const runtimeTabId = runtimeParams.get("runtimeTabId") ?? undefined;
   const runtimeSurface = runtimeParams.get("runtimeSurface");
+  return runtimeTabId
+    ? <TabSurfaceApp runtimeSurface={runtimeSurface} runtimeTabId={runtimeTabId} />
+    : <ShellApp />;
+}
+
+function ShellApp(): ReactElement {
+  const shellViewModel = useShellViewModel();
+  return <SeekStarApplication exploration={shellViewModel} />;
+}
+
+function TabSurfaceApp({ runtimeSurface, runtimeTabId }: { runtimeSurface: string | null; runtimeTabId: string }): ReactElement {
+  const exploration = useExplorationRuntime(runtimeTabId);
+  return <SeekStarApplication exploration={exploration} runtimeSurface={runtimeSurface} runtimeTabId={runtimeTabId} />;
+}
+
+function SeekStarApplication({ exploration, runtimeSurface = null, runtimeTabId }: { exploration: ExplorationViewModel; runtimeSurface?: string | null; runtimeTabId?: string }): ReactElement {
   const isDockedTabView = Boolean(runtimeTabId && runtimeSurface === "docked");
   const isDetachedTabWindow = Boolean(runtimeTabId && !isDockedTabView);
   const isShellWindow = !runtimeTabId;
-  const exploration = useExplorationSession({
-    enableCartographerAutomation: !isShellWindow,
-    runtimeTabId,
-  });
   const {
     scene,
     activeTabId,
-    scenesByTabId,
     basketByTabId,
     setBasketByTabId,
-    cartographerChunkRecords,
-    cartographerStatus,
+    runtimeStatus,
     persistenceStatus,
     workspaceLoadError,
     workspaceHydrated,
     hydratedSelection,
-    syncWorkspaceFromStore,
     syncSceneSelection,
     syncSceneViewport,
     handleLayerSelect: selectLayer,
     handleTileAbsorptionEnter,
     handleTileAbsorptionExit,
-    handleEnterDeepLens,
     handleExploreInCurrentTab: exploreInCurrentTab,
-    handleApplyDomainLexiconToDefaultSeek: applyDomainLexiconToDefaultSeek,
     handleUseAsSeed: createSeedTab,
     handleUseHyperlinkAsSeed: createHyperlinkTab,
-    handleIngestDirectUrlIntoCurrentTab: ingestDirectUrlIntoCurrentTab,
     handleOpenDirectUrlAsSeek: openDirectUrlAsSeek,
     handleObserveCandidateIntoCurrentTab: observeCandidateIntoCurrentTab,
-    handleOpenCandidateAsSeek: openCandidateAsSeek,
-    handleTabSelect: selectTab,
-    handleCloseTab: closeTab,
-    handleRestoreSceneSnapshot: restoreSceneSnapshot,
-    handleReorderTabs: reorderTabs,
-    handleBacklinkFocus: focusBacklink,
-    handleAddSource: ingestSource,
-    handleRunScoutPlan,
-    handleScoutSourceLinks,
     handleCanvasFrontierDiscovery,
-    handleAssistantChunkExpansion,
-    handleFocusedLayerGeneration,
-    handleCartographerChunkDirectionExpand,
-    handleCartographerChunkRefresh,
-    handleCartographerTransactionCancel,
-    handleConvertScoutObservation: convertScoutObservation,
+    handleEnsureWorkingSet,
     handleReplaceFailedSourceCandidate: replaceFailedSourceCandidate,
-    handleResetWorkspace: resetWorkspace,
     handleUseSelectionAsSeed,
     handleUseNodeAsSeed,
   } = exploration;
@@ -136,26 +127,22 @@ export function App(): ReactElement {
   const [tileAbsorptionRequest, setTileAbsorptionRequest] = useState<TileAbsorptionRequest | undefined>();
   const [tileActionNodeId, setTileActionNodeId] = useState<string | undefined>();
   const [semanticLayerTransition, setSemanticLayerTransition] = useState<SemanticLayerTransitionState | undefined>();
-  const [chunkAutoDiscoveryOverride, setChunkAutoDiscoveryOverride] = useState<boolean | undefined>();
   const tileAbsorptionRequestCounterRef = useRef(0);
   const semanticLayerTransitionCounterRef = useRef(0);
   const semanticLayerTransitionLockRef = useRef(false);
   const semanticLayerTransitionTimeoutsRef = useRef<number[]>([]);
   const [isSelectionActionCardOpen, setIsSelectionActionCardOpen] = useState(false);
   const [tabRuntimeSnapshot, setTabRuntimeSnapshot] = useState<TabRuntimeSnapshot | undefined>();
-  const [pendingRuntimeActiveTabId, setPendingRuntimeActiveTabId] = useState<string | undefined>();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<SeekStarSettings | undefined>();
   const [storePaths, setStorePaths] = useState<Record<string, string>>({});
+  const [shellToasts, setShellToasts] = useState<ShellToast[]>([]);
+  const shellToastSequenceRef = useRef(0);
   const commandInputRef = useRef<HTMLInputElement>(null);
   const dockHostRef = useRef<HTMLElement | null>(null);
   const activeTabIdRef = useRef(activeTabId);
   const sceneRef = useRef(scene);
-  const autoLayerTerrainRequestsRef = useRef<Set<string>>(new Set());
-  const autoLayerTerrainTimerRef = useRef<number | undefined>(undefined);
   const lastViewportTraceKeyRef = useRef("");
-  const runtimeWorkspaceSyncInFlightRef = useRef(false);
-  const lastMissingRuntimeSceneKeyRef = useRef("");
   const activeCanvasToolTabId = runtimeTabId ?? tabRuntimeSnapshot?.active_tab_id ?? activeTabId;
   const rightSidebarEffectiveWidth = rightSidebarMode === "expanded" ? rightSidebarWidth : RIGHT_SIDEBAR_COMPACT_WIDTH;
   const rightSidebarVisible = rightSidebarMode !== "collapsed";
@@ -167,6 +154,24 @@ export function App(): ReactElement {
     [rightSidebarEffectiveWidth],
   );
   const shouldRenderRightSidebar = isShellWindow || isDetachedTabWindow;
+
+  function dismissShellToast(id: string): void {
+    setShellToasts((current) => current.filter((toast) => toast.id !== id));
+  }
+
+  function pushShellToast(message: string, tone: ShellToast["tone"] = "info"): void {
+    const id = `toast-${++shellToastSequenceRef.current}`;
+    setShellToasts((current) => [...current.slice(-3), { id, message, tone }]);
+    window.setTimeout(() => dismissShellToast(id), tone === "error" ? 7_000 : 4_000);
+  }
+
+  useEffect(() => {
+    if (runtimeStatus.phase === "error") pushShellToast(runtimeStatus.message, "error");
+  }, [runtimeStatus.phase, runtimeStatus.updatedAt]);
+
+  useEffect(() => {
+    if (persistenceStatus === "error" || persistenceStatus === "unavailable") pushShellToast("Local workspace could not be saved. Your current view is preserved.", "error");
+  }, [persistenceStatus]);
 
   useEffect(() => {
     activeTabIdRef.current = activeTabId;
@@ -226,12 +231,6 @@ export function App(): ReactElement {
 
     const unsubscribe = window.seekstar.tabs.onChanged((snapshot) => {
       setTabRuntimeSnapshot(snapshot);
-      if (runtimeTabId) {
-        return;
-      }
-      if (snapshot.active_tab_id !== activeTabIdRef.current) {
-        setPendingRuntimeActiveTabId(snapshot.active_tab_id);
-      }
     });
 
     return () => {
@@ -291,7 +290,7 @@ export function App(): ReactElement {
     }
 
     void window.seekstar.settings.load().then(setSettings);
-    void window.seekstar.workspace.getStorePaths().then(setStorePaths);
+    void window.seekstar.data.getPaths().then(setStorePaths);
   }, [settingsOpen]);
 
   function applySelection(result: { selectedNodeIds: string[]; focusNodeId?: string }, showSelectionActions = false): void {
@@ -399,10 +398,10 @@ export function App(): ReactElement {
   const activeLayerLabel = getActiveLayerLabel(scene);
   const assistantActionPermissionMode = settings?.assistant_action_permission_mode ?? "ask_each_time";
   const assistantActionPermissionRules = settings?.assistant_action_permission_rules ?? createDefaultAssistantActionPermissionRules();
-  const cartographerChunkScheduling = settings?.cartographer_chunk_scheduling ?? createDefaultCartographerChunkSchedulingSettings();
-  const chunkAutoDiscoveryEnabled = chunkAutoDiscoveryOverride ?? cartographerChunkScheduling.auto_expand_enabled;
+  const workingSetPolicy = createDefaultWorkingSetPolicy();
+  const chunkAutoDiscoveryEnabled = workingSetPolicy.auto_expand_enabled;
   const commandKind = isDirectHttpUrl(commandValue.trim()) ? "url" : "keyword";
-  const openingSkyStatus = resolveOpeningSkyStatus(scene, activeTab, cartographerStatus);
+  const openingSkyStatus = resolveOpeningSkyStatus(scene, activeTab, runtimeStatus);
   const selectedNodes = useMemo(
     () => selectedNodeIds.map((nodeId) => scene.nodes.find((node) => node.id === nodeId)).filter((node): node is TerrainNode => Boolean(node)),
     [scene.nodes, selectedNodeIds],
@@ -427,142 +426,6 @@ export function App(): ReactElement {
     return counts;
   }, [tabRuntimeSnapshot]);
 
-  useEffect(() => {
-    if (isShellWindow || !workspaceHydrated || semanticLayerTransition) {
-      return;
-    }
-
-    const focusNode = resolveRuntimeFocusNode(scene);
-
-    if (!focusNode) {
-      if (isOnDemandCartographerLayer(scene.viewport.layer)) {
-        traceTelescopeUi("layer.autogen.skip_no_focus", {
-          layer: scene.viewport.layer,
-          tab_id: activeTabId,
-        });
-      }
-      return;
-    }
-
-    if (!shouldAutoGenerateLayerTerrain(scene, cartographerStatus, focusNode)) {
-      return;
-    }
-
-    const chunk = createCartographerChunkKeyForViewport(
-      scene.viewport,
-      cartographerChunkScheduling.chunk_width,
-      cartographerChunkScheduling.chunk_height,
-    );
-
-    const requestKey = [
-      activeTabId,
-      scene.viewport.layer,
-      focusNode?.id ?? scene.runtime.focused_node_id ?? "viewport",
-      chunk.key,
-    ].join(":");
-
-    if (autoLayerTerrainRequestsRef.current.has(requestKey)) {
-      traceTelescopeUi("layer.autogen.skip_dedupe", {
-        chunk,
-        focus: summarizeNodeForTrace(focusNode),
-        layer: scene.viewport.layer,
-        request_key: requestKey,
-        tab_id: activeTabId,
-      });
-      return;
-    }
-
-    traceTelescopeUi("layer.autogen.schedule", {
-      chunk,
-      focus: summarizeNodeForTrace(focusNode),
-      layer: scene.viewport.layer,
-      request_key: requestKey,
-      tab_id: activeTabId,
-    });
-
-    if (autoLayerTerrainTimerRef.current !== undefined) {
-      window.clearTimeout(autoLayerTerrainTimerRef.current);
-    }
-
-    autoLayerTerrainTimerRef.current = window.setTimeout(() => {
-      autoLayerTerrainTimerRef.current = undefined;
-
-      if (autoLayerTerrainRequestsRef.current.has(requestKey)) {
-        return;
-      }
-
-      autoLayerTerrainRequestsRef.current.add(requestKey);
-      traceTelescopeUi("layer.autogen.trigger", {
-        chunk,
-        focus: summarizeNodeForTrace(focusNode),
-        layer: scene.viewport.layer,
-        request_key: requestKey,
-        tab_id: activeTabId,
-      });
-      void handleFocusedLayerGeneration({
-        focusNode,
-        scene,
-        tabId: activeTabId,
-        viewport: scene.viewport,
-      }).catch(() => undefined);
-    }, 720);
-
-    return () => {
-      if (autoLayerTerrainTimerRef.current !== undefined) {
-        window.clearTimeout(autoLayerTerrainTimerRef.current);
-        autoLayerTerrainTimerRef.current = undefined;
-      }
-    };
-  }, [
-    activeTabId,
-    cartographerChunkScheduling,
-    cartographerStatus,
-    handleFocusedLayerGeneration,
-    isShellWindow,
-    scene,
-    semanticLayerTransition,
-    workspaceHydrated,
-  ]);
-  const orderedScenes = useMemo(() => {
-    const scenes = Object.values(scenesByTabId);
-    const ordered = (tabRuntimeSnapshot?.tabs ?? [])
-      .map((tab) => scenesByTabId[tab.id])
-      .filter((candidate): candidate is TerrainScene => Boolean(candidate));
-    const seenSceneIds = new Set(ordered.map((candidate) => candidate.id));
-    const leftovers = scenes.filter((candidate) => !seenSceneIds.has(candidate.id));
-
-    return [...ordered, ...leftovers];
-  }, [scenesByTabId, tabRuntimeSnapshot]);
-
-  useEffect(() => {
-    if (!isShellWindow || !workspaceHydrated || !tabRuntimeSnapshot) {
-      return;
-    }
-
-    const missingTabIds = tabRuntimeSnapshot.tabs.map((tab) => tab.id).filter((tabId) => !scenesByTabId[tabId]);
-
-    if (missingTabIds.length === 0) {
-      lastMissingRuntimeSceneKeyRef.current = "";
-      return;
-    }
-
-    const missingKey = `${tabRuntimeSnapshot.active_tab_id}:${tabRuntimeSnapshot.updated_at}:${missingTabIds.join(",")}`;
-
-    if (runtimeWorkspaceSyncInFlightRef.current || lastMissingRuntimeSceneKeyRef.current === missingKey) {
-      return;
-    }
-
-    runtimeWorkspaceSyncInFlightRef.current = true;
-    lastMissingRuntimeSceneKeyRef.current = missingKey;
-
-    void syncWorkspaceFromStore({
-      preferredActiveTabId: tabRuntimeSnapshot.active_tab_id,
-      registerRuntimeTabs: false,
-    }).finally(() => {
-      runtimeWorkspaceSyncInFlightRef.current = false;
-    });
-  }, [isShellWindow, scenesByTabId, syncWorkspaceFromStore, tabRuntimeSnapshot, workspaceHydrated]);
-
   function handleSceneSelection(
     nodeIds: string[],
     focusNodeId?: string,
@@ -578,10 +441,10 @@ export function App(): ReactElement {
     }
 
     const nextSelectedNodeIds = syncSceneViewport(viewport, selectedNodeIds);
-    const chunk = createCartographerChunkKeyForViewport(
+    const chunk = worldSegmentForViewport(
       viewport,
-      cartographerChunkScheduling.chunk_width,
-      cartographerChunkScheduling.chunk_height,
+      workingSetPolicy.chunk_width,
+      workingSetPolicy.chunk_height,
     );
     const viewportTraceKey = `${activeTabId}:${viewport.layer}:${chunk.key}:${Math.round(viewport.x / 120)}:${Math.round(viewport.y / 120)}:${Math.round(viewport.zoom * 10)}`;
 
@@ -740,7 +603,7 @@ export function App(): ReactElement {
       resetSelection();
       showRightSidebar();
 
-      const result = await ingestDirectUrlIntoCurrentTab(seed);
+      const result = await openDirectUrlAsSeek(seed);
 
       if (result) {
         applySelection(result);
@@ -810,31 +673,6 @@ export function App(): ReactElement {
       requestId: tileAbsorptionRequestCounterRef.current,
     });
     setTileActionNodeId(undefined);
-  }
-
-  async function enterDeepLensForNode(nodeId: string): Promise<void> {
-    const node = scene.nodes.find((candidate) => candidate.id === nodeId);
-
-    if (!node) {
-      return;
-    }
-
-    setTileActionNodeId(undefined);
-
-    try {
-      const snapshot = await window.seekstar.tiles.captureDeepLens({
-        tabId: scene.active_tab_id,
-        nodeId,
-      });
-      applySelection(handleEnterDeepLens(snapshot));
-      return;
-    } catch {
-      const fallback = createFallbackDeepLensSnapshot(scene, node);
-
-      if (fallback) {
-        applySelection(handleEnterDeepLens(fallback));
-      }
-    }
   }
 
   function handleNodeSelect(nodeId: string): void {
@@ -909,13 +747,6 @@ export function App(): ReactElement {
       return;
     }
 
-    if (node && isDeepLensRecursiveSeedNode(node)) {
-      void handleUseNodeAsSeedTab(node);
-      setTileActionNodeId(undefined);
-      showRightSidebar();
-      return;
-    }
-
     handleSceneSelection([nodeId], nodeId);
     setTileActionNodeId(undefined);
     showRightSidebar();
@@ -943,66 +774,31 @@ export function App(): ReactElement {
   }
 
   function handleTabSelect(tabId: string): void {
-    const result = selectTab(tabId);
-
-    if (!result) {
-      return;
-    }
-
-    resetCommandAndSearch();
-    applySelection(result);
-    setIsSelectionActionCardOpen(false);
+    void window.seekstar.tabs.activate(tabId).then(setTabRuntimeSnapshot);
   }
 
-  useEffect(() => {
-    if (!pendingRuntimeActiveTabId) {
-      return;
-    }
-
-    if (pendingRuntimeActiveTabId === activeTabId) {
-      setPendingRuntimeActiveTabId(undefined);
-      return;
-    }
-
-    if (!scenesByTabId[pendingRuntimeActiveTabId]) {
-      return;
-    }
-
-    const result = selectTab(pendingRuntimeActiveTabId);
-
-    if (!result) {
-      return;
-    }
-
-    resetCommandAndSearch();
-    applySelection(result);
-    setIsSelectionActionCardOpen(false);
-    setPendingRuntimeActiveTabId(undefined);
-  }, [activeTabId, pendingRuntimeActiveTabId, scenesByTabId, selectTab]);
-
   async function handleTabClose(tabId: string): Promise<void> {
-    const result = await closeTab(tabId);
-
-    if (!result) {
-      return;
-    }
-
-    resetCommandAndSearch();
-    applySelection(result);
-    setIsSelectionActionCardOpen(false);
+    setTabRuntimeSnapshot(await window.seekstar.tabs.close(tabId));
   }
 
   async function handleTabRefresh(tabId: string): Promise<void> {
     const snapshot = await window.seekstar.tabs.refresh(tabId);
     setTabRuntimeSnapshot(snapshot);
+    pushShellToast("Tab runtime refreshed", "success");
   }
 
   async function handleTabPin(tabId: string): Promise<void> {
-    setTabRuntimeSnapshot(await window.seekstar.tabs.togglePin(tabId));
+    const snapshot = await window.seekstar.tabs.togglePin(tabId);
+    setTabRuntimeSnapshot(snapshot);
+    const pinned = snapshot.tabs.find((tab) => tab.id === tabId)?.pinned;
+    pushShellToast(pinned ? "Seek pinned" : "Seek unpinned", "success");
   }
 
   async function handleTabFavorite(tabId: string): Promise<void> {
-    setTabRuntimeSnapshot(await window.seekstar.tabs.toggleFavorite(tabId));
+    const snapshot = await window.seekstar.tabs.toggleFavorite(tabId);
+    setTabRuntimeSnapshot(snapshot);
+    const favorite = snapshot.tabs.find((tab) => tab.id === tabId)?.favorite;
+    pushShellToast(favorite ? "Added to favorites" : "Removed from favorites", "success");
   }
 
   async function handleTabCopyCrashLog(tabId: string): Promise<void> {
@@ -1011,6 +807,7 @@ export function App(): ReactElement {
 
   async function handleTabFolderAssign(tabId: string, folderId?: string): Promise<void> {
     setTabRuntimeSnapshot(await window.seekstar.tabs.assignFolder(tabId, folderId));
+    pushShellToast(folderId ? "Seek moved to field" : "Seek removed from field", "success");
   }
 
   async function handleTabDetach(tabId: string): Promise<void> {
@@ -1018,24 +815,13 @@ export function App(): ReactElement {
   }
 
   async function handleTabReorder(sourceTabId: string, targetTabId: string): Promise<void> {
-    await reorderTabs(sourceTabId, targetTabId);
-    setTabRuntimeSnapshot(await window.seekstar.tabs.list());
+    setTabRuntimeSnapshot(await window.seekstar.tabs.reorder(sourceTabId, targetTabId));
   }
 
-  async function handleSettingsSave(nextSettings: SeekStarSettings): Promise<void> {
-    setSettings(await window.seekstar.settings.save(nextSettings));
-  }
-
-  async function handleSettingsApplyDomainLexicon(nextSettings: SeekStarSettings): Promise<void> {
-    const savedSettings = await window.seekstar.settings.save(nextSettings);
-    const result = applyDomainLexiconToDefaultSeek(savedSettings.domain_lexicons, savedSettings.active_domain_lexicon_id);
-
-    setSettings(savedSettings);
-    resetCommandAndSearch();
-    applySelection(result);
-    setIsSelectionActionCardOpen(false);
-    showRightSidebar();
-    setTabRuntimeSnapshot(await window.seekstar.tabs.list());
+  async function handleSettingsSave(request: SettingsSaveRequest): Promise<string[]> {
+    const result = await window.seekstar.settings.save(request);
+    setSettings(result.settings);
+    return result.warnings;
   }
 
   async function handleFolderCreate(): Promise<void> {
@@ -1046,10 +832,12 @@ export function App(): ReactElement {
     }
 
     setTabRuntimeSnapshot(await window.seekstar.tabs.createFolder(title.trim()));
+    pushShellToast("Field created", "success");
   }
 
   async function handleFolderDelete(folderId: string): Promise<void> {
     setTabRuntimeSnapshot(await window.seekstar.tabs.deleteFolder(folderId));
+    pushShellToast("Field removed", "success");
   }
 
   async function handleWorkspaceRename(): Promise<void> {
@@ -1060,19 +848,7 @@ export function App(): ReactElement {
     }
 
     setTabRuntimeSnapshot(await window.seekstar.tabs.renameWorkspace(title.trim()));
-  }
-
-  function handleBacklinkFocus(backlink: NonNullable<ExplorationTab["parent_backlink"]>): void {
-    const result = focusBacklink(backlink);
-
-    if (!result) {
-      return;
-    }
-
-    resetCommandAndSearch();
-    applySelection(result);
-    setIsSelectionActionCardOpen(false);
-    showRightSidebar();
+    pushShellToast("Workspace renamed", "success");
   }
 
   function handleNewFieldSearch(): void {
@@ -1188,48 +964,6 @@ export function App(): ReactElement {
     return result;
   }
 
-  function handleAddSource(input: SourceIngestionInput): void {
-    const result = ingestSource(input);
-    applySelection(result);
-    setSearchQuery("");
-    setSearchResults([]);
-    setIsSelectionActionCardOpen(false);
-    showRightSidebar();
-  }
-
-  async function handleRunScoutPlanWithUi(
-    plan: ScoutPlan,
-    placement?: import("./exploration/types").ScoutObservationPlacement,
-  ): Promise<void> {
-    const observation = await handleRunScoutPlan(plan, placement);
-
-    if (observation) {
-      setSelectedObservationId(observation.id);
-      resetSelection();
-    }
-
-    showRightSidebar();
-  }
-
-  async function handleScoutSourceLinksWithUi(node: TerrainNode, source: SourceRef): Promise<void> {
-    await handleScoutSourceLinks(node, source);
-    showRightSidebar();
-  }
-
-  function handleConvertScoutObservation(observation: ScoutObservation): void {
-    const result = convertScoutObservation(observation, activeTabId);
-
-    if (!result) {
-      return;
-    }
-
-    applySelection(result);
-    setSearchQuery("");
-    setSearchResults([]);
-    setIsSelectionActionCardOpen(false);
-    showRightSidebar();
-  }
-
   async function handleObserveCandidateSource(observation: ScoutObservation): Promise<void> {
     const result = await observeCandidateIntoCurrentTab(observation.id);
 
@@ -1242,19 +976,6 @@ export function App(): ReactElement {
     setSearchQuery("");
     setSearchResults([]);
     setIsSelectionActionCardOpen(false);
-    showRightSidebar();
-  }
-
-  async function handleOpenCandidateAsSeek(observation: ScoutObservation): Promise<void> {
-    const result = await openCandidateAsSeek(observation.id);
-
-    if (!result) {
-      return;
-    }
-
-    resetCommandAndSearch();
-    resetSelection();
-    applySelection(result);
     showRightSidebar();
   }
 
@@ -1302,10 +1023,10 @@ export function App(): ReactElement {
       }
 
       case "request_chunk": {
-        const rollbackChunkScene = structuredClone(scene);
+        const undoContext = createViewportSelectionUndoContext(activeTab.id, scene, selectedNodeIds, viewportFocusNodeId);
         const layer = resolveAssistantActionLayer(action, scene.viewport.layer);
-        const viewport = createAssistantChunkViewport(scene.viewport, layer, action, cartographerChunkScheduling);
-        const result = await handleAssistantChunkExpansion(viewport, cartographerChunkScheduling);
+        const viewport = createAssistantChunkViewport(scene.viewport, layer, action, workingSetPolicy);
+        const result = await handleEnsureWorkingSet(viewport, workingSetPolicy);
 
         if (!result?.scene) {
           handleSceneViewport(viewport);
@@ -1322,16 +1043,15 @@ export function App(): ReactElement {
         applySelection(result);
         showRightSidebar();
         return {
-          message: "Moved to the requested chunk and applied Cartographer terrain.",
+          message: "Moved to the requested world segment.",
           undo: {
-            context: createSceneDiffUndoContext(activeTab.id, rollbackChunkScene, result.scene),
-            message: "Restore the map before assistant chunk expansion.",
+            context: undoContext,
+            message: "Restore previous viewport and selection.",
           },
         };
       }
 
       case "observe_source": {
-        const rollbackSourceScene = structuredClone(scene);
         const observation = findAssistantTargetObservation(action, scene);
 
         if (observation) {
@@ -1356,33 +1076,9 @@ export function App(): ReactElement {
           showRightSidebar();
           return {
             message: "Observed the selected source candidate.",
-            undo: {
-              context: createSceneDiffUndoContext(activeTab.id, rollbackSourceScene, result.scene ?? rollbackSourceScene),
-              message: "Restore the map before source observation.",
-            },
           };
         }
-
-        const url = getAssistantActionUrl(action);
-
-        if (url && isDirectHttpUrl(url)) {
-          const result = await ingestDirectUrlIntoCurrentTab(url);
-
-          if (result) {
-            applySelection(result);
-            setSelectedObservationId(undefined);
-            showRightSidebar();
-            return {
-              message: "Observed the direct URL in this Seek.",
-              undo: {
-                context: createSceneDiffUndoContext(activeTab.id, rollbackSourceScene, result.scene ?? rollbackSourceScene),
-                message: "Restore the map before source observation.",
-              },
-            };
-          }
-        }
-
-        throw new Error("Assistant action did not include an observable source candidate or URL.");
+        throw new Error("Assistant action did not target a source candidate in this world.");
       }
 
       case "create_seed": {
@@ -1453,69 +1149,10 @@ export function App(): ReactElement {
   }
 
   async function handleAssistantUndo(context: AssistantOperationUndoContext): Promise<string> {
-    if (context.kind === "restore_scene_diff") {
-      const currentScene = scenesByTabId[context.tab_id];
-
-      if (!currentScene) {
-        throw new Error("Undo target scene is no longer available.");
-      }
-
-      const result = await restoreSceneSnapshot(context.tab_id, applySceneRollbackPatch(currentScene, context.patch));
-
-      if (!result) {
-        throw new Error("Scene diff could not be restored.");
-      }
-
-      resetCommandAndSearch();
-      applySelection(result);
-      setSelectedNodeIds(result.selectedNodeIds);
-      setSelectedRelationId(undefined);
-      setSelectedObservationId(undefined);
-      setViewportFocusNodeId(result.focusNodeId ?? result.selectedNodeIds[0]);
-      setIsSelectionActionCardOpen(false);
-      showRightSidebar();
-
-      return "Restored map before assistant operation.";
-    }
-
-    if (context.kind === "restore_scene_snapshot") {
-      const result = await restoreSceneSnapshot(context.tab_id, context.scene_snapshot);
-
-      if (!result) {
-        throw new Error("Scene snapshot could not be restored.");
-      }
-
-      resetCommandAndSearch();
-      applySelection(result);
-      setSelectedNodeIds(result.selectedNodeIds);
-      setSelectedRelationId(undefined);
-      setSelectedObservationId(undefined);
-      setViewportFocusNodeId(result.focusNodeId ?? result.selectedNodeIds[0]);
-      setIsSelectionActionCardOpen(false);
-      showRightSidebar();
-
-      return "Restored map before assistant operation.";
-    }
-
     if (context.kind === "close_created_tab") {
-      if (!scenesByTabId[context.created_tab_id]) {
-        throw new Error("Created seed tab is no longer available.");
-      }
-
-      const result = await closeTab(context.created_tab_id);
-
-      if (!result) {
-        throw new Error("Created seed tab could not be closed.");
-      }
-
+      setTabRuntimeSnapshot(await window.seekstar.tabs.close(context.created_tab_id));
+      setTabRuntimeSnapshot(await window.seekstar.tabs.activate(context.origin_tab_id));
       resetCommandAndSearch();
-      applySelection(result);
-      const originSelection = scenesByTabId[context.origin_tab_id] ? selectTab(context.origin_tab_id) : undefined;
-
-      if (originSelection) {
-        applySelection(originSelection);
-      }
-
       setSelectedNodeIds(context.selected_node_ids);
       setSelectedRelationId(undefined);
       setSelectedObservationId(undefined);
@@ -1543,17 +1180,6 @@ export function App(): ReactElement {
     showRightSidebar();
 
     return "Restored previous viewport and selection.";
-  }
-
-  async function handleResetWorkspace(): Promise<void> {
-    const result = await resetWorkspace();
-
-    resetCommandAndSearch();
-    applySelection(result);
-    setSelectedRelationId(undefined);
-    setSelectedObservationId(undefined);
-    setIsSelectionActionCardOpen(false);
-    showRightSidebar();
   }
 
   async function handleAttachRuntimeTab(): Promise<void> {
@@ -1620,7 +1246,6 @@ export function App(): ReactElement {
           storePaths={storePaths}
           onBack={() => setSettingsOpen(false)}
           onClearCache={() => window.seekstar.tabs.clearCache().then(setTabRuntimeSnapshot)}
-          onApplyDomainLexicon={handleSettingsApplyDomainLexicon}
           onSave={handleSettingsSave}
         />
       ) : (
@@ -1628,7 +1253,7 @@ export function App(): ReactElement {
         {isShellWindow ? (
           <SidebarRail mode={leftSidebarCollapsed ? "collapsed" : "expanded"} label="Observatory" side="left">
             <ObservatorySidebar
-              activeTabId={activeTabId}
+              activeTabId={tabRuntimeSnapshot?.active_tab_id ?? activeTabId}
               activeTool={activeCanvasTool}
               onNewFieldSearch={handleNewFieldSearch}
               onSearchCurrentMap={handleSearchCurrentMap}
@@ -1650,7 +1275,7 @@ export function App(): ReactElement {
               onFolderDelete={handleFolderDelete}
               onWorkspaceRename={handleWorkspaceRename}
               runtimeTabsById={runtimeTabsById}
-              scenes={orderedScenes}
+              tabs={tabRuntimeSnapshot?.tabs ?? []}
               workspaceName={tabRuntimeSnapshot?.workspace_name ?? "SeekStar local workspace"}
             />
           </SidebarRail>
@@ -1679,32 +1304,16 @@ export function App(): ReactElement {
             <div className="workbench-canvas-wrap">
               <TerrainCanvas
                 activeTool={activeCanvasTool}
-                chunkBoundaryControls={{
-                  autoDiscoveryEnabled: chunkAutoDiscoveryEnabled,
-                  autoPreloadRing: cartographerChunkScheduling.auto_preload_ring,
-                  chunkHeight: cartographerChunkScheduling.chunk_height,
-                  chunkWidth: cartographerChunkScheduling.chunk_width,
-                  manualPreloadRange: cartographerChunkScheduling.manual_preload_range,
-                  onDirectionExpand: (direction) => handleCartographerChunkDirectionExpand(direction, scene.viewport, cartographerChunkScheduling),
-                  onCancelCurrent: handleCartographerTransactionCancel,
-                  onRefreshCurrent: () => handleCartographerChunkRefresh(scene.viewport, cartographerChunkScheduling),
-                  onToggleAutoDiscovery: (enabled) => setChunkAutoDiscoveryOverride(enabled),
-                }}
-                cartographerChunkRecords={cartographerChunkRecords}
-                cartographerStatus={cartographerStatus}
                 focusedNodeId={scene.runtime.focused_node_id ?? viewportFocusNodeId}
                 highlightedNodeIds={highlightedNodeIds}
                 onBrowserModeExit={() => {
                   applySelection(handleTileAbsorptionExit());
                 }}
-                onCurrentPageDeepLens={(nodeId) => {
-                  void enterDeepLensForNode(nodeId);
-                }}
                 onFrontierDiscovery={(viewport) => {
                   if (!chunkAutoDiscoveryEnabled) {
                     return;
                   }
-                  handleCanvasFrontierDiscovery(viewport, cartographerChunkScheduling);
+                  handleCanvasFrontierDiscovery(viewport, workingSetPolicy);
                   setRightSidebarMode("compact");
                 }}
                 onSemanticZoomRequest={handleSemanticZoomRequest}
@@ -1731,20 +1340,16 @@ export function App(): ReactElement {
               {openingSkyStatus ? <OpeningSkyStatus status={openingSkyStatus} /> : null}
               {workspaceLoadError ? (
                 <aside className="workspace-load-error" aria-live="polite">
-                  <span>Workspace snapshot unavailable</span>
-                  <strong>Trail is protected from overwrite</strong>
+                  <span>Exploration world needs attention</span>
+                  <strong>The current view remains local and stable</strong>
                   <p>{workspaceLoadError}</p>
                   <button
                     onClick={() => {
-                      void syncWorkspaceFromStore({
-                        protectLocalNavigation: false,
-                        registerRuntimeTabs: true,
-                        suppressAutosave: true,
-                      });
+                      void handleCanvasFrontierDiscovery(scene.viewport, workingSetPolicy);
                     }}
                     type="button"
                   >
-                    Retry load
+                    Retry working set
                   </button>
                 </aside>
               ) : null}
@@ -1761,9 +1366,6 @@ export function App(): ReactElement {
                   node={scene.nodes.find((node) => node.id === tileActionNodeId)}
                   onDismiss={() => setTileActionNodeId(undefined)}
                   onEnterBrowser={() => requestTileAbsorption(tileActionNodeId, "click")}
-                  onEnterDeepLens={() => {
-                    void enterDeepLensForNode(tileActionNodeId);
-                  }}
                 />
               ) : null}
             </div>
@@ -1819,23 +1421,16 @@ export function App(): ReactElement {
             assistantActionPermissionRules={assistantActionPermissionRules}
             basketItems={activeBasketItems}
             mode={rightSidebarMode}
-            onAddSource={handleAddSource}
             onAssistantAction={handleAssistantAction}
             onAssistantUndo={handleAssistantUndo}
             onClearBasket={handleClearBasket}
             onClearSelection={handleClearSelection}
-            onConvertScoutObservation={handleConvertScoutObservation}
             onModeChange={setRightSidebarMode}
             onObserveCandidate={handleObserveCandidateSource}
-            onOpenCandidateAsSeek={handleOpenCandidateAsSeek}
             onReplaceFailedSource={handleReplaceFailedSourceCandidate}
             onRemoveBasketItem={handleRemoveBasketItem}
-            onRunScoutPlan={handleRunScoutPlanWithUi}
-            onScoutSourceLinks={handleScoutSourceLinksWithUi}
             onLayerSelect={handleLayerSelect}
             onSaveSelectionToTray={handleSaveSelectionToTray}
-            onBacklinkFocus={handleBacklinkFocus}
-            onResetWorkspace={handleResetWorkspace}
             onSearchResultSelect={handleSearchResultSelect}
             onUseNodeAsSeed={handleUseNodeAsSeedTab}
             scene={scene}
@@ -1851,6 +1446,12 @@ export function App(): ReactElement {
         ) : null}
         </div>
       )}
+      <ShellFeedback
+        runtimeStatus={runtimeStatus}
+        onDismiss={dismissShellToast}
+        persistenceStatus={persistenceStatus}
+        toasts={shellToasts}
+      />
     </main>
   );
 }
@@ -1861,14 +1462,6 @@ function isAbsorbableCanvasTile(node: TerrainNode): boolean {
       node.source_state === "source_backed" &&
       node.source_url &&
       (node.type === "webpage" || node.type === "document"),
-  );
-}
-
-function isDeepLensRecursiveSeedNode(node: TerrainNode): boolean {
-  return Boolean(
-    node.can_create_seed &&
-      node.tags?.includes("deep-lens") &&
-      (node.type === "section" || node.type === "paragraph" || node.type === "phrase" || node.type === "word"),
   );
 }
 
@@ -1931,9 +1524,9 @@ function OpeningSkyStatus({ status }: { status: OpeningSkyStatusModel }): ReactE
 function resolveOpeningSkyStatus(
   scene: TerrainScene,
   activeTab: ExplorationTab,
-  cartographerStatus: CartographerRuntimeStatus,
+  runtimeStatus: ExplorationRuntimeStatus,
 ): OpeningSkyStatusModel | undefined {
-  const hasTerrain = scene.nodes.some((node) => node.source_state === "cartographer_primary" || node.source_state === "source_backed" || node.tags?.includes("cartographer"));
+  const hasTerrain = scene.nodes.some((node) => node.source_state === "source_backed" || node.tags?.includes("exploration-world"));
 
   if (
     activeTab.source_mode !== "opening_sky" ||
@@ -1945,17 +1538,17 @@ function resolveOpeningSkyStatus(
     return undefined;
   }
 
-  if (cartographerStatus.phase === "error") {
+  if (runtimeStatus.phase === "error") {
     return {
-      body: cartographerStatus.message || "Cartographer did not return usable terrain for the opening sky.",
+      body: runtimeStatus.message || "世界生成器没有返回可用的初始地形。",
       title: "AI opening sky failed",
       tone: "error",
     };
   }
 
-  if (cartographerStatus.phase === "generating") {
+  if (runtimeStatus.phase === "generating") {
     return {
-      body: cartographerStatus.message || "SeekStar is asking the Cartographer for fresh fields, unknown edges, and source directions.",
+      body: runtimeStatus.message || "SeekStar 正在生成附近的世界段与来源方向。",
       title: "正在生成今晚星空",
       tone: "generating",
     };
@@ -1966,122 +1559,6 @@ function resolveOpeningSkyStatus(
     title: "正在揭开望远镜盖子",
     tone: "idle",
   };
-}
-
-function shouldAutoGenerateLayerTerrain(
-  scene: TerrainScene,
-  cartographerStatus: CartographerRuntimeStatus,
-  focusNode: TerrainNode,
-): boolean {
-  const layer = scene.viewport.layer;
-
-  if (!isOnDemandCartographerLayer(layer)) {
-    return false;
-  }
-
-  if (cartographerStatus.phase === "generating") {
-    return false;
-  }
-
-  if (scene.nodes.some((node) => node.layer === layer && isGeneratedTerrainNodeForLayer(node, layer) && isNodeScopedToFocus(node, focusNode))) {
-    return false;
-  }
-
-  return !(scene.scout_observations ?? []).some(
-    (observation) => observation.layer === layer && isActiveLayerObservation(observation) && isObservationScopedToFocus(observation, focusNode),
-  );
-}
-
-function isOnDemandCartographerLayer(layer: LayerId): boolean {
-  return layer === "L1" || layer === "L2" || layer === "L3";
-}
-
-function isGeneratedTerrainNode(node: TerrainNode): boolean {
-  return (
-    node.source_state === "cartographer_primary" ||
-    node.source_state === "source_backed" ||
-    node.tags?.includes("cartographer") === true
-  );
-}
-
-function isGeneratedTerrainNodeForLayer(node: TerrainNode, layer: LayerId): boolean {
-  if (layer === "L3") {
-    return node.source_state === "source_backed" && Boolean(node.source_url);
-  }
-
-  return isGeneratedTerrainNode(node);
-}
-
-function isNodeScopedToFocus(node: TerrainNode, focusNode: TerrainNode): boolean {
-  return node.created_from?.node_id === focusNode.id;
-}
-
-function isObservationScopedToFocus(observation: ScoutObservation, focusNode: TerrainNode): boolean {
-  return observation.target_node_ids?.includes(focusNode.id) === true;
-}
-
-function isActiveLayerObservation(observation: ScoutObservation): boolean {
-  return (
-    observation.status === "pending" ||
-    observation.status === "source_candidate" ||
-    observation.status === "observed" ||
-    observation.status === "converted"
-  );
-}
-
-function resolveRuntimeFocusNode(scene: TerrainScene): TerrainNode | undefined {
-  const focusNodeId = scene.runtime.focused_node_id ?? scene.selection.node_ids[0];
-  const explicitFocusNode = focusNodeId ? scene.nodes.find((node) => node.id === focusNodeId) : undefined;
-  const parentLayer = resolveFocusAnchorLayer(scene.viewport.layer);
-
-  if (explicitFocusNode && (explicitFocusNode.layer === parentLayer || explicitFocusNode.layer === scene.viewport.layer)) {
-    return explicitFocusNode;
-  }
-
-  return (
-    findNearestGeneratedNode(scene.nodes, scene.viewport, parentLayer) ??
-    findNearestGeneratedNode(scene.nodes, scene.viewport, scene.viewport.layer)
-  );
-}
-
-function resolveFocusAnchorLayer(layer: LayerId): LayerId | undefined {
-  if (layer === "L0") {
-    return "supra_macro";
-  }
-
-  if (layer === "L1") {
-    return "L0";
-  }
-
-  if (layer === "L2") {
-    return "L1";
-  }
-
-  if (layer === "L3") {
-    return "L2";
-  }
-
-  return undefined;
-}
-
-function findNearestGeneratedNode(
-  nodes: TerrainNode[],
-  viewport: TerrainScene["viewport"],
-  layer: LayerId | undefined,
-): TerrainNode | undefined {
-  if (!layer) {
-    return undefined;
-  }
-
-  return nodes
-    .filter((node) => node.layer === layer && isGeneratedTerrainNode(node))
-    .sort((left, right) => getNodeViewportDistance(left, viewport) - getNodeViewportDistance(right, viewport))[0];
-}
-
-function getNodeViewportDistance(node: TerrainNode, viewport: TerrainScene["viewport"]): number {
-  const x = node.position_hint?.x ?? 0;
-  const y = node.position_hint?.y ?? 0;
-  return Math.hypot(x - viewport.x, y - viewport.y);
 }
 
 function areNodeIdArraysEqual(left: string[], right: string[]): boolean {
@@ -2115,14 +1592,6 @@ function resolveSemanticTransitionDirection(fromLayer: LayerId, toLayer: LayerId
     L1: 1,
     L2: 2,
     L3: 3,
-    L4: 4,
-    L5: 5,
-    L6: 6,
-    L7: 7,
-    L8: 8,
-    L9: 9,
-    L10: 10,
-    L11: 11,
   };
   const fromIndex = layerOrder[fromLayer];
   const toIndex = layerOrder[toLayer];
@@ -2149,10 +1618,6 @@ function resolveSemanticZoomTargetLayer(layer: LayerId, direction: "in" | "out")
 
   if (layer === "L1") {
     return "L0";
-  }
-
-  if (layer === "L0") {
-    return "supra_macro";
   }
 
   return undefined;
@@ -2203,35 +1668,14 @@ function summarizeNodeForTrace(node: TerrainNode | undefined): Record<string, un
   };
 }
 
-function createFallbackDeepLensSnapshot(scene: TerrainScene, node: TerrainNode): DeepLensSnapshot | undefined {
-  const source = node.source_id ? scene.sources.find((candidate) => candidate.id === node.source_id) : undefined;
-  const text = source?.source_snapshot?.visible_text || node.quote || node.summary || source?.snippet || "";
-
-  if (!text.trim()) {
-    return undefined;
-  }
-
-  return {
-    node_id: node.id,
-    source_id: node.source_id,
-    source_url: node.source_url ?? source?.url,
-    title: source?.source_snapshot?.title || source?.title || node.title,
-    captured_at: new Date().toISOString(),
-    text,
-    grains: [],
-  };
-}
-
 function TileActionChooser({
   node,
   onDismiss,
   onEnterBrowser,
-  onEnterDeepLens,
 }: {
   node?: TerrainNode;
   onDismiss: () => void;
   onEnterBrowser: () => void;
-  onEnterDeepLens: () => void;
 }): ReactElement | null {
   if (!node) {
     return null;
@@ -2244,9 +1688,6 @@ function TileActionChooser({
         <span>L3 Tile Field</span>
         <strong>{node.title}</strong>
         <div>
-          <button onClick={onEnterDeepLens} type="button">
-            Open Deep Lens
-          </button>
           <button onClick={onEnterBrowser} type="button">
             Open browser mode
           </button>
@@ -2321,94 +1762,6 @@ function createCloseCreatedTabUndoContext(
   };
 }
 
-function createSceneDiffUndoContext(tabId: string, beforeScene: TerrainScene, afterScene: TerrainScene): AssistantOperationUndoContext {
-  return {
-    kind: "restore_scene_diff",
-    patch: createSceneRollbackPatch(beforeScene, afterScene),
-    tab_id: tabId,
-  };
-}
-
-function createSceneRollbackPatch(beforeScene: TerrainScene, afterScene: TerrainScene): AssistantSceneRollbackPatch {
-  return {
-    collections: {
-      agent_jobs: createCollectionRollback(beforeScene.agent_jobs, afterScene.agent_jobs),
-      cartographer_outputs: createCollectionRollback(beforeScene.cartographer_outputs, afterScene.cartographer_outputs),
-      nodes: createCollectionRollback(beforeScene.nodes, afterScene.nodes),
-      relations: createCollectionRollback(beforeScene.relations, afterScene.relations),
-      scout_observations: createCollectionRollback(beforeScene.scout_observations ?? [], afterScene.scout_observations ?? []),
-      sources: createCollectionRollback(beforeScene.sources, afterScene.sources),
-    },
-    scene_fields: {
-      active_tab_id: beforeScene.active_tab_id,
-      id: beforeScene.id,
-      layers: structuredClone(beforeScene.layers),
-      metadata: structuredClone(beforeScene.metadata),
-      runtime: structuredClone(beforeScene.runtime),
-      selection: structuredClone(beforeScene.selection),
-      tabs: structuredClone(beforeScene.tabs),
-      viewport: structuredClone(beforeScene.viewport),
-    },
-  };
-}
-
-function createCollectionRollback<TItem extends { id: string }>(
-  beforeItems: readonly TItem[],
-  afterItems: readonly TItem[],
-): { added_ids: string[]; order: string[]; restored_items: TItem[] } {
-  const beforeIds = new Set(beforeItems.map((item) => item.id));
-  const afterById = new Map(afterItems.map((item) => [item.id, item]));
-
-  return {
-    added_ids: afterItems.filter((item) => !beforeIds.has(item.id)).map((item) => item.id),
-    order: beforeItems.map((item) => item.id),
-    restored_items: beforeItems
-      .filter((item) => JSON.stringify(afterById.get(item.id)) !== JSON.stringify(item))
-      .map((item) => structuredClone(item)),
-  };
-}
-
-function applySceneRollbackPatch(scene: TerrainScene, patch: AssistantSceneRollbackPatch): TerrainScene {
-  return {
-    ...scene,
-    ...structuredClone(patch.scene_fields),
-    agent_jobs: applyCollectionRollback(scene.agent_jobs, patch.collections.agent_jobs),
-    cartographer_outputs: applyCollectionRollback(scene.cartographer_outputs, patch.collections.cartographer_outputs),
-    nodes: applyCollectionRollback(scene.nodes, patch.collections.nodes),
-    relations: applyCollectionRollback(scene.relations, patch.collections.relations),
-    scout_observations: applyCollectionRollback(scene.scout_observations ?? [], patch.collections.scout_observations),
-    sources: applyCollectionRollback(scene.sources, patch.collections.sources),
-  };
-}
-
-function applyCollectionRollback<TItem extends { id: string }>(
-  currentItems: readonly TItem[],
-  rollback: { added_ids: string[]; order: string[]; restored_items: TItem[] },
-): TItem[] {
-  const nextById = new Map(currentItems.map((item) => [item.id, structuredClone(item)]));
-
-  for (const id of rollback.added_ids) {
-    nextById.delete(id);
-  }
-
-  for (const item of rollback.restored_items) {
-    nextById.set(item.id, structuredClone(item));
-  }
-
-  const ordered: TItem[] = [];
-
-  for (const id of rollback.order) {
-    const item = nextById.get(id);
-
-    if (item) {
-      ordered.push(item);
-      nextById.delete(id);
-    }
-  }
-
-  return [...ordered, ...nextById.values()];
-}
-
 function createDefaultAssistantActionPermissionRules(): SeekStarSettings["assistant_action_permission_rules"] {
   return [
     { action_type: "focus_node", decision: "allow_after_click" },
@@ -2419,7 +1772,7 @@ function createDefaultAssistantActionPermissionRules(): SeekStarSettings["assist
   ];
 }
 
-function createDefaultCartographerChunkSchedulingSettings(): CartographerChunkSchedulingPolicy {
+function createDefaultWorkingSetPolicy(): ExplorationWorkingSetPolicy {
   return {
     auto_expand_enabled: true,
     auto_preload_ring: 1,
@@ -2470,7 +1823,7 @@ function createAssistantChunkViewport(
   viewport: TerrainScene["viewport"],
   layer: LayerId,
   action: AiAssistantAction,
-  scheduling: CartographerChunkSchedulingPolicy = createDefaultCartographerChunkSchedulingSettings(),
+  scheduling: ExplorationWorkingSetPolicy = createDefaultWorkingSetPolicy(),
 ): TerrainScene["viewport"] {
   const direction = typeof action.arguments?.direction === "string" ? action.arguments.direction : "right";
   const chunkWidth = typeof action.arguments?.chunk_width === "number" ? action.arguments.chunk_width : scheduling.chunk_width;

@@ -28,20 +28,15 @@ import {
   worldToScreen,
   zoomViewportAtScreenPoint,
 } from "@seekstar/constellation-engine";
-import type { CartographerChunkRuntimeRecord, CartographerRuntimeStatus } from "../exploration/cartographerRuntimeClient";
 import type { CanvasTool } from "./canvasTools";
 import { MainContentStatusOverlay, useMainContentRuntime } from "./main-content/MainContentRuntime";
 
 interface TerrainCanvasProps {
   activeTool: CanvasTool;
-  chunkBoundaryControls: ChunkBoundaryControls;
-  cartographerChunkRecords: CartographerChunkRuntimeRecord[];
-  cartographerStatus: CartographerRuntimeStatus;
   focusedNodeId?: string;
   highlightedNodeIds: string[];
   onFrontierDiscovery: (viewport: ViewportState) => void;
   onBrowserModeExit: () => void;
-  onCurrentPageDeepLens: (nodeId: string) => void;
   onSemanticZoomRequest: (request: SemanticZoomRequest) => void;
   onNodeSelect: (nodeId: string) => void;
   onNodeOpen: (nodeId: string, context?: NodeActivationContext) => void;
@@ -59,20 +54,6 @@ interface TerrainCanvasProps {
   tileAbsorptionRequest?: TileAbsorptionRequest;
   tileFieldTargetCount?: number;
   viewport: ViewportState;
-}
-
-export type ChunkBoundaryDirection = "east" | "north" | "south" | "west";
-
-export interface ChunkBoundaryControls {
-  autoDiscoveryEnabled: boolean;
-  autoPreloadRing: number;
-  chunkHeight: number;
-  chunkWidth: number;
-  manualPreloadRange: number;
-  onDirectionExpand: (direction: ChunkBoundaryDirection) => void;
-  onCancelCurrent: () => void;
-  onRefreshCurrent: () => void;
-  onToggleAutoDiscovery: (enabled: boolean) => void;
 }
 
 export interface TileAbsorptionRequest {
@@ -159,7 +140,6 @@ export function TerrainCanvas({
   focusedNodeId,
   highlightedNodeIds,
   onBrowserModeExit,
-  onCurrentPageDeepLens,
   onFrontierDiscovery,
   onSemanticZoomRequest,
   onNodeSelect,
@@ -906,9 +886,6 @@ export function TerrainCanvas({
         <div className="browser-absorption-exit" role="toolbar" aria-label="Browser mode">
           <button onClick={handleExitBrowserMode} type="button">
             Exit browser mode
-          </button>
-          <button onClick={() => onCurrentPageDeepLens(absorbedTileSurface.nodeId)} type="button">
-            Open current page in Deep Lens
           </button>
         </div>
       ) : null}
@@ -1930,7 +1907,7 @@ function getDetailColor(node: TerrainNode): number {
 }
 
 function isCartographerTerrainNode(node: TerrainNode): boolean {
-  return node.source_state === "cartographer_primary" || node.tags?.includes("cartographer") === true;
+  return node.tags?.includes("exploration-world") === true || node.source_state === "source_backed";
 }
 
 function traceTerrainCanvas(event: string, payload?: unknown): void {

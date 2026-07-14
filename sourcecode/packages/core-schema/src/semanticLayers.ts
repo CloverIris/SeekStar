@@ -1,6 +1,6 @@
 import type { LayerId, NodeType } from "./index.js";
 
-export type SemanticFocalBand = "macro_gallery" | "tile_field" | "text_grain" | "recursive_seed";
+export type SemanticFocalBand = "macro_gallery" | "tile_field";
 
 export interface SemanticLayerDefinition {
   id: LayerId;
@@ -58,78 +58,6 @@ export const CANONICAL_LAYER_DEFINITIONS = [
     primary_node_types: ["webpage", "document"],
     zoom: 1.42,
   },
-  {
-    id: "L4",
-    order: 4,
-    label: "Deep Lens",
-    focal_band: "text_grain",
-    description: "Continuous close-reading lens over sections, paragraphs, sentences, phrases, words, and characters.",
-    primary_node_types: ["section"],
-    zoom: 1.62,
-  },
-  {
-    id: "L5",
-    order: 5,
-    label: "Paragraph",
-    focal_band: "text_grain",
-    description: "Internal Deep Lens paragraph address with source position mapping.",
-    primary_node_types: ["paragraph"],
-    zoom: 1.76,
-  },
-  {
-    id: "L6",
-    order: 6,
-    label: "Sentence",
-    focal_band: "text_grain",
-    description: "Internal Deep Lens sentence address that preserves paragraph and source range context.",
-    primary_node_types: ["sentence"],
-    zoom: 1.9,
-  },
-  {
-    id: "L7",
-    order: 7,
-    label: "Phrase",
-    focal_band: "text_grain",
-    description: "Internal Deep Lens phrase address that can be inspected or promoted into a new seed.",
-    primary_node_types: ["phrase"],
-    zoom: 2.04,
-  },
-  {
-    id: "L8",
-    order: 8,
-    label: "Word",
-    focal_band: "text_grain",
-    description: "Internal Deep Lens word address with token mapping and seedability.",
-    primary_node_types: ["word"],
-    zoom: 2.18,
-  },
-  {
-    id: "L9",
-    order: 9,
-    label: "Character",
-    focal_band: "text_grain",
-    description: "Internal Deep Lens character address for close reading and language exploration.",
-    primary_node_types: ["character"],
-    zoom: 2.32,
-  },
-  {
-    id: "L10",
-    order: 10,
-    label: "Unicode / Dictionary",
-    focal_band: "text_grain",
-    description: "Internal Unicode, dictionary, glyph, translation, and usage detail for the selected character or word.",
-    primary_node_types: ["unicode", "dictionary_entry"],
-    zoom: 2.48,
-  },
-  {
-    id: "L11",
-    order: 11,
-    label: "Recursive Seed",
-    focal_band: "recursive_seed",
-    description: "The selected grain becomes an independent exploration universe.",
-    primary_node_types: ["question", "concept"],
-    zoom: 2.64,
-  },
 ] as const satisfies readonly SemanticLayerDefinition[];
 
 const layerDefinitionsById = new Map<LayerId, SemanticLayerDefinition>(
@@ -154,10 +82,6 @@ export function isMacroLayer(layer: LayerId): boolean {
 
 export function isTileLayer(layer: LayerId): boolean {
   return getLayerFocalBand(layer) === "tile_field";
-}
-
-export function isTextGrainLayer(layer: LayerId): boolean {
-  return getLayerFocalBand(layer) === "text_grain";
 }
 
 export function getDeepZoomLayerStops(): Array<{ id: LayerId; zoom: number }> {

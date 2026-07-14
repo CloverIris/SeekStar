@@ -1,390 +1,112 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { isWorkspaceSnapshot, type CartographerLevelRuntimeOutput, type WorkspaceSnapshot } from "@seekstar/constellation-engine";
+import type { ExplorationViewCheckpoint, WorldDocument } from "@seekstar/core-schema";
 
-export interface StorageHealth {
-  adapter: "json" | "sqlite";
-  available: boolean;
-  path?: string;
-  details?: string;
-}
-
-export interface CachePolicy {
-  maxBytes: number;
-  inactiveGraceMs: number;
-  eviction: "lru_lfu";
-}
-
-export type WorkspaceChangeKind = "saved" | "cleared" | "development_data_cleared";
-
-export interface WorkspaceChangeEvent {
-  kind: WorkspaceChangeKind;
-  revision: number;
-  source: "storage-service";
-  updated_at: string;
-}
-
-export interface SeekStarStorageService<TBasketItem = unknown> {
-  health(): Promise<StorageHealth>;
-  loadWorkspaceSnapshot(): Promise<WorkspaceSnapshot<TBasketItem> | undefined>;
-  saveWorkspaceSnapshot(snapshot: WorkspaceSnapshot<TBasketItem>): Promise<void>;
-  clearWorkspaceSnapshot(): Promise<void>;
-}
-
-export interface WorkspaceSnapshotInspection {
-  active_tab_id?: string;
-  error_message?: string;
-  path: string;
-  quarantine_path?: string;
-  schema_revision?: number;
-  status: "missing" | "valid" | "invalid_json" | "invalid_schema";
-  tab_count?: number;
-  updated_at?: string;
-}
-
-export interface JsonWorkspaceStorageOptions {
-  quarantineInvalidJson?: boolean;
-  quarantineInvalidSchema?: boolean;
-}
-
-export interface LevelChunkCacheInput {
-  mode: string;
-  level_id: string;
-  seed: string;
-  chunk_key: string;
-  chunk_policy_key?: string;
-  focus_key?: string;
-  prompt_profile_id?: string;
-}
-
-export interface LevelChunkCacheRecord {
-  access_count: number;
-  bytes_estimate: number;
-  cache_key: string;
-  created_at: string;
-  input: LevelChunkCacheInput;
-  last_accessed_at: string;
-  output: CartographerLevelRuntimeOutput;
-}
-
-export interface LevelChunkCacheSnapshot {
+export interface WorldRepositorySnapshot {
   version: 1;
-  schema_revision: 1 | 2;
-  records_by_key: Record<string, LevelChunkCacheRecord>;
+  worlds_by_tab_id: Record<string, WorldDocument>;
+  view_checkpoints_by_tab_id: Record<string, ExplorationViewCheckpoint>;
   updated_at: string;
 }
 
-export interface LevelChunkCachePruneResult {
-  evicted: string[];
-  remaining: number;
-}
-
-export interface SeekStarLevelChunkStorage {
-  clearChunks(): Promise<void>;
-  deleteChunk(cacheKey: string): Promise<void>;
-  listChunks(): Promise<LevelChunkCacheRecord[]>;
-  loadChunk(cacheKey: string): Promise<LevelChunkCacheRecord | undefined>;
-  pruneChunks(maxEntries: number): Promise<LevelChunkCachePruneResult>;
-  saveChunk(record: LevelChunkCacheRecord): Promise<void>;
-}
-
-export class JsonWorkspaceStorage<TBasketItem = unknown> implements SeekStarStorageService<TBasketItem> {
+export class JsonWorldRepository {
+  private snapshot: WorldRepositorySnapshot | undefined;
   private saveChain: Promise<void> = Promise.resolve();
+  private mutationChain: Promise<void> = Promise.resolve();
+  private saveTimer: NodeJS.Timeout | undefined;
+  private pendingResolvers: Array<{ resolve: () => void; reject: (error: unknown) => void }> = [];
 
-  constructor(
-    private readonly snapshotPath: string,
-    private readonly options: JsonWorkspaceStorageOptions = {},
-  ) {}
+  constructor(private readonly repositoryPath: string, private readonly saveDelayMs = 500) {}
 
-  async health(): Promise<StorageHealth> {
-    return {
-      adapter: "json",
-      available: true,
-      path: this.snapshotPath,
-    };
-  }
-
-  async loadWorkspaceSnapshot(): Promise<WorkspaceSnapshot<TBasketItem> | undefined> {
-    const inspection = await this.inspectWorkspaceSnapshot();
-
-    if (inspection.status !== "valid") {
-      return undefined;
-    }
-
-    const parsed = JSON.parse(await readFile(this.snapshotPath, "utf8")) as unknown;
-    return isWorkspaceSnapshot<TBasketItem>(parsed) ? parsed : undefined;
-  }
-
-  async saveWorkspaceSnapshot(snapshot: WorkspaceSnapshot<TBasketItem>): Promise<void> {
-    const nextSave = this.saveChain.catch(() => undefined).then(() => this.writeWorkspaceSnapshot(snapshot));
-    this.saveChain = nextSave;
-    return nextSave;
-  }
-
-  async clearWorkspaceSnapshot(): Promise<void> {
-    await rm(this.snapshotPath, { force: true });
-  }
-
-  async inspectWorkspaceSnapshot(): Promise<WorkspaceSnapshotInspection> {
-    let content: string;
-
+  async load(): Promise<WorldRepositorySnapshot> {
+    if (this.snapshot) return structuredClone(this.snapshot);
     try {
-      content = await readFile(this.snapshotPath, "utf8");
-    } catch (error) {
-      if (isMissingFileError(error)) {
-        return {
-          path: this.snapshotPath,
-          status: "missing",
-        };
-      }
-
-      throw error;
-    }
-
-    let parsed: unknown;
-
-    try {
-      parsed = JSON.parse(content) as unknown;
-    } catch (error) {
-      const inspection: WorkspaceSnapshotInspection = {
-        error_message: getErrorMessage(error),
-        path: this.snapshotPath,
-        status: "invalid_json",
-      };
-
-      if (this.options.quarantineInvalidJson ?? true) {
-        inspection.quarantine_path = await quarantineJsonFile(this.snapshotPath);
-      }
-
-      return inspection;
-    }
-
-    if (!isWorkspaceSnapshot<TBasketItem>(parsed)) {
-      const inspection: WorkspaceSnapshotInspection = {
-        error_message: "Workspace snapshot failed schema validation.",
-        path: this.snapshotPath,
-        status: "invalid_schema",
-      };
-
-      if (this.options.quarantineInvalidSchema ?? false) {
-        inspection.quarantine_path = await quarantineJsonFile(this.snapshotPath);
-      }
-
-      return inspection;
-    }
-
-    return {
-      active_tab_id: parsed.active_tab_id,
-      path: this.snapshotPath,
-      schema_revision: parsed.schema_revision,
-      status: "valid",
-      tab_count: Object.keys(parsed.scenes_by_tab_id).length,
-      updated_at: parsed.updated_at,
-    };
-  }
-
-  private async writeWorkspaceSnapshot(snapshot: WorkspaceSnapshot<TBasketItem>): Promise<void> {
-    const tempPath = createTempJsonPath(this.snapshotPath);
-
-    await mkdir(dirname(this.snapshotPath), { recursive: true });
-    await writeFile(tempPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
-    await replaceJsonFile(tempPath, this.snapshotPath);
-  }
-}
-
-export class JsonLevelChunkStorage implements SeekStarLevelChunkStorage {
-  constructor(private readonly chunkCachePath: string) {}
-
-  async clearChunks(): Promise<void> {
-    rmSync(this.chunkCachePath, { force: true });
-  }
-
-  async deleteChunk(cacheKey: string): Promise<void> {
-    const snapshot = this.loadSnapshot();
-
-    if (!snapshot.records_by_key[cacheKey]) {
-      return;
-    }
-
-    delete snapshot.records_by_key[cacheKey];
-    this.saveSnapshot(snapshot);
-  }
-
-  async listChunks(): Promise<LevelChunkCacheRecord[]> {
-    return Object.values(this.loadSnapshot().records_by_key).sort((left, right) => left.cache_key.localeCompare(right.cache_key));
-  }
-
-  async loadChunk(cacheKey: string): Promise<LevelChunkCacheRecord | undefined> {
-    return this.loadSnapshot().records_by_key[cacheKey];
-  }
-
-  async pruneChunks(maxEntries: number): Promise<LevelChunkCachePruneResult> {
-    const snapshot = this.loadSnapshot();
-    const limit = Math.max(0, Math.floor(maxEntries));
-    const records = Object.values(snapshot.records_by_key);
-
-    if (records.length <= limit) {
-      return { evicted: [], remaining: records.length };
-    }
-
-    const keep = new Set(
-      records
-        .sort((left, right) => {
-          if (left.access_count !== right.access_count) {
-            return right.access_count - left.access_count;
-          }
-
-          return right.last_accessed_at.localeCompare(left.last_accessed_at);
-        })
-        .slice(0, limit)
-        .map((record) => record.cache_key),
-    );
-    const evicted = records.filter((record) => !keep.has(record.cache_key)).map((record) => record.cache_key);
-    snapshot.records_by_key = Object.fromEntries(records.filter((record) => keep.has(record.cache_key)).map((record) => [record.cache_key, record]));
-    this.saveSnapshot(snapshot);
-
-    return { evicted, remaining: Object.keys(snapshot.records_by_key).length };
-  }
-
-  async saveChunk(record: LevelChunkCacheRecord): Promise<void> {
-    const snapshot = this.loadSnapshot();
-    const normalizedRecord = normalizeChunkCacheRecord(record);
-
-    snapshot.records_by_key[normalizedRecord.cache_key] = normalizedRecord;
-    this.saveSnapshot(snapshot);
-  }
-
-  private loadSnapshot(): LevelChunkCacheSnapshot {
-    try {
-      const parsed = JSON.parse(readFileSync(this.chunkCachePath, "utf8")) as unknown;
-
-      return isLevelChunkCacheSnapshot(parsed) ? parsed : createEmptyChunkCacheSnapshot();
+      const parsed = JSON.parse(await readFile(this.repositoryPath, "utf8")) as unknown;
+      this.snapshot = isSnapshot(parsed) ? parsed : emptySnapshot();
     } catch {
-      return createEmptyChunkCacheSnapshot();
+      this.snapshot = emptySnapshot();
     }
+    return structuredClone(this.snapshot);
   }
 
-  private saveSnapshot(snapshot: LevelChunkCacheSnapshot): void {
-    mkdirSync(dirname(this.chunkCachePath), { recursive: true });
-    writeFileSync(
-      this.chunkCachePath,
-      `${JSON.stringify(
-        {
-          ...snapshot,
-          schema_revision: 2,
-          updated_at: new Date().toISOString(),
-        },
-        null,
-        2,
-      )}\n`,
-      "utf8",
-    );
-  }
-}
+  async getWorld(tabId: string): Promise<WorldDocument | undefined> { return (await this.load()).worlds_by_tab_id[tabId]; }
+  async getViewCheckpoint(tabId: string): Promise<ExplorationViewCheckpoint | undefined> { return (await this.load()).view_checkpoints_by_tab_id[tabId]; }
 
-export function createLevelChunkCacheRecord(input: {
-  accessCount?: number;
-  cacheKey: string;
-  createdAt?: string;
-  input: LevelChunkCacheInput;
-  lastAccessedAt?: string;
-  output: CartographerLevelRuntimeOutput;
-}): LevelChunkCacheRecord {
-  const now = new Date().toISOString();
-  const outputText = JSON.stringify(input.output);
-
-  return normalizeChunkCacheRecord({
-    access_count: input.accessCount ?? 1,
-    bytes_estimate: outputText.length,
-    cache_key: input.cacheKey,
-    created_at: input.createdAt ?? now,
-    input: input.input,
-    last_accessed_at: input.lastAccessedAt ?? now,
-    output: input.output,
-  });
-}
-
-function createEmptyChunkCacheSnapshot(): LevelChunkCacheSnapshot {
-  return {
-    version: 1,
-    schema_revision: 2,
-    records_by_key: {},
-    updated_at: new Date().toISOString(),
-  };
-}
-
-function isLevelChunkCacheSnapshot(value: unknown): value is LevelChunkCacheSnapshot {
-  if (typeof value !== "object" || value === null) {
-    return false;
+  async saveWorld(world: WorldDocument): Promise<void> {
+    return this.mutate((next) => { next.worlds_by_tab_id[world.tab_id] = structuredClone(world); });
   }
 
-  const candidate = value as Partial<LevelChunkCacheSnapshot>;
+  async saveViewCheckpoint(checkpoint: ExplorationViewCheckpoint): Promise<void> {
+    return this.mutate((next) => {
+      const current = next.view_checkpoints_by_tab_id[checkpoint.tab_id];
+      if (!current || current.view_revision < checkpoint.view_revision) next.view_checkpoints_by_tab_id[checkpoint.tab_id] = structuredClone(checkpoint);
+    });
+  }
 
-  return (
-    candidate.version === 1 &&
-    (candidate.schema_revision === 1 || candidate.schema_revision === 2) &&
-    typeof candidate.records_by_key === "object" &&
-    candidate.records_by_key !== null
-  );
-}
+  async deleteWorld(tabId: string): Promise<void> {
+    return this.mutate((next) => { delete next.worlds_by_tab_id[tabId]; delete next.view_checkpoints_by_tab_id[tabId]; });
+  }
 
-function normalizeChunkCacheRecord(record: LevelChunkCacheRecord): LevelChunkCacheRecord {
-  return {
-    access_count: Math.max(0, Math.floor(record.access_count)),
-    bytes_estimate: Math.max(0, Math.floor(record.bytes_estimate)),
-    cache_key: record.cache_key.trim(),
-    created_at: record.created_at,
-    input: {
-        mode: record.input.mode,
-        level_id: record.input.level_id,
-        seed: record.input.seed,
-        chunk_key: record.input.chunk_key,
-        chunk_policy_key: record.input.chunk_policy_key,
-        focus_key: record.input.focus_key,
-        prompt_profile_id: record.input.prompt_profile_id,
-      },
-    last_accessed_at: record.last_accessed_at,
-    output: record.output,
-  };
-}
+  async clear(): Promise<void> {
+    return this.mutate((next) => { next.worlds_by_tab_id = {}; next.view_checkpoints_by_tab_id = {}; });
+  }
 
-function createTempJsonPath(path: string): string {
-  return `${path}.${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`;
-}
-
-async function replaceJsonFile(sourcePath: string, destinationPath: string): Promise<void> {
-  try {
-    await rename(sourcePath, destinationPath);
-  } catch (error) {
-    if (!isReplaceFailure(error)) {
-      throw error;
+  async flush(): Promise<void> {
+    await this.mutationChain.catch(() => undefined);
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = undefined;
+      this.commitPendingSave();
     }
+    await this.saveChain;
+  }
 
-    await rm(destinationPath, { force: true });
-    await rename(sourcePath, destinationPath);
+  private queueSave(): Promise<void> {
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = undefined;
+      this.commitPendingSave();
+    }, this.saveDelayMs);
+    return new Promise<void>((resolve, reject) => this.pendingResolvers.push({ resolve, reject }));
+  }
+
+  private async mutate(update: (snapshot: WorldRepositorySnapshot) => void): Promise<void> {
+    let persisted = Promise.resolve();
+    const mutation = this.mutationChain.catch(() => undefined).then(async () => {
+      const next = await this.load();
+      update(next);
+      next.updated_at = new Date().toISOString();
+      this.snapshot = next;
+      persisted = this.queueSave();
+    });
+    this.mutationChain = mutation;
+    await mutation;
+    await persisted;
+  }
+
+  private commitPendingSave(): void {
+    const snapshot = structuredClone(this.snapshot ?? emptySnapshot());
+    const waiters = this.pendingResolvers.splice(0);
+    this.saveChain = this.saveChain.catch(() => undefined).then(async () => {
+      const temporary = `${this.repositoryPath}.${process.pid}.${Date.now()}.tmp`;
+      await mkdir(dirname(this.repositoryPath), { recursive: true });
+      await writeFile(temporary, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+      await replaceFile(temporary, this.repositoryPath);
+    });
+    void this.saveChain.then(() => waiters.forEach((waiter) => waiter.resolve()), (error) => waiters.forEach((waiter) => waiter.reject(error)));
   }
 }
 
-async function quarantineJsonFile(path: string): Promise<string | undefined> {
-  const quarantinePath = `${path}.corrupt-${Date.now()}`;
-
-  try {
-    await rename(path, quarantinePath);
-    return quarantinePath;
-  } catch {
-    return undefined;
+function emptySnapshot(): WorldRepositorySnapshot { return { version: 1, worlds_by_tab_id: {}, view_checkpoints_by_tab_id: {}, updated_at: new Date().toISOString() }; }
+function isSnapshot(value: unknown): value is WorldRepositorySnapshot {
+  if (!value || typeof value !== "object") return false;
+  const input = value as Partial<WorldRepositorySnapshot>;
+  return input.version === 1 && !!input.worlds_by_tab_id && typeof input.worlds_by_tab_id === "object" && !!input.view_checkpoints_by_tab_id && typeof input.view_checkpoints_by_tab_id === "object";
+}
+async function replaceFile(source: string, destination: string): Promise<void> {
+  try { await rename(source, destination); } catch (error) {
+    if (!error || typeof error !== "object" || !("code" in error) || !["EPERM", "EEXIST"].includes(String(error.code))) throw error;
+    await rm(destination, { force: true });
+    await rename(source, destination);
   }
-}
-
-function isMissingFileError(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
-}
-
-function isReplaceFailure(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && (error.code === "EPERM" || error.code === "EEXIST");
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
