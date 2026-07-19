@@ -1,4 +1,3 @@
-import { isMacroLayer } from "@seekstar/core-schema";
 import type { LayerId, PositionHint, ScoutDiscoveryMode, ScoutObservation, ScoutPlan, TerrainScene, ViewportState } from "@seekstar/core-schema";
 
 export type FrontierDirection = "east" | "north" | "south" | "west";
@@ -6,7 +5,7 @@ export interface FrontierTrigger { id: string; direction: FrontierDirection; lay
 export interface ScoutObservationPlacement { anchor: PositionHint; layer: LayerId; frontierId?: string; discoveryMode?: ScoutDiscoveryMode; radius?: number }
 
 export function resolveFrontierTrigger(scene: TerrainScene, viewport: TerrainScene["viewport"]): FrontierTrigger | undefined {
-  if (!isMacroLayer(viewport.layer)) {
+  if (viewport.layer === "L3") {
     return undefined;
   }
 

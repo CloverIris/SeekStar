@@ -91,7 +91,7 @@ export class SettingsService {
       const warnings: string[] = [];
       for (const [name, listener] of this.listeners.entries()) {
         try {
-          await listener(structuredClone(publicSettings));
+          await withTimeout(Promise.resolve(listener(structuredClone(publicSettings))), 1_500, `${name} 热应用超时`);
         } catch (error) {
           warnings.push(`${name} 未能立即应用设置：${getErrorMessage(error)}`);
         }
@@ -249,11 +249,24 @@ export class SettingsService {
 
 export const settingsService = new SettingsService();
 
-const electronSecretStore: SettingsSecretStore = {
-  decrypt: (value) => safeStorage.decryptString(Buffer.from(value, "base64")),
-  encrypt: (value) => safeStorage.encryptString(value).toString("base64"),
-  isAvailable: () => safeStorage.isEncryptionAvailable(),
-};
+const electronSecretStore: SettingsSecretStore = process.env.SEEKSTAR_E2E === "1"
+  ? {
+      decrypt: (value) => Buffer.from(value, "base64").toString("utf8").replace(/^seekstar-e2e-vault:/, ""),
+      encrypt: (value) => Buffer.from(`seekstar-e2e-vault:${value}`, "utf8").toString("base64"),
+      isAvailable: () => true,
+    }
+  : {
+      decrypt: (value) => safeStorage.decryptString(Buffer.from(value, "base64")),
+      encrypt: (value) => safeStorage.encryptString(value).toString("base64"),
+      isAvailable: () => safeStorage.isEncryptionAvailable(),
+    };
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_resolve, reject) => setTimeout(() => reject(new Error(message)), timeoutMs)),
+  ]);
+}
 
 function normalizeSettings(value: unknown): SeekStarSettings {
   const input = value && typeof value === "object" ? value as Partial<SeekStarSettings> : {};

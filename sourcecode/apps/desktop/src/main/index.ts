@@ -127,13 +127,23 @@ function closeWebContentsIfAlive(view: WebContentsView): void {
 }
 
 if (hasSingleInstanceLock) {
+  let shutdownFlushComplete = false;
+  let shutdownFlushStarted = false;
+
   app.on("second-instance", () => {
     tabRuntimeManager.focusMainWindow();
   });
 
-  app.on("before-quit", () => {
+  app.on("before-quit", (event) => {
     tileSurfaceManager.clearAll();
-    void explorationRuntime.flush();
+    if (shutdownFlushComplete) return;
+    event.preventDefault();
+    if (shutdownFlushStarted) return;
+    shutdownFlushStarted = true;
+    void explorationRuntime.flush().finally(() => {
+      shutdownFlushComplete = true;
+      app.quit();
+    });
   });
 
   app.whenReady().then(async () => {
@@ -171,7 +181,7 @@ async function runElectronLifecycleSelfTest(): Promise<void> {
   try {
     const snapshot = await tabRuntimeManager.getSnapshot();
     const tabId = snapshot.active_tab_id;
-    const shellContents = await waitForContents((url) => !url.includes("runtimeTabId="));
+    const shellContents = await waitForContents((url) => url.includes("index.html") && !url.includes("runtimeTabId="));
     let surface = await waitForContents((url) => url.includes(`runtimeTabId=${encodeURIComponent(tabId)}`) && url.includes("runtimeSurface=docked"));
     const layerBefore = await readSurfaceLayer(surface.id);
     await withSelfTestTimeout(shellContents.executeJavaScript(`window.seekstar.tabs.detach(${JSON.stringify(tabId)})`, true), "detach IPC");
@@ -192,6 +202,7 @@ async function runElectronLifecycleSelfTest(): Promise<void> {
     for (const expectedLayer of ["L1", "L2", "L3"]) {
       await zoomSurfaceIn(surface, expectedLayer);
     }
+    await explorationRuntime.flush();
     const checkpoint = await explorationRuntime.getViewCheckpoint(tabId);
     if (checkpoint?.view.camera.layer !== "L3") throw new Error("L0-L3 view checkpoint was not persisted.");
     if (Math.abs(checkpoint.view.camera.x) > 1 || Math.abs(checkpoint.view.camera.y) > 1) throw new Error("Semantic layer transitions changed the camera XY position.");
@@ -206,6 +217,7 @@ async function runElectronLifecycleSelfTest(): Promise<void> {
 
 async function runSettingsSurfaceSelfTest(shellContents: Electron.WebContents): Promise<string[]> {
   const contractTests = await runSettingsServiceContractSelfTest();
+  await waitForRendererCondition(shellContents, `Boolean(window.seekstar?.settings?.save)`);
   const settings = await settingsService.load();
   const providerId = "e2e-openai-compatible";
   const testSecret = "seekstar-e2e-secret-must-be-encrypted";
@@ -313,7 +325,7 @@ async function runSettingsServiceContractSelfTest(): Promise<string[]> {
 
 async function runSettingsOnlySelfTest(): Promise<void> {
   try {
-    const shellContents = await waitForContents((url) => !url.includes("runtimeTabId="));
+    const shellContents = await waitForContents((url) => url.includes("index.html") && !url.includes("runtimeTabId="));
     const tests = await runSettingsSurfaceSelfTest(shellContents);
     console.log(`[SeekStarE2E]${JSON.stringify({ status: "ok", tests })}`);
     app.exit(0);
@@ -378,17 +390,19 @@ async function waitForWorldCondition(tabId: string, predicate: (world: NonNullab
 }
 
 async function zoomSurfaceIn(contents: Electron.WebContents, expectedLayer: string): Promise<void> {
-  await contents.executeJavaScript(`(async () => {
-    const target = document.querySelector('.canvas-plane');
-    if (!target) throw new Error('Canvas plane is unavailable.');
-    const rect = target.getBoundingClientRect();
-    for (let index = 0; index < 4; index += 1) {
+  const condition = `document.querySelector('.workbench-context-meta')?.textContent?.startsWith(${JSON.stringify(expectedLayer)}) === true`;
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    if (await contents.executeJavaScript(condition, true)) break;
+    await contents.executeJavaScript(`(() => {
+      const target = document.querySelector('.canvas-plane');
+      if (!target) throw new Error('Canvas plane is unavailable.');
+      const rect = target.getBoundingClientRect();
       target.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2, deltaY: -1000 }));
-      await new Promise((resolve) => setTimeout(resolve, 60));
-    }
-  })()`, true);
-  await waitForRendererCondition(contents, `document.querySelector('.workbench-context-meta')?.textContent?.startsWith(${JSON.stringify(expectedLayer)}) === true`, 5_000);
-  await new Promise((resolve) => setTimeout(resolve, 950));
+    })()`, true);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  }
+  await waitForRendererCondition(contents, condition, 2_000);
+  await new Promise((resolve) => setTimeout(resolve, 520));
 }
 
 async function waitForContents(predicate: (url: string) => boolean, timeoutMs = 20_000): Promise<Electron.WebContents> {

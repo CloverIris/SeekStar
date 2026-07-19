@@ -1,12 +1,9 @@
 import type { LayerId, NodeType } from "./index.js";
 
-export type SemanticFocalBand = "macro_gallery" | "tile_field";
-
 export interface SemanticLayerDefinition {
   id: LayerId;
   order: number;
   label: string;
-  focal_band: SemanticFocalBand;
   description: string;
   primary_node_types: readonly NodeType[];
   zoom: number;
@@ -14,47 +11,34 @@ export interface SemanticLayerDefinition {
 
 export const CANONICAL_LAYER_DEFINITIONS = [
   {
-    id: "supra_macro",
-    order: -1,
-    label: "Supra Macro",
-    focal_band: "macro_gallery",
-    description: "Broader systems, parent domains, and high-level orientation above the Star Gallery.",
-    primary_node_types: ["domain", "topic", "concept", "fog_region", "constellation_anchor"],
-    zoom: 0.86,
-  },
-  {
     id: "L0",
     order: 0,
-    label: "Star Gallery",
-    focal_band: "macro_gallery",
-    description: "Domain seed pool, configurable domain seeds, fog, and scout-pending regions.",
+    label: "领域",
+    description: "用于建立方向感的领域、边界与主要区域。",
     primary_node_types: ["domain", "topic", "concept", "question", "fog_region", "constellation_anchor"],
-    zoom: 1,
+    zoom: 0.82,
   },
   {
     id: "L1",
     order: 1,
-    label: "Topic Field",
-    focal_band: "macro_gallery",
-    description: "Topic neighborhoods, adjacent concepts, and same-layer unknown frontiers around the selected domain or seed.",
+    label: "主题",
+    description: "领域内的主题邻域、线程、交界与问题簇。",
     primary_node_types: ["topic", "subtopic", "concept", "question", "fog_region"],
-    zoom: 1.14,
+    zoom: 1,
   },
   {
     id: "L2",
     order: 2,
-    label: "Source Orientation",
-    focal_band: "tile_field",
-    description: "Source clusters, observations, and source-backed entry points before a full tile surface.",
-    primary_node_types: ["source", "webpage", "document"],
-    zoom: 1.28,
+    label: "解释",
+    description: "机制、比较、争议、实践与证据方向等可理解的解释对象。",
+    primary_node_types: ["concept", "question", "generated_summary"],
+    zoom: 1.2,
   },
   {
     id: "L3",
     order: 3,
-    label: "Tile Field",
-    focal_band: "tile_field",
-    description: "Webpage, article, PDF, image, or document tiles arranged on the content plane.",
+    label: "来源",
+    description: "经 Scout 验证并观察成功的网页、文章、PDF 或文档来源。",
     primary_node_types: ["webpage", "document"],
     zoom: 1.42,
   },
@@ -70,18 +54,6 @@ export function getLayerDefinition(layer: LayerId): SemanticLayerDefinition | un
 
 export function getLayerOrder(layer: LayerId): number {
   return getLayerDefinition(layer)?.order ?? Number.POSITIVE_INFINITY;
-}
-
-export function getLayerFocalBand(layer: LayerId): SemanticFocalBand | undefined {
-  return getLayerDefinition(layer)?.focal_band;
-}
-
-export function isMacroLayer(layer: LayerId): boolean {
-  return getLayerFocalBand(layer) === "macro_gallery";
-}
-
-export function isTileLayer(layer: LayerId): boolean {
-  return getLayerFocalBand(layer) === "tile_field";
 }
 
 export function getDeepZoomLayerStops(): Array<{ id: LayerId; zoom: number }> {

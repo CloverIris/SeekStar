@@ -39,7 +39,6 @@ interface SemanticLayerTransitionState {
   id: number;
   origin?: { x: number; y: number };
   phase: "exiting" | "revealing";
-  snapshotDataUrl?: string;
   toLayer: LayerId;
 }
 
@@ -50,14 +49,12 @@ interface SemanticLayerTransitionRequest {
   focusTitle?: string;
   fromLayer: LayerId;
   origin?: { x: number; y: number };
-  snapshotDataUrl?: string;
   toLayer: LayerId;
 }
 
 const RIGHT_SIDEBAR_COMPACT_WIDTH = 340;
 const RIGHT_SIDEBAR_EXPANDED_WIDTH = 500;
-const SEMANTIC_LAYER_APPLY_DELAY_MS = 220;
-const SEMANTIC_LAYER_TRANSITION_MS = 760;
+const SEMANTIC_LAYER_TRANSITION_MS = 460;
 
 export function App(): ReactElement {
   const runtimeParams = useMemo(() => new URLSearchParams(window.location.search), []);
@@ -129,7 +126,6 @@ function SeekStarApplication({ exploration, runtimeSurface = null, runtimeTabId 
   const [semanticLayerTransition, setSemanticLayerTransition] = useState<SemanticLayerTransitionState | undefined>();
   const tileAbsorptionRequestCounterRef = useRef(0);
   const semanticLayerTransitionCounterRef = useRef(0);
-  const semanticLayerTransitionLockRef = useRef(false);
   const semanticLayerTransitionTimeoutsRef = useRef<number[]>([]);
   const [isSelectionActionCardOpen, setIsSelectionActionCardOpen] = useState(false);
   const [tabRuntimeSnapshot, setTabRuntimeSnapshot] = useState<TabRuntimeSnapshot | undefined>();
@@ -185,7 +181,6 @@ function SeekStarApplication({ exploration, runtimeSurface = null, runtimeTabId 
     () => () => {
       semanticLayerTransitionTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
       semanticLayerTransitionTimeoutsRef.current = [];
-      semanticLayerTransitionLockRef.current = false;
     },
     [],
   );
@@ -493,10 +488,6 @@ function SeekStarApplication({ exploration, runtimeSurface = null, runtimeTabId 
   }
 
   function beginSemanticLayerTransition(request: SemanticLayerTransitionRequest): void {
-    if (semanticLayerTransition || semanticLayerTransitionLockRef.current) {
-      return;
-    }
-
     const currentScene = sceneRef.current;
 
     if (currentScene.viewport.layer !== request.fromLayer || request.toLayer === request.fromLayer) {
@@ -505,7 +496,6 @@ function SeekStarApplication({ exploration, runtimeSurface = null, runtimeTabId 
 
     const transitionId = semanticLayerTransitionCounterRef.current + 1;
     semanticLayerTransitionCounterRef.current = transitionId;
-    semanticLayerTransitionLockRef.current = true;
     semanticLayerTransitionTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
     semanticLayerTransitionTimeoutsRef.current = [];
 
@@ -516,32 +506,15 @@ function SeekStarApplication({ exploration, runtimeSurface = null, runtimeTabId 
       fromLayer: request.fromLayer,
       id: transitionId,
       origin: request.origin,
-      phase: "exiting",
-      snapshotDataUrl: request.snapshotDataUrl,
+      phase: "revealing",
       toLayer: request.toLayer,
     });
-
-    const applyTimeoutId = window.setTimeout(() => {
-      if (sceneRef.current.active_tab_id !== currentScene.active_tab_id || sceneRef.current.viewport.layer !== request.fromLayer) {
-        return;
-      }
-
-      setSemanticLayerTransition((current) =>
-        current?.id === transitionId
-          ? {
-              ...current,
-              phase: "revealing",
-            }
-          : current,
-      );
-      handleLayerSelect(request.toLayer, request.focusNodeId);
-    }, SEMANTIC_LAYER_APPLY_DELAY_MS);
+    handleLayerSelect(request.toLayer, request.focusNodeId);
     const clearTimeoutId = window.setTimeout(() => {
-      semanticLayerTransitionLockRef.current = false;
       setSemanticLayerTransition((current) => (current?.id === transitionId ? undefined : current));
     }, SEMANTIC_LAYER_TRANSITION_MS);
 
-    semanticLayerTransitionTimeoutsRef.current = [applyTimeoutId, clearTimeoutId];
+    semanticLayerTransitionTimeoutsRef.current = [clearTimeoutId];
   }
 
   function handleSemanticZoomRequest(request: SemanticZoomRequest): void {
@@ -561,7 +534,6 @@ function SeekStarApplication({ exploration, runtimeSurface = null, runtimeTabId 
       focusTitle: focusNode?.title,
       fromLayer: request.fromLayer,
       origin: request.origin,
-      snapshotDataUrl: request.snapshotDataUrl,
       toLayer,
     });
   }
@@ -719,7 +691,6 @@ function SeekStarApplication({ exploration, runtimeSurface = null, runtimeTabId 
         focusTitle: node.title,
         fromLayer: scene.viewport.layer,
         origin: activation?.origin,
-        snapshotDataUrl: activation?.snapshotDataUrl,
         toLayer: node.zoom_target.layer,
       });
       return;
@@ -741,7 +712,6 @@ function SeekStarApplication({ exploration, runtimeSurface = null, runtimeTabId 
         focusTitle: node.title,
         fromLayer: scene.viewport.layer,
         origin: activation?.origin,
-        snapshotDataUrl: activation?.snapshotDataUrl,
         toLayer: continuousZoomLayer,
       });
       return;
@@ -1336,7 +1306,6 @@ function SeekStarApplication({ exploration, runtimeSurface = null, runtimeTabId 
                 tileFieldTargetCount={settings?.tile_field_target_count}
                 viewport={scene.viewport}
               />
-              {semanticLayerTransition ? <SemanticLayerTransitionOverlay transition={semanticLayerTransition} /> : null}
               {openingSkyStatus ? <OpeningSkyStatus status={openingSkyStatus} /> : null}
               {workspaceLoadError ? (
                 <aside className="workspace-load-error" aria-live="polite">
@@ -1471,46 +1440,6 @@ interface OpeningSkyStatusModel {
   tone: "error" | "generating" | "idle";
 }
 
-function SemanticLayerTransitionOverlay({ transition }: { transition: SemanticLayerTransitionState }): ReactElement {
-  const label = transition.focusTitle ?? (transition.focusKind === "interstitial" ? "Neighborhood" : "Focus");
-  const style = {
-    "--semantic-origin-x": transition.origin ? `${Math.round(transition.origin.x)}px` : "50%",
-    "--semantic-origin-y": transition.origin ? `${Math.round(transition.origin.y)}px` : "50%",
-    "--semantic-transition-duration": `${SEMANTIC_LAYER_TRANSITION_MS}ms`,
-  } as CSSProperties;
-
-  return (
-    <div
-      aria-hidden="true"
-      className={`semantic-layer-transition semantic-layer-transition-${transition.direction} semantic-layer-transition-${transition.phase}`}
-      style={style}
-    >
-      {transition.snapshotDataUrl ? (
-        <img
-          alt=""
-          className="semantic-layer-transition-snapshot"
-          src={transition.snapshotDataUrl}
-        />
-      ) : null}
-      <div className="semantic-layer-transition-veil" />
-      <div
-        className="semantic-layer-transition-origin"
-        style={{
-          left: transition.origin ? `${Math.round(transition.origin.x)}px` : "50%",
-          top: transition.origin ? `${Math.round(transition.origin.y)}px` : "50%",
-        }}
-      >
-        <div className="semantic-layer-transition-disc">
-          <span>{label}</span>
-        </div>
-      </div>
-      <div className="semantic-layer-transition-caption">
-        {transition.fromLayer} → {transition.toLayer}
-      </div>
-    </div>
-  );
-}
-
 function OpeningSkyStatus({ status }: { status: OpeningSkyStatusModel }): ReactElement {
   return (
     <aside className={`opening-sky-status opening-sky-status-${status.tone}`} aria-live="polite">
@@ -1526,7 +1455,7 @@ function resolveOpeningSkyStatus(
   activeTab: ExplorationTab,
   runtimeStatus: ExplorationRuntimeStatus,
 ): OpeningSkyStatusModel | undefined {
-  const hasTerrain = scene.nodes.some((node) => node.source_state === "source_backed" || node.tags?.includes("exploration-world"));
+  const hasTerrain = scene.nodes.some((node) => node.source_state === "source_backed" || node.tags?.includes("exploration-world-v2"));
 
   if (
     activeTab.source_mode !== "opening_sky" ||
@@ -1566,10 +1495,6 @@ function areNodeIdArraysEqual(left: string[], right: string[]): boolean {
 }
 
 function resolveContinuousZoomInLayer(layer: LayerId): LayerId | undefined {
-  if (layer === "supra_macro") {
-    return "L0";
-  }
-
   if (layer === "L0") {
     return "L1";
   }
@@ -1587,7 +1512,6 @@ function resolveContinuousZoomInLayer(layer: LayerId): LayerId | undefined {
 
 function resolveSemanticTransitionDirection(fromLayer: LayerId, toLayer: LayerId): "in" | "out" {
   const layerOrder: Record<string, number> = {
-    supra_macro: -1,
     L0: 0,
     L1: 1,
     L2: 2,
@@ -1685,7 +1609,7 @@ function TileActionChooser({
     <aside className="tile-action-chooser" aria-label="Tile actions">
       <button className="tile-action-chooser-backdrop" aria-label="Dismiss tile actions" onClick={onDismiss} type="button" />
       <div className="tile-action-chooser-panel">
-        <span>L3 Tile Field</span>
+        <span>L3 来源</span>
         <strong>{node.title}</strong>
         <div>
           <button onClick={onEnterBrowser} type="button">

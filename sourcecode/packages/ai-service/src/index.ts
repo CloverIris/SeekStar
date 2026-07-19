@@ -1,4 +1,14 @@
-import type { AgentJob, CartographerOutput, NodeType, SourceState, SourceType, TerrainNode, TerrainScene } from "@seekstar/core-schema";
+import type {
+  AgentJob,
+  CartographerOutput,
+  NodeType,
+  RelationType,
+  SemanticRole,
+  SourceState,
+  SourceType,
+  TerrainNode,
+  TerrainScene,
+} from "@seekstar/core-schema";
 
 export type AiServiceStatus = "available" | "missing_key" | "disabled" | "error";
 export type AiProviderKind = "openai_compatible";
@@ -127,12 +137,16 @@ export interface CartographerGenerationInput {
 
 export interface CartographerGeneratedNode {
   id?: string;
+  local_id?: string;
   title: string;
   summary?: string;
+  orientation_summary?: string;
+  semantic_role?: SemanticRole;
   node_type?: NodeType;
   source_state?: SourceState;
   confidence?: number;
   importance?: number;
+  coverage?: number;
   tags?: string[];
   level_id?: string;
   position_hint?: {
@@ -141,13 +155,14 @@ export interface CartographerGeneratedNode {
     z?: number;
   };
   can_create_seed?: boolean;
+  reuse_anchor_id?: string;
 }
 
 export interface CartographerGeneratedRelation {
   id?: string;
   from: string;
   to: string;
-  type?: string;
+  type?: RelationType;
   confidence?: number;
   explanation?: string;
 }
@@ -161,6 +176,7 @@ export interface CartographerGeneratedSourceCandidate {
   source_type?: SourceType;
   confidence?: number;
   reason?: string;
+  target_ref?: string;
 }
 
 export interface CartographerGenerationOutput {
@@ -183,7 +199,17 @@ export type WorldSegmentBandId = "L0" | "L1" | "L2" | "L3";
 export interface WorldSegmentGenerationInput {
   seed: string;
   segment: { key: string; x: number; y: number };
-  nearby_anchors?: Array<{ id: string; layer: string; title: string; x: number; y: number }>;
+  nearby_anchors?: Array<{
+    id: string;
+    layer: WorldSegmentBandId;
+    title: string;
+    orientation_summary?: string;
+    semantic_role?: SemanticRole;
+    x: number;
+    y: number;
+  }>;
+  adjacent_segment_summaries?: Array<{ key: string; titles: string[] }>;
+  budget?: { L0: number; L1: number; L2: number; total: number };
   prompt_revision?: string;
 }
 
@@ -196,6 +222,7 @@ export interface WorldSegmentGenerationOutput {
   seed: string;
   segment: WorldSegmentGenerationInput["segment"];
   bands: Record<WorldSegmentBandId, WorldSegmentBandOutput>;
+  relations: CartographerGeneratedRelation[];
   source_candidates: CartographerGeneratedSourceCandidate[];
   diagnostics: CartographerDiagnostic[];
   telemetry?: AiModelTelemetry;
@@ -270,8 +297,6 @@ const AI_TRACE_PREVIEW_LIMIT = 360;
 
 function resolveCartographerMaxTokens(levelId: string): number {
   switch (levelId) {
-    case "supra_macro":
-      return 1_600;
     case "L0":
       return 1_800;
     case "L1":
@@ -509,7 +534,7 @@ export class OpenAiCompatibleProvider implements AiModelProvider {
         response_format: "json_object",
         signal: options.signal,
         temperature: 0.2,
-        max_tokens: 1_800,
+        max_tokens: 2_400,
         timeout_ms: this.config.timeout_ms,
       },
       key.key,
@@ -774,7 +799,7 @@ export function validateCartographerGenerationOutput(
         id: typeof relation.id === "string" ? relation.id : undefined,
         from: relation.from,
         to: relation.to,
-        type: typeof relation.type === "string" ? relation.type : "semantic_similarity",
+        type: isRelationType(relation.type) ? relation.type : "semantic_similarity",
         confidence: toUnitNumber(relation.confidence, 0.6),
         explanation: typeof relation.explanation === "string" ? relation.explanation : "AI Cartographer relation.",
       },
@@ -852,35 +877,92 @@ export function validateWorldSegmentGenerationOutput(
   }
 
   const diagnostics: CartographerDiagnostic[] = [];
-  const limits: Record<WorldSegmentBandId, number> = { L0: 4, L1: 4, L2: 4, L3: 0 };
+  const requestedBudget = input.budget ?? (input.segment.x === 0 && input.segment.y === 0
+    ? { L0: 4, L1: 6, L2: 8, total: 18 }
+    : { L0: 4, L1: 4, L2: 4, total: 12 });
+  const limits: Record<WorldSegmentBandId, number> = {
+    L0: Math.max(0, requestedBudget.L0),
+    L1: Math.max(0, requestedBudget.L1),
+    L2: Math.max(0, requestedBudget.L2),
+    L3: 0,
+  };
   const bands = {} as Record<WorldSegmentBandId, WorldSegmentBandOutput>;
+  const knownReferences = new Set((input.nearby_anchors ?? []).map((anchor) => anchor.id));
+  const seenLocalIds = new Set<string>();
+  let remaining = Math.max(0, requestedBudget.total);
 
   for (const levelId of ["L0", "L1", "L2", "L3"] as const) {
     const rawNodes = readWorldSegmentBandNodes(value.bands, levelId);
     const nodes = rawNodes.flatMap((node): CartographerGeneratedNode[] => {
-      if (!isRecord(node) || typeof node.title !== "string" || !node.title.trim() || looksLikeMojibake(node.title)) {
+      if (
+        !isRecord(node) ||
+        typeof node.local_id !== "string" ||
+        !node.local_id.trim() ||
+        typeof node.title !== "string" ||
+        !node.title.trim() ||
+        looksLikeMojibake(node.title) ||
+        typeof node.orientation_summary !== "string" ||
+        !node.orientation_summary.trim() ||
+        !isSemanticRole(node.semantic_role) ||
+        node.semantic_role === "source" ||
+        seenLocalIds.has(node.local_id.trim())
+      ) {
         return [];
       }
 
+      seenLocalIds.add(node.local_id.trim());
+
       return [{
-        id: typeof node.id === "string" ? node.id : undefined,
+        local_id: node.local_id.trim().slice(0, 64),
         title: node.title.trim(),
+        orientation_summary: node.orientation_summary.trim().slice(0, 180),
+        summary: node.orientation_summary.trim().slice(0, 180),
+        semantic_role: node.semantic_role,
         node_type: isNodeType(node.node_type) ? node.node_type : levelId === "L0" ? "domain" : levelId === "L1" ? "topic" : "concept",
         source_state: "cartographer_primary",
         confidence: toUnitNumber(node.confidence, 0.72),
         importance: toUnitNumber(node.importance, 0.65),
+        coverage: toUnitNumber(node.coverage, 0.5),
         tags: Array.isArray(node.tags) ? node.tags.filter((tag): tag is string => typeof tag === "string").slice(0, 4) : [],
         level_id: levelId,
         can_create_seed: true,
+        reuse_anchor_id:
+          typeof node.reuse_anchor_id === "string" && knownReferences.has(node.reuse_anchor_id)
+            ? node.reuse_anchor_id
+            : undefined,
       }];
-    }).slice(0, limits[levelId]);
-
-    if (levelId !== "L3" && nodes.length === 0) {
-      diagnostics.push(createAiDiagnostic("world_segment.empty_band", `World segment ${levelId} contains no usable nodes.`, providerConfig, "warning"));
-    }
+    }).slice(0, Math.min(limits[levelId], remaining));
+    remaining -= nodes.length;
 
     bands[levelId] = { nodes };
   }
+
+  const localIds = new Set(
+    (['L0', 'L1', 'L2'] as const).flatMap((levelId) =>
+      bands[levelId].nodes.flatMap((node) => node.local_id ? [node.local_id] : []),
+    ),
+  );
+  const relations = (Array.isArray(value.relations) ? value.relations : []).flatMap((relation): CartographerGeneratedRelation[] => {
+    if (
+      !isRecord(relation) ||
+      typeof relation.from !== "string" ||
+      typeof relation.to !== "string" ||
+      !isWorldRelationType(relation.type) ||
+      (!localIds.has(relation.from) && !knownReferences.has(relation.from)) ||
+      (!localIds.has(relation.to) && !knownReferences.has(relation.to)) ||
+      relation.from === relation.to
+    ) {
+      return [];
+    }
+
+    return [{
+      from: relation.from,
+      to: relation.to,
+      type: relation.type,
+      confidence: toUnitNumber(relation.confidence, 0.72),
+      explanation: typeof relation.explanation === "string" ? relation.explanation.trim().slice(0, 180) : "",
+    }];
+  }).slice(0, 48);
 
   const sourceCandidates = (Array.isArray(value.source_candidates) ? value.source_candidates : []).flatMap((candidate): CartographerGeneratedSourceCandidate[] => {
     if (!isRecord(candidate) || typeof candidate.title !== "string" || typeof candidate.url !== "string" || !isProbablyUrl(candidate.url) || looksLikeMojibake(candidate.title)) {
@@ -896,6 +978,10 @@ export function validateWorldSegmentGenerationOutput(
       source_type: isSourceType(candidate.source_type) ? candidate.source_type : "webpage",
       confidence: toUnitNumber(candidate.confidence, 0.55),
       reason: typeof candidate.reason === "string" ? candidate.reason : undefined,
+      target_ref:
+        typeof candidate.target_ref === "string" && (localIds.has(candidate.target_ref) || knownReferences.has(candidate.target_ref))
+          ? candidate.target_ref
+          : undefined,
     }];
   }).slice(0, 2);
 
@@ -910,6 +996,7 @@ export function validateWorldSegmentGenerationOutput(
       seed: input.seed,
       segment: input.segment,
       bands,
+      relations,
       source_candidates: sourceCandidates,
       diagnostics,
       provider_id: providerConfig.id,
@@ -952,6 +1039,7 @@ function createFailedWorldSegmentOutput(
     seed: input.seed,
     segment: input.segment,
     bands: { L0: { nodes: [] }, L1: { nodes: [] }, L2: { nodes: [] }, L3: { nodes: [] } },
+    relations: [],
     source_candidates: [],
     diagnostics,
     provider_id: providerConfig.id,
@@ -1563,16 +1651,21 @@ function buildL3SourceCandidateMessages(
 }
 
 export function buildWorldSegmentMessages(input: WorldSegmentGenerationInput): AiModelMessage[] {
+  const budget = input.budget ?? (input.segment.x === 0 && input.segment.y === 0
+    ? { L0: 4, L1: 6, L2: 8, total: 18 }
+    : { L0: 4, L1: 4, L2: 4, total: 12 });
+
   return [
     {
       role: "system",
       content:
-        "You are SeekStar World Cartographer. Return one compact JSON object only, with keys bands and source_candidates. " +
-        "bands must have L0, L1, L2, L3; each band has nodes. Return at most 4 L0 domain nodes, 4 L1 topic nodes, 4 L2 concept/source-direction nodes, and no L3 nodes. " +
-        "Return at most 2 real public URLs in source_candidates. Titles must be readable Simplified Chinese UTF-8. " +
-        "This is one continuous world segment: do not create nested scenes, radial hubs, summaries, relations, or positions. " +
-        "Use only title, node_type, confidence, importance, and optional short tags on nodes. URLs remain unverified candidates. " +
-        "Use this exact band shape: {\\\"bands\\\":{\\\"L0\\\":{\\\"nodes\\\":[{\\\"title\\\":\\\"...\\\",\\\"node_type\\\":\\\"domain\\\"}]},\\\"L1\\\":{\\\"nodes\\\":[]},\\\"L2\\\":{\\\"nodes\\\":[]},\\\"L3\\\":{\\\"nodes\\\":[]}},\\\"source_candidates\\\":[]}.",
+        "You are SeekStar World Cartographer v2. Return one compact JSON object only with bands, relations, and source_candidates. " +
+        "L0 means domains, L1 themes, L2 explanations, and L3 must always contain zero AI nodes. Limits are ceilings, never quotas. " +
+        "Every L0-L2 node requires local_id, title, orientation_summary, semantic_role, importance, coverage, and node_type. " +
+        "Allowed roles: region, landmark, frontier, topic, thread, bridge, question_cluster, mechanism, component, comparison, controversy, practice, evidence_direction. " +
+        "Allowed relations: refines, overlaps, bridges, contrasts_with, depends_on, supports, critiques, documents, exemplifies. Use refines from detail to broader object. " +
+        "Relations may reference local_id or an exact nearby anchor id. reuse_anchor_id must exactly match a nearby anchor. Do not return positions, footprint, parent_id, nested scenes, or markdown. " +
+        "Return concise Simplified Chinese. orientation_summary is one sentence; importance and coverage are numbers from 0 to 1. URLs remain unverified candidates.",
     },
     {
       role: "user",
@@ -1581,15 +1674,18 @@ export function buildWorldSegmentMessages(input: WorldSegmentGenerationInput): A
         seed: createPromptSeed(input.seed),
         segment: input.segment,
         nearby_anchors: input.nearby_anchors?.slice(0, 8),
+        adjacent_segment_summaries: input.adjacent_segment_summaries?.slice(0, 4),
         prompt_revision: input.prompt_revision,
         output_contract: {
           bands: {
-            L0: { max_nodes: 4, node_type: "domain" },
-            L1: { max_nodes: 4, node_type: "topic" },
-            L2: { max_nodes: 4, node_type: "concept|source" },
+            L0: { max_nodes: budget.L0, node_type: "domain" },
+            L1: { max_nodes: budget.L1, node_type: "topic" },
+            L2: { max_nodes: budget.L2, node_type: "concept|question|generated_summary" },
             L3: { nodes: [] },
           },
-          source_candidates: { max_items: 2, shape: { title: "short title", url: "https://...", source_type: "webpage" } },
+          total_new_nodes: budget.total,
+          relation_types: ["refines", "overlaps", "bridges", "contrasts_with", "depends_on", "supports", "critiques", "documents", "exemplifies"],
+          source_candidates: { max_items: 2, shape: { title: "short title", url: "https://...", source_type: "webpage", target_ref: "optional local_id" } },
         },
       }),
     },
@@ -1758,6 +1854,47 @@ function isNodeType(value: unknown): value is NodeType {
     value === "fog_region" ||
     value === "constellation_anchor"
   );
+}
+
+function isSemanticRole(value: unknown): value is SemanticRole {
+  return (
+    value === "region" ||
+    value === "landmark" ||
+    value === "frontier" ||
+    value === "topic" ||
+    value === "thread" ||
+    value === "bridge" ||
+    value === "question_cluster" ||
+    value === "mechanism" ||
+    value === "component" ||
+    value === "comparison" ||
+    value === "controversy" ||
+    value === "practice" ||
+    value === "evidence_direction" ||
+    value === "source"
+  );
+}
+
+function isWorldRelationType(value: unknown): value is RelationType {
+  return (
+    value === "refines" ||
+    value === "overlaps" ||
+    value === "bridges" ||
+    value === "contrasts_with" ||
+    value === "depends_on" ||
+    value === "supports" ||
+    value === "critiques" ||
+    value === "documents" ||
+    value === "exemplifies"
+  );
+}
+
+function isRelationType(value: unknown): value is RelationType {
+  return isWorldRelationType(value) || [
+    "semantic_similarity", "sibling", "citation", "hyperlink", "same_author", "same_institution",
+    "same_event", "chronological_sequence", "contradiction", "toolchain", "prerequisite", "translation", "etymology",
+    "token_contains", "source_contains", "user_selected", "agent_inferred",
+  ].includes(String(value));
 }
 
 function isSourceState(value: unknown): value is SourceState {

@@ -1,4 +1,3 @@
-import { isMacroLayer, isTileLayer } from "@seekstar/core-schema";
 import type { LayerId, ScoutObservation, SourceState, TerrainNode, TerrainRelation, TerrainScene, ViewportState } from "@seekstar/core-schema";
 import { resolveZoomForLayer } from "./lens.js";
 
@@ -112,10 +111,11 @@ export function createTerrainPixiProjection(
   viewport: ViewportState,
   options: TerrainPixiProjectionOptions = {},
 ): TerrainPixiProjection {
-  const visibleNodes = scene.nodes.filter((node) => node.layer === viewport.layer && isRenderableNodeForLayer(node, viewport.layer));
-  const layerNodes = applyMvpLayerLayout(visibleNodes, viewport.layer);
-  const layerNodeIds = new Set(layerNodes.map((node) => node.id));
-  const renderedNodes = layerNodes;
+  const visibleNodes = scene.nodes.filter((node) => node.layer === viewport.layer && node.projection_role !== "next_layer_preview" && isRenderableNodeForLayer(node, viewport.layer));
+  const previewNodes = scene.nodes.filter((node) => node.projection_role === "next_layer_preview" && isRenderableNodeForLayer(node, node.layer));
+  const layerNodes = visibleNodes;
+  const layerNodeIds = new Set(visibleNodes.map((node) => node.id));
+  const renderedNodes = [...visibleNodes, ...previewNodes];
   const renderedNodeIds = new Set(renderedNodes.map((node) => node.id));
   const sourcesById = new Map(scene.sources.map((source) => [source.id, source]));
   const candidateObservations = (scene.scout_observations ?? []).filter(
@@ -137,11 +137,9 @@ export function createTerrainPixiProjection(
     tileSurfaces,
     visibleNodes: layerNodes,
     visibleNodeIds: layerNodeIds,
-    visibleRelations: isMacroGalleryLayer(viewport.layer)
-      ? []
-      : scene.relations.filter(
-          (relation) => renderedNodeIds.has(relation.from) && renderedNodeIds.has(relation.to) && isRenderableRelation(relation, nodesById, viewport),
-        ),
+    visibleRelations: scene.relations.filter(
+      (relation) => renderedNodeIds.has(relation.from) && renderedNodeIds.has(relation.to) && isRenderableRelation(relation, nodesById, viewport),
+    ),
   };
 }
 
@@ -252,22 +250,12 @@ function createMainContentProjection(
     };
   }
 
-  if (isMacroLayer(viewport.layer)) {
+  if (viewport.layer !== "L3") {
     return {
       intakeStatus: "idle",
       mode: "domain_gallery",
       candidateTileSurfaces,
       sourceTileSurfaces,
-    };
-  }
-
-  if (viewport.layer === "L2") {
-    return {
-      intakeStatus: "idle",
-      mode: "cartographer_chunk_field",
-      candidateTileSurfaces,
-      sourceTileSurfaces,
-      statusText: "Source Orientation terrain is waiting for Cartographer generation.",
     };
   }
 
@@ -298,7 +286,7 @@ function isRenderableRelation(relation: TerrainRelation, nodesById: Map<string, 
     return false;
   }
 
-  if (isMacroLayer(viewport.layer)) {
+  if (viewport.layer !== "L3") {
     const dx = from.position_hint.x - to.position_hint.x;
     const dy = from.position_hint.y - to.position_hint.y;
     const distance = Math.sqrt(dx * dx + dy * dy);
@@ -307,185 +295,6 @@ function isRenderableRelation(relation: TerrainRelation, nodesById: Map<string, 
   }
 
   return true;
-}
-
-function applyMvpLayerLayout(nodes: TerrainNode[], layer: LayerId): TerrainNode[] {
-  if (nodes.length === 0) {
-    return nodes;
-  }
-
-  if (isMacroGalleryLayer(layer)) {
-    return createMvpGalleryNodes(nodes);
-  }
-
-  if (layer === "L3") {
-    return createMvpTileFieldNodes(nodes);
-  }
-
-  return nodes;
-}
-
-function isMacroGalleryLayer(layer: LayerId): boolean {
-  return layer === "supra_macro" || layer === "L0" || layer === "L1" || layer === "L2";
-}
-
-function createMvpGalleryNodes(nodes: TerrainNode[]): TerrainNode[] {
-  const sortedNodes = [...nodes].sort(compareGalleryNodes);
-  const total = sortedNodes.length;
-
-  return sortedNodes.map((node, index) => ({
-    ...node,
-    position_hint: createMvpGalleryPosition(index, total),
-  }));
-}
-
-function createMvpTileFieldNodes(nodes: TerrainNode[]): TerrainNode[] {
-  const sortedNodes = [...nodes].sort(compareGalleryNodes);
-  const columns = 5;
-  const rows = Math.max(5, Math.ceil(sortedNodes.length / columns));
-  const cellWidth = 324;
-  const cellHeight = 208;
-  const orderedSlots = createCenteredTileSlotOrder(columns, rows);
-  const centerColumn = (columns - 1) / 2;
-  const centerRow = (rows - 1) / 2;
-
-  return sortedNodes.map((node, index) => {
-    const slot = orderedSlots[index] ?? { column: index % columns, row: Math.floor(index / columns) };
-
-    return {
-      ...node,
-      position_hint: {
-        x: Math.round((slot.column - centerColumn) * cellWidth),
-        y: Math.round((slot.row - centerRow) * cellHeight),
-      },
-    };
-  });
-}
-
-function createCenteredTileSlotOrder(columns: number, rows: number): Array<{ column: number; row: number }> {
-  const centerColumn = (columns - 1) / 2;
-  const centerRow = (rows - 1) / 2;
-
-  return Array.from({ length: columns * rows }, (_, index) => ({
-    column: index % columns,
-    row: Math.floor(index / columns),
-  })).sort((left, right) => {
-    const leftDx = left.column - centerColumn;
-    const leftDy = left.row - centerRow;
-    const rightDx = right.column - centerColumn;
-    const rightDy = right.row - centerRow;
-    const leftRing = Math.max(Math.abs(leftDx), Math.abs(leftDy));
-    const rightRing = Math.max(Math.abs(rightDx), Math.abs(rightDy));
-
-    if (leftRing !== rightRing) {
-      return leftRing - rightRing;
-    }
-
-    const leftDirectionPriority = getTileSlotDirectionPriority(leftDx, leftDy);
-    const rightDirectionPriority = getTileSlotDirectionPriority(rightDx, rightDy);
-
-    if (leftDirectionPriority !== rightDirectionPriority) {
-      return leftDirectionPriority - rightDirectionPriority;
-    }
-
-    const leftDistance = Math.abs(leftDx) + Math.abs(leftDy);
-    const rightDistance = Math.abs(rightDx) + Math.abs(rightDy);
-
-    if (leftDistance !== rightDistance) {
-      return leftDistance - rightDistance;
-    }
-
-    return left.column - right.column;
-  });
-}
-
-function getTileSlotDirectionPriority(dx: number, dy: number): number {
-  if (dx === 0 && dy === 0) {
-    return 0;
-  }
-
-  if (dy === 0 && dx > 0) {
-    return 1;
-  }
-
-  if (dy === 0 && dx < 0) {
-    return 2;
-  }
-
-  if (dx === 0 && dy > 0) {
-    return 3;
-  }
-
-  if (dx === 0 && dy < 0) {
-    return 4;
-  }
-
-  if (dx > 0 && dy > 0) {
-    return 5;
-  }
-
-  if (dx < 0 && dy > 0) {
-    return 6;
-  }
-
-  if (dx > 0 && dy < 0) {
-    return 7;
-  }
-
-  return 8;
-}
-
-function compareGalleryNodes(left: TerrainNode, right: TerrainNode): number {
-  const leftChunk = parseNodeChunkKey(left);
-  const rightChunk = parseNodeChunkKey(right);
-  const leftChunkRank = leftChunk ? leftChunk.x * 10_000 + leftChunk.y : 0;
-  const rightChunkRank = rightChunk ? rightChunk.x * 10_000 + rightChunk.y : 0;
-
-  if (leftChunkRank !== rightChunkRank) {
-    return leftChunkRank - rightChunkRank;
-  }
-
-  const leftCreatedAt = left.created_at ?? "";
-  const rightCreatedAt = right.created_at ?? "";
-
-  if (leftCreatedAt !== rightCreatedAt) {
-    return leftCreatedAt.localeCompare(rightCreatedAt);
-  }
-
-  return left.id.localeCompare(right.id);
-}
-
-function parseNodeChunkKey(node: TerrainNode): { x: number; y: number } | undefined {
-  const label = node.created_from?.label ?? "";
-  const match = /\/\s*(-?\d+):(-?\d+):/u.exec(label);
-
-  if (!match) {
-    return undefined;
-  }
-
-  return {
-    x: Number.parseInt(match[1] ?? "0", 10),
-    y: Number.parseInt(match[2] ?? "0", 10),
-  };
-}
-
-function createMvpGalleryPosition(index: number, total: number): { x: number; y: number } {
-  const spacingX = 138;
-  const spacingY = 120;
-  const columns = Math.max(5, Math.ceil(Math.sqrt(Math.max(1, total) * 1.45)));
-  const row = Math.floor(index / columns);
-  const column = index % columns;
-  const rows = Math.max(1, Math.ceil(total / columns));
-  const centerColumn = (columns - 1) / 2;
-  const centerRow = (rows - 1) / 2;
-  const stagger = row % 2 === 0 ? 0 : spacingX / 2;
-  const deterministicJitterX = ((index * 17) % 13) - 6;
-  const deterministicJitterY = ((index * 29) % 11) - 5;
-
-  return {
-    x: Math.round((column - centerColumn) * spacingX + stagger + deterministicJitterX),
-    y: Math.round((row - centerRow) * spacingY + deterministicJitterY),
-  };
 }
 
 function getCartographerNodesForLayer(scene: TerrainScene, layer: LayerId): TerrainNode[] {
@@ -531,7 +340,7 @@ function createTileSurfaces(
   sourcesById: Map<string, TerrainScene["sources"][number]>,
   options: TerrainPixiProjectionOptions,
 ): TerrainTileSurface[] {
-  if (!isTileLayer(viewport.layer)) {
+  if (viewport.layer !== "L3") {
     return [];
   }
 

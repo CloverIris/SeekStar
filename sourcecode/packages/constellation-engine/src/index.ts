@@ -1,10 +1,10 @@
 export { defaultSeekStarSeedScene, DEFAULT_NEW_SEEK_SCENE_ID, DEFAULT_NEW_SEEK_TAB_ID, NEW_SEEK_TITLE, createDefaultNewSeekScene } from "./defaultSeedScene.js";
 export { DEFAULT_DOMAIN_LEXICON_ID, DEFAULT_DOMAIN_LEXICONS, cloneDomainLexicons, resolveActiveDomainLexicon, type DomainLexicon, type DomainLexiconTerm } from "./domainLexicon.js";
 export { resolveLayerForZoom, resolveZoomForLayer } from "./lens.js";
-export { createExplorationObjectPool, type ExplorationObjectPool } from "./objectPool.js";
 export { clampTileFieldTargetCount, createTerrainPixiProjection, resolveTileAbsorption, type CandidateTileSurface, type MainContentMode, type MainContentProjection, type ProjectionRect, type ProjectionViewportBounds, type TerrainPixiProjection, type TerrainPixiProjectionOptions, type TerrainTileSurface, type TileAbsorptionState, type TileSurfaceLoadPriority, type TileSurfaceLoadState, type TileSurfaceVisibility } from "./pixiRuntime.js";
 export { createTileAbsorptionTransition, type TileAbsorptionTransition, type TileAbsorptionTransitionInput } from "./tileAbsorptionTransition.js";
 export { clampZoom, fitViewportToNodes, getNodeBounds, normalizeRect, rectContainsPoint, resetViewport, screenToWorld, selectNodesInRect, worldToScreen, zoomViewportAtScreenPoint, type CanvasPoint, type CanvasRect, type CanvasTool, type LassoDraft, type ViewportBounds } from "./pixiInteraction.js";
 export { createDirectUrlScoutPlan, createFailedScoutObservation, createFrontierScoutPlan, createKeywordScoutPlan, createPageOutlinksScoutPlan, isDirectHttpUrl, positionAnchoredScoutObservations, positionFrontierObservations, resolveFrontierTrigger, type FrontierDirection, type FrontierTrigger, type ScoutObservationPlacement } from "./scoutPlanning.js";
 export { createSeedScene, type SeedSceneOptions } from "./seedScene.js";
 export { createFogNodes, planWorkingSet, projectTerrain, reduceExplorationState, type ExplorationRendererAction, type ExplorationRendererState } from "./explorationRuntime.js";
+export { deriveSemanticFootprint, deriveVisualMass, semanticCentroid, settleSemanticPosition } from "./semanticLayout.js";

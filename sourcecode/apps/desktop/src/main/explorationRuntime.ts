@@ -1,6 +1,7 @@
 import { app, ipcMain } from "electron";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { randomUUID } from "node:crypto";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { AiCartographerService, type WorldSegmentGenerationInput, type WorldSegmentGenerationOutput } from "@seekstar/ai-service";
 import type {
@@ -21,12 +22,14 @@ import type {
   WorldSegment,
 } from "@seekstar/core-schema";
 import { JsonWorldRepository } from "@seekstar/storage-service";
+import { deriveSemanticFootprint, deriveVisualMass, semanticCentroid, settleSemanticPosition } from "@seekstar/constellation-engine";
 import { settingsService } from "./settingsService.js";
 import { runScoutPlanInMain } from "./scoutAdapter.js";
 import type { TabRuntimeManager } from "./tabRuntimeManager.js";
 
-const WORLD_FILE_NAME = "seekstar-exploration-worlds-v1.json";
-const POLICY_REVISION = "exploration-world-v1";
+const WORLD_FILE_NAME = "seekstar-exploration-worlds-v2.json";
+const LEGACY_WORLD_FILE_NAME = "seekstar-exploration-worlds-v1.json";
+const POLICY_REVISION = "exploration-world-v2";
 const CHUNK_WIDTH = 1200;
 const CHUNK_HEIGHT = 900;
 const MAX_AI_CONCURRENCY = 2;
@@ -64,7 +67,13 @@ export class ExplorationRuntime {
   private maxScoutConcurrency = MAX_SCOUT_CONCURRENCY;
   private repository: JsonWorldRepository | undefined;
 
-  constructor(private readonly tabs: TabRuntimeManager, private readonly dependencies: ExplorationRuntimeDependencies = {}) {}
+  constructor(private readonly tabs: TabRuntimeManager, private readonly dependencies: ExplorationRuntimeDependencies = {}) {
+    try {
+      rmSync(join(app.getPath("userData"), LEGACY_WORLD_FILE_NAME), { force: true });
+    } catch {
+      // The v1 world is deliberately disposable; a locked file will be retried next launch.
+    }
+  }
 
   registerIpc(): void {
     this.handle("exploration:open", (event, value) => this.open(event, parseTabId(value)));
@@ -334,6 +343,10 @@ export class ExplorationRuntime {
         seed: world.document.seed,
         segment: { key: segment.key, x: segment.chunk_x, y: segment.chunk_y },
         nearby_anchors: this.nearbyAnchors(world, segment),
+        adjacent_segment_summaries: this.adjacentSegmentSummaries(world, segment),
+        budget: segment.chunk_x === 0 && segment.chunk_y === 0
+          ? { L0: 4, L1: 6, L2: 8, total: 18 }
+          : { L0: 4, L1: 4, L2: 4, total: 12 },
         prompt_revision: world.document.policy_revision,
       };
       const output = this.dependencies.generateWorldSegment
@@ -365,55 +378,106 @@ export class ExplorationRuntime {
   }
 
   private populateSegment(world: RuntimeWorld, segment: WorldSegment, output: WorldSegmentGenerationOutput): void {
-    const nodesByLayer = new Map<string, TerrainNode[]>();
+    const existingNodes = Object.values(world.document.segments_by_key).flatMap((item) => item.nodes);
+    const existingById = new Map(existingNodes.map((node) => [node.id, node]));
+    const localToWorldId = new Map<string, string>();
     const nodes: TerrainNode[] = [];
-    const relations: TerrainRelation[] = [];
+
     for (const layer of ["L0", "L1", "L2"] as const) {
-      const drafts = output.bands[layer].nodes.slice(0, 4);
-      const parentLayer = layer === "L1" ? "L0" : layer === "L2" ? "L1" : undefined;
-      const parentNodes = parentLayer ? nodesByLayer.get(parentLayer) ?? [] : [];
-      const bandNodes = drafts.map((draft, index): TerrainNode => {
-        const parent = parentNodes[index % Math.max(1, parentNodes.length)];
-        const id = `node:${segment.key}:${layer}:${index}:${slug(draft.title)}`;
-        if (parent) relations.push({ id: `relation:${parent.id}:${id}`, from: parent.id, to: id, type: "parent_child", confidence: 0.8, explanation: "Shared multi-scale world anchor.", source_state: "generated" });
-        return {
+      for (const draft of output.bands[layer].nodes) {
+        const localId = draft.local_id ?? slug(draft.title);
+        const reusable = draft.reuse_anchor_id ? existingById.get(draft.reuse_anchor_id) : undefined;
+        if (reusable?.layer === layer) {
+          localToWorldId.set(localId, reusable.id);
+          continue;
+        }
+
+        const id = `node:${segment.key}:${layer}:${slug(localId)}`;
+        localToWorldId.set(localId, id);
+        nodes.push({
           id,
-          type: layer === "L0" ? "domain" : layer === "L1" ? "topic" : "concept",
+          type: layer === "L0" ? "domain" : layer === "L1" ? "topic" : draft.node_type ?? "concept",
           title: draft.title,
           layer,
-          source_state: "generated",
+          source_state: "cartographer_primary",
           confidence: draft.confidence ?? 0.72,
           importance: draft.importance ?? 0.65,
-          tags: ["exploration-world", layer, ...(draft.tags ?? [])],
-          parent_id: parent?.id,
-          position_hint: positionFor(segment, layer, index, drafts.length),
+          coverage: draft.coverage ?? 0.5,
+          orientation_summary: draft.orientation_summary ?? draft.summary ?? draft.title,
+          summary: draft.orientation_summary ?? draft.summary ?? draft.title,
+          semantic_role: draft.semantic_role ?? (layer === "L0" ? "region" : layer === "L1" ? "topic" : "mechanism"),
+          tags: ["exploration-world-v2", layer, ...(draft.tags ?? [])],
           can_create_seed: true,
           created_at: output.generated_at,
           updated_at: output.generated_at,
-        };
-      });
-      nodesByLayer.set(layer, bandNodes);
-      nodes.push(...bandNodes);
+        });
+      }
     }
-    const targets = nodesByLayer.get("L2") ?? [];
-    const candidates = output.source_candidates.slice(0, 2).map((candidate, index): ScoutObservation => ({
+
+    const resolveRef = (reference: string): string | undefined => localToWorldId.get(reference) ?? (existingById.has(reference) ? reference : undefined);
+    const relationKeys = new Set<string>();
+    const relations = output.relations.flatMap((draft): TerrainRelation[] => {
+      const from = resolveRef(draft.from);
+      const to = resolveRef(draft.to);
+      if (!from || !to || from === to || !draft.type) return [];
+      const key = `${from}:${draft.type}:${to}`;
+      if (relationKeys.has(key)) return [];
+      relationKeys.add(key);
+      return [{
+        id: `relation:${slug(key)}`,
+        from,
+        to,
+        type: draft.type,
+        confidence: draft.confidence ?? 0.72,
+        explanation: draft.explanation || `${draft.type} semantic relation`,
+        source_state: "cartographer_primary",
+      }];
+    });
+
+    const allById = new Map([...existingById, ...nodes.map((node) => [node.id, node] as const)]);
+    const maxDegree = Math.max(1, ...nodes.map((node) => relations.filter((relation) => relation.from === node.id || relation.to === node.id).length));
+    const positioned: TerrainNode[] = [];
+    for (const layer of ["L0", "L1", "L2"] as const) {
+      for (const node of nodes.filter((candidate) => candidate.layer === layer)) {
+        const degree = relations.filter((relation) => relation.from === node.id || relation.to === node.id).length / maxDegree;
+        const visualMass = deriveVisualMass(node.importance, node.coverage ?? 0.5, degree);
+        node.footprint = deriveSemanticFootprint(layer, visualMass);
+        const parentPositions = relations
+          .filter((relation) => relation.type === "refines" && relation.from === node.id)
+          .map((relation) => allById.get(relation.to)?.position_hint)
+          .filter((position): position is { x: number; y: number; z?: number } => Boolean(position));
+        const anchor = parentPositions.length
+          ? semanticCentroid(parentPositions)
+          : { x: segment.chunk_x * CHUNK_WIDTH, y: segment.chunk_y * CHUNK_HEIGHT };
+        node.position_hint = settleSemanticPosition(node, anchor, [...existingNodes, ...positioned]);
+        positioned.push(node);
+      }
+    }
+
+    const targets = nodes.filter((node) => node.layer === "L2");
+    const candidates = output.source_candidates.slice(0, 2).map((candidate, index): ScoutObservation => {
+      const targetId = candidate.target_ref ? resolveRef(candidate.target_ref) : targets[index % Math.max(1, targets.length)]?.id;
+      const target = targetId ? allById.get(targetId) : undefined;
+      return ({
       id: `candidate:${segment.key}:${index}:${slug(candidate.url)}`,
       tab_id: world.document.tab_id,
       status: "source_candidate",
       layer: "L3",
-      position_hint: positionFor(segment, "L3", index, output.source_candidates.length),
+      position_hint: target?.position_hint
+        ? { x: target.position_hint.x + 120 + index * 34, y: target.position_hint.y + 90 + index * 28 }
+        : deterministicSegmentPosition(segment, `source:${candidate.url}`, 180),
       discovery_mode: "direct_url",
       provider_id: candidate.provider_id ?? "ai-cartographer",
       confidence: candidate.confidence ?? 0.55,
       query: candidate.title,
       title: candidate.title,
-      target_node_ids: targets.length ? [targets[index % targets.length].id] : [],
+      target_node_ids: targetId ? [targetId] : [],
       url: candidate.url,
       snippet: candidate.snippet ?? candidate.reason,
       source_type: candidate.source_type,
       created_at: output.generated_at,
       updated_at: output.generated_at,
-    }));
+    }); });
     segment.nodes = nodes;
     segment.relations = relations;
     segment.source_candidates = candidates;
@@ -471,7 +535,20 @@ export class ExplorationRuntime {
       world.document.sources[source.id] = source;
       const segment = this.segmentForCandidate(world, candidate.id);
       if (segment) {
-        segment.nodes.push(createSourceNode(candidate, source));
+        const sourceNode = createSourceNode(candidate, source);
+        segment.nodes.push(sourceNode);
+        const targetId = candidate.target_node_ids[0];
+        if (targetId) {
+          segment.relations.push({
+            id: `relation:${slug(`${sourceNode.id}:documents:${targetId}`)}`,
+            from: sourceNode.id,
+            to: targetId,
+            type: "documents",
+            confidence: candidate.confidence ?? 0.7,
+            explanation: "Scout 已验证该来源能够支持此解释对象。",
+            source_state: "source_backed",
+          });
+        }
         this.upsertSegment(world, segment);
       }
       this.publish(world, { type: "source_upsert", world_revision: this.bumpWorld(world), source: structuredClone(source), observation: structuredClone(candidate) });
@@ -488,12 +565,26 @@ export class ExplorationRuntime {
     }
   }
 
-  private nearbyAnchors(world: RuntimeWorld, target: WorldSegment): Array<{ id: string; layer: string; title: string; x: number; y: number }> {
+  private nearbyAnchors(world: RuntimeWorld, target: WorldSegment): WorldSegmentGenerationInput["nearby_anchors"] {
     return Object.values(world.document.segments_by_key).flatMap((segment) => segment.nodes)
       .filter((node) => node.position_hint && node.layer !== "L3")
       .sort((left, right) => distance(left, target) - distance(right, target))
       .slice(0, 8)
-      .map((node) => ({ id: node.id, layer: node.layer, title: node.title, x: node.position_hint?.x ?? 0, y: node.position_hint?.y ?? 0 }));
+      .map((node) => ({
+        id: node.id,
+        layer: node.layer,
+        title: node.title,
+        orientation_summary: node.orientation_summary,
+        semantic_role: node.semantic_role,
+        x: node.position_hint?.x ?? 0,
+        y: node.position_hint?.y ?? 0,
+      }));
+  }
+
+  private adjacentSegmentSummaries(world: RuntimeWorld, target: WorldSegment): NonNullable<WorldSegmentGenerationInput["adjacent_segment_summaries"]> {
+    return Object.values(world.document.segments_by_key)
+      .filter((segment) => segment.key !== target.key && segment.phase === "ready" && Math.abs(segment.chunk_x - target.chunk_x) <= 1 && Math.abs(segment.chunk_y - target.chunk_y) <= 1)
+      .map((segment) => ({ key: segment.key, titles: segment.nodes.filter((node) => node.layer !== "L3").slice(0, 8).map((node) => node.title) }));
   }
 
   private async generateWorldSegment(input: WorldSegmentGenerationInput, signal: AbortSignal): Promise<WorldSegmentGenerationOutput> {
@@ -556,19 +647,29 @@ export function createDeterministicExplorationDependencies(): ExplorationRuntime
     generateWorldSegment: async (input, signal) => {
       if (signal.aborted) throw new Error("Deterministic segment generation was cancelled.");
       const generatedAt = now();
+      const counts = input.segment.x === 0 && input.segment.y === 0 ? { L0: 4, L1: 6, L2: 8 } : { L0: 3, L1: 4, L2: 5 };
       const band = (layer: "L0" | "L1" | "L2") => ({
-        nodes: Array.from({ length: 4 }, (_value, index) => ({
+        nodes: Array.from({ length: counts[layer] }, (_value, index) => ({
+          local_id: `${layer.toLowerCase()}-${index + 1}`,
           title: `${input.seed} ${layer} ${input.segment.key} ${index + 1}`,
+          orientation_summary: `${layer} 语义对象 ${index + 1} 用于稳定的多尺度探索测试。`,
+          semantic_role: layer === "L0" ? "region" as const : layer === "L1" ? (index % 3 === 0 ? "thread" as const : "topic" as const) : (index % 2 === 0 ? "mechanism" as const : "comparison" as const),
           confidence: 0.9,
-          importance: 0.75,
+          importance: 0.45 + (index % 4) * 0.15,
+          coverage: 0.35 + (index % 5) * 0.12,
           tags: ["e2e", layer],
         })),
       });
+      const relations = [
+        ...Array.from({ length: counts.L1 }, (_value, index) => ({ from: `l1-${index + 1}`, to: `l0-${index % counts.L0 + 1}`, type: "refines" as const, confidence: 0.9, explanation: "主题细化领域" })),
+        ...Array.from({ length: counts.L2 }, (_value, index) => ({ from: `l2-${index + 1}`, to: `l1-${index % counts.L1 + 1}`, type: "refines" as const, confidence: 0.9, explanation: "解释细化主题" })),
+      ];
       return {
         status: "ok",
         seed: input.seed,
         segment: input.segment,
         bands: { L0: band("L0"), L1: band("L1"), L2: band("L2"), L3: { nodes: [] } },
+        relations,
         source_candidates: [{
           title: `${input.seed} source ${input.segment.key}`,
           url: `https://example.com/seekstar/${encodeURIComponent(input.segment.key)}`,
@@ -576,6 +677,7 @@ export function createDeterministicExplorationDependencies(): ExplorationRuntime
           provider_id: "e2e-fixture",
           source_type: "webpage",
           confidence: 0.95,
+          target_ref: "l2-1",
         }],
         diagnostics: [],
         provider_id: "e2e-fixture",
@@ -667,29 +769,41 @@ function createSourceNode(candidate: ScoutObservation, source: SourceRef): Terra
     source_state: "source_backed",
     confidence: candidate.confidence ?? 0.7,
     importance: 0.65,
-    tags: ["exploration-world", "scout-verified"],
+    coverage: 0.55,
+    orientation_summary: source.snippet ?? "Scout 已验证并读取的来源。",
+    summary: source.snippet ?? "Scout 已验证并读取的来源。",
+    semantic_role: "source",
+    footprint: deriveSemanticFootprint("L3", deriveVisualMass(0.65, 0.55, 1)),
+    tags: ["exploration-world-v2", "scout-verified"],
     source_id: source.id,
     source_url: source.url,
     source_title: source.title,
     source_type: source.source_type,
     retrieved_at: source.retrieved_at,
     position_hint: candidate.position_hint,
-    parent_id: candidate.target_node_ids[0],
     can_create_seed: true,
     created_at: candidate.updated_at,
     updated_at: candidate.updated_at,
   };
 }
 
-function positionFor(segment: WorldSegment, layer: "L0" | "L1" | "L2" | "L3", index: number, count: number): { x: number; y: number } {
-  const columns = Math.max(2, Math.ceil(Math.sqrt(Math.max(1, count))));
-  const row = Math.floor(index / columns);
-  const column = index % columns;
-  const spacing = layer === "L0" ? 250 : layer === "L1" ? 190 : layer === "L2" ? 145 : 260;
+function deterministicSegmentPosition(segment: WorldSegment, key: string, radius: number): { x: number; y: number } {
+  const unit = deterministicUnit(key);
+  const angle = unit * Math.PI * 2;
+  const radial = radius * (0.45 + deterministicUnit(`${key}:radius`) * 0.55);
   return {
-    x: segment.chunk_x * CHUNK_WIDTH + Math.round((column - (columns - 1) / 2) * spacing),
-    y: segment.chunk_y * CHUNK_HEIGHT + Math.round((row - (Math.ceil(count / columns) - 1) / 2) * spacing),
+    x: segment.chunk_x * CHUNK_WIDTH + Math.cos(angle) * radial,
+    y: segment.chunk_y * CHUNK_HEIGHT + Math.sin(angle) * radial,
   };
+}
+
+function deterministicUnit(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 0xffffffff;
 }
 
 function distance(node: TerrainNode, segment: WorldSegment): number {

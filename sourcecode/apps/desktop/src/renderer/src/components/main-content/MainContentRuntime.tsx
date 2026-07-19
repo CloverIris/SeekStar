@@ -1,4 +1,3 @@
-import { isMacroLayer } from "@seekstar/core-schema";
 import type { ScoutObservation, TerrainNode, TerrainRelation, TerrainScene, ViewportState } from "@seekstar/core-schema";
 import type { ReactElement } from "react";
 import { useMemo } from "react";
@@ -144,7 +143,7 @@ function filterRenderableMainContentNodes(nodes: TerrainNode[], mode: MainConten
 }
 
 function isWorldTerrainNode(node: TerrainNode): boolean {
-  return node.tags?.includes("exploration-world") === true || node.source_state === "source_backed";
+  return node.tags?.includes("exploration-world-v2") === true || node.source_state === "source_backed";
 }
 
 function isSourceTileSurfaceNode(node: TerrainNode): boolean {
@@ -161,7 +160,7 @@ function isMainContentScaffoldPlaceholder(node: TerrainNode): boolean {
     return true;
   }
 
-  if (isMacroLayer(node.layer)) {
+  if (node.layer !== "L3") {
     return false;
   }
 

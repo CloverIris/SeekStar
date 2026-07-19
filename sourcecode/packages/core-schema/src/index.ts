@@ -36,8 +36,14 @@ export type NodeType =
   | "constellation_anchor";
 
 export type RelationType =
+  | "refines"
+  | "overlaps"
+  | "bridges"
+  | "contrasts_with"
+  | "depends_on"
+  | "documents"
+  | "exemplifies"
   | "semantic_similarity"
-  | "parent_child"
   | "sibling"
   | "citation"
   | "hyperlink"
@@ -57,12 +63,28 @@ export type RelationType =
   | "user_selected"
   | "agent_inferred";
 
-export type LayerId =
-  | "supra_macro"
-  | "L0"
-  | "L1"
-  | "L2"
-  | "L3";
+export type LayerId = "L0" | "L1" | "L2" | "L3";
+
+export type SemanticRole =
+  | "region"
+  | "landmark"
+  | "frontier"
+  | "topic"
+  | "thread"
+  | "bridge"
+  | "question_cluster"
+  | "mechanism"
+  | "component"
+  | "comparison"
+  | "controversy"
+  | "practice"
+  | "evidence_direction"
+  | "source";
+
+export interface SemanticFootprint {
+  width: number;
+  height: number;
+}
 
 export type SourceType =
   | "webpage"
@@ -315,6 +337,14 @@ export interface TerrainNode {
   source_state: SourceState;
   confidence: number;
   importance: number;
+  coverage?: number;
+  orientation_summary?: string;
+  semantic_role?: SemanticRole;
+  footprint?: SemanticFootprint;
+  /** Ephemeral renderer metadata; never persisted in a WorldDocument. */
+  projection_role?: TerrainProjectionRole;
+  /** Ephemeral renderer value derived from semantic weights and relation centrality. */
+  visual_mass?: number;
   tags: string[];
   created_at: string;
   updated_at: string;
@@ -806,11 +836,25 @@ export interface TerrainProjection {
   world_revision: number;
   view: ExplorationViewState;
   visible_segment_keys: string[];
-  nodes: TerrainNode[];
-  relations: TerrainRelation[];
+  primary: ProjectedTerrainObject[];
+  next_layer_preview: ProjectedTerrainObject[];
+  projected_relations: ProjectedTerrainRelation[];
   sources: SourceRef[];
   scout_observations: ScoutObservation[];
   fog_segment_keys: string[];
+}
+
+export type TerrainProjectionRole = "primary" | "next_layer_preview";
+
+export interface ProjectedTerrainObject {
+  node: TerrainNode;
+  projection_role: TerrainProjectionRole;
+  visual_mass: number;
+}
+
+export interface ProjectedTerrainRelation {
+  relation: TerrainRelation;
+  projection_role: "primary" | "cross_layer_preview";
 }
 
 export type ExplorationWorldEvent =
@@ -846,10 +890,6 @@ export {
   CANONICAL_LAYER_DEFINITIONS,
   getDeepZoomLayerStops,
   getLayerDefinition,
-  getLayerFocalBand,
   getLayerOrder,
-  isMacroLayer,
-  isTileLayer,
-  type SemanticFocalBand,
   type SemanticLayerDefinition,
 } from "./semanticLayers.js";

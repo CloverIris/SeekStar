@@ -6,7 +6,6 @@ import type {
   TileAbsorptionTrigger,
   ViewportState,
 } from "@seekstar/core-schema";
-import { isMacroLayer } from "@seekstar/core-schema";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent, ReactElement } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LocateFixed, Maximize2, RotateCcw } from "lucide-react";
@@ -25,7 +24,6 @@ import {
   resolveZoomForLayer,
   screenToWorld,
   selectNodesInRect,
-  worldToScreen,
   zoomViewportAtScreenPoint,
 } from "@seekstar/constellation-engine";
 import type { CanvasTool } from "./canvasTools";
@@ -68,13 +66,11 @@ export interface SemanticZoomRequest {
   focusNodeId?: string;
   fromLayer: LayerId;
   origin: CanvasPoint;
-  snapshotDataUrl?: string;
   viewport: ViewportState;
 }
 
 export interface NodeActivationContext {
   origin: CanvasPoint;
-  snapshotDataUrl?: string;
 }
 
 type CanvasDragState =
@@ -135,6 +131,30 @@ interface SoftZoomProfile {
   zoomExponent: number;
 }
 
+interface PixiRegistryEntry {
+  display: Container;
+  signature: string;
+}
+
+interface PixiDisplayRegistry {
+  background: Graphics;
+  world: Container;
+  relationLayer: Container;
+  tileLayer: Container;
+  previewLayer: Container;
+  primaryLayer: Container;
+  relations: Map<string, PixiRegistryEntry>;
+  tiles: Map<string, PixiRegistryEntry>;
+  nodes: Map<string, PixiRegistryEntry>;
+  frameTimes: number[];
+  lastFrameAt: number;
+  lastTraceAt: number;
+  projectionMs: number;
+}
+
+const pixiRegistries = new WeakMap<Application, PixiDisplayRegistry>();
+const pixiAnimations = new WeakMap<Container, () => void>();
+
 export function TerrainCanvas({
   activeTool,
   focusedNodeId,
@@ -163,6 +183,7 @@ export function TerrainCanvas({
   const appRef = useRef<Application | null>(null);
   const viewportRef = useRef(viewport);
   const semanticTransitionActiveRef = useRef(semanticTransitionActive);
+  const semanticTransitionDirectionRef = useRef(semanticTransitionDirection);
   const onViewportChangeRef = useRef(onViewportChange);
   const onFrontierDiscoveryRef = useRef(onFrontierDiscovery);
   const onNodeSelectRef = useRef(onNodeSelect);
@@ -213,48 +234,6 @@ export function TerrainCanvas({
     ? tileSurfaces.find((surface) => surface.nodeId === scene.runtime.browser_absorption.node_id && surface.sourceUrl)
     : undefined;
 
-  useEffect(() => {
-    traceTerrainCanvas("projection.state", {
-      active_tab_id: scene.active_tab_id,
-      browser_absorbed: isBrowserAbsorbed,
-      candidate_observations: candidateObservations.length,
-      main_content_mode: mainContent.mode,
-      projection_nodes: renderedNodes.length,
-      scene_nodes: scene.nodes.length,
-      scene_observations: scene.scout_observations?.length ?? 0,
-      scene_relations: scene.relations.length,
-      selected_nodes: selectedNodeIds.length,
-      source_tile_surfaces: tileSurfaces.length,
-      tile_field_target_count: tileFieldTargetCount ?? 25,
-      viewport: {
-        layer: viewport.layer,
-        x: Math.round(viewport.x),
-        y: Math.round(viewport.y),
-        zoom: Number(viewport.zoom.toFixed(3)),
-      },
-      visible_nodes: visibleNodes.length,
-      visible_relations: visibleRelations.length,
-    });
-  }, [
-    candidateObservations.length,
-    isBrowserAbsorbed,
-    mainContent.mode,
-    renderedNodes.length,
-    scene.active_tab_id,
-    scene.nodes.length,
-    scene.relations.length,
-    scene.scout_observations?.length,
-    selectedNodeIds.length,
-    tileFieldTargetCount,
-    tileSurfaces.length,
-    viewport.layer,
-    viewport.x,
-    viewport.y,
-    viewport.zoom,
-    visibleNodes.length,
-    visibleRelations.length,
-  ]);
-
   const beginTileAbsorptionTransition = useCallback(
     (nodeId: string, trigger: TileAbsorptionTrigger): void => {
       if (isBrowserAbsorbed || activeAbsorptionTransition) {
@@ -297,6 +276,7 @@ export function TerrainCanvas({
   useEffect(() => {
     viewportRef.current = viewport;
     semanticTransitionActiveRef.current = semanticTransitionActive;
+    semanticTransitionDirectionRef.current = semanticTransitionDirection;
     onViewportChangeRef.current = onViewportChange;
     onFrontierDiscoveryRef.current = onFrontierDiscovery;
     onNodeSelectRef.current = onNodeSelect;
@@ -313,25 +293,11 @@ export function TerrainCanvas({
     onSemanticZoomRequest,
     onViewportChange,
     semanticTransitionActive,
+    semanticTransitionDirection,
     tileSurfaces,
     viewport,
     visibleNodes,
   ]);
-
-  const captureCanvasSnapshot = useCallback((): string | undefined => {
-    const canvas = appRef.current?.renderer?.canvas;
-
-    if (!canvas) {
-      return undefined;
-    }
-
-    try {
-      return canvas.toDataURL("image/png");
-    } catch (error) {
-      console.warn("[SeekStar] Canvas snapshot capture skipped.", error);
-      return undefined;
-    }
-  }, []);
 
   const createNodeActivationContext = useCallback(
     (origin?: CanvasPoint): NodeActivationContext => {
@@ -345,10 +311,9 @@ export function TerrainCanvas({
 
       return {
         origin: origin ?? fallbackOrigin,
-        snapshotDataUrl: captureCanvasSnapshot(),
       };
     },
-    [captureCanvasSnapshot],
+    [],
   );
 
   useEffect(() => {
@@ -427,7 +392,6 @@ export function TerrainCanvas({
     renderPixiScene({
       app,
       createNodeActivationContext,
-      enableEdgeCompression: isMacroLayer(viewport.layer) && activeTool !== "lasso",
       focusedNodeId,
       highlightedNodeIds,
       host,
@@ -437,6 +401,9 @@ export function TerrainCanvas({
       onNodeSelect: (nodeId) => onNodeSelectRef.current(nodeId),
       onRelationSelect: (relationId) => onRelationSelectRef.current(relationId),
       renderedNodes,
+      semanticTransitionActive,
+      semanticTransitionDirection,
+      semanticTransitionOrigin,
       selectedNodeIds,
       selectedRelationId,
       tileThumbnailsByNodeId,
@@ -446,7 +413,6 @@ export function TerrainCanvas({
       viewport,
     });
   }, [
-    activeTool,
     createNodeActivationContext,
     focusedNodeId,
     highlightedNodeIds,
@@ -455,6 +421,9 @@ export function TerrainCanvas({
     scene,
     selectedNodeIds,
     selectedRelationId,
+    semanticTransitionActive,
+    semanticTransitionDirection,
+    semanticTransitionOrigin,
     tileThumbnailsByNodeId,
     tileSurfaces,
     viewport,
@@ -474,16 +443,25 @@ export function TerrainCanvas({
     function handleNativeWheel(event: WheelEvent): void {
       event.preventDefault();
 
-      if (semanticTransitionActiveRef.current) {
-        return;
-      }
-
       const currentViewport = viewportRef.current;
       const bounds = target.getBoundingClientRect();
       const pointer = {
         x: event.clientX - bounds.left,
         y: event.clientY - bounds.top,
       };
+      if (semanticTransitionActiveRef.current) {
+        const requestedDirection = event.deltaY < 0 ? "in" : event.deltaY > 0 ? "out" : undefined;
+        if (requestedDirection && requestedDirection !== semanticTransitionDirectionRef.current) {
+          onSemanticZoomRequestRef.current({
+            direction: requestedDirection,
+            focusKind: "interstitial",
+            fromLayer: currentViewport.layer,
+            origin: { x: bounds.width / 2, y: bounds.height / 2 },
+            viewport: currentViewport,
+          });
+        }
+        return;
+      }
       const zoomProfile = resolveSoftZoomProfile(currentViewport.layer);
       const wheelStep = normalizeWheelStep(event);
       const scaleFactor = Math.exp(-wheelStep * zoomProfile.zoomExponent);
@@ -555,7 +533,6 @@ export function TerrainCanvas({
           x: bounds.width / 2,
           y: bounds.height / 2,
         },
-        snapshotDataUrl: captureCanvasSnapshot(),
         viewport: nextViewport,
       });
     }
@@ -930,7 +907,6 @@ function CanvasReticle({ target }: { target?: ReticleTarget }): ReactElement {
 function renderPixiScene({
   app,
   createNodeActivationContext,
-  enableEdgeCompression,
   focusedNodeId,
   highlightedNodeIds,
   host,
@@ -940,6 +916,9 @@ function renderPixiScene({
   onNodeSelect,
   onRelationSelect,
   renderedNodes,
+  semanticTransitionActive,
+  semanticTransitionDirection,
+  semanticTransitionOrigin,
   selectedNodeIds,
   selectedRelationId,
   tileThumbnailsByNodeId,
@@ -950,7 +929,6 @@ function renderPixiScene({
 }: {
   app: Application;
   createNodeActivationContext: (origin?: CanvasPoint) => NodeActivationContext;
-  enableEdgeCompression: boolean;
   focusedNodeId?: string;
   highlightedNodeIds: string[];
   host: HTMLElement;
@@ -960,6 +938,9 @@ function renderPixiScene({
   onNodeSelect: (nodeId: string) => void;
   onRelationSelect: (relationId: string) => void;
   renderedNodes: TerrainNode[];
+  semanticTransitionActive: boolean;
+  semanticTransitionDirection?: "in" | "out";
+  semanticTransitionOrigin?: CanvasPoint;
   selectedNodeIds: string[];
   selectedRelationId?: string;
   tileThumbnailsByNodeId: Map<string, TileThumbnailState>;
@@ -968,28 +949,50 @@ function renderPixiScene({
   visibleRelations: TerrainRelation[];
   viewport: ViewportState;
 }): void {
+  const startedAt = performance.now();
   const bounds = host.getBoundingClientRect();
-  const stage = app.stage;
-  const world = new Container();
+  const registry = ensurePixiDisplayRegistry(app, bounds);
   const nodesById = new Map(renderedNodes.map((node) => [node.id, node]));
+  registry.world.position.set(bounds.width / 2 - viewport.x * viewport.zoom, bounds.height / 2 - viewport.y * viewport.zoom);
+  registry.world.scale.set(viewport.zoom);
+  updatePixiBackground(registry.background, bounds);
+  const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (semanticTransitionActive && semanticTransitionOrigin) {
+    const focus = screenToWorld(semanticTransitionOrigin, viewport, bounds);
+    registry.primaryLayer.pivot.set(focus.x, focus.y);
+    registry.primaryLayer.position.set(focus.x, focus.y);
+    if (!reducedMotion && !pixiAnimations.has(registry.primaryLayer)) {
+      registry.primaryLayer.scale.set(semanticTransitionDirection === "out" ? 1.06 : 0.82);
+      animatePixiDisplay(app, registry.primaryLayer, 1, 1, 460);
+    }
+  } else if (!pixiAnimations.has(registry.primaryLayer)) {
+    registry.primaryLayer.pivot.set(0, 0);
+    registry.primaryLayer.position.set(0, 0);
+    registry.primaryLayer.scale.set(1);
+    registry.primaryLayer.alpha = 1;
+  }
 
-  stage.removeChildren();
-  drawPixiBackground(stage, bounds);
-  world.position.set(bounds.width / 2 - viewport.x * viewport.zoom, bounds.height / 2 - viewport.y * viewport.zoom);
-  world.scale.set(viewport.zoom);
-
-  const relationLayer = new Container();
-  const tileSurfaceLayer = new Container();
-  const nodeLayer = new Container();
+  const desiredTileIds = new Set<string>();
 
   for (const surface of tileSurfaces) {
     if (surface.visibility === "off_viewport") {
       continue;
     }
-
-    tileSurfaceLayer.addChild(createTileSurfaceFrame(surface, tileThumbnailsByNodeId.get(surface.nodeId)));
+    desiredTileIds.add(surface.nodeId);
+    const thumbnail = tileThumbnailsByNodeId.get(surface.nodeId);
+    const signature = JSON.stringify([surface.worldBounds, surface.visibility, surface.loadState, thumbnail?.status, thumbnail?.dataUrl]);
+    let entry = registry.tiles.get(surface.nodeId);
+    if (!entry || entry.signature !== signature) {
+      entry?.display.destroy({ children: true });
+      const display = createTileSurfaceFrame(surface, thumbnail);
+      registry.tileLayer.addChild(display);
+      entry = { display, signature };
+      registry.tiles.set(surface.nodeId, entry);
+    }
   }
+  removeMissingDisplays(registry.tiles, desiredTileIds);
 
+  const desiredRelationIds = new Set<string>();
   for (const relation of visibleRelations) {
     const fromNode = nodesById.get(relation.from);
     const toNode = nodesById.get(relation.to);
@@ -1000,36 +1003,58 @@ function renderPixiScene({
       continue;
     }
 
-    const renderFrom = enableEdgeCompression && visibleNodeIds.has(fromNode.id)
-      ? projectMacroWorldPoint(from, viewport, bounds)
-      : from;
-    const renderTo = enableEdgeCompression && visibleNodeIds.has(toNode.id)
-      ? projectMacroWorldPoint(to, viewport, bounds)
-      : to;
-
-    relationLayer.addChild(
-      createRelationLine({
-        from: renderFrom,
+    desiredRelationIds.add(relation.id);
+    const isPreviewRelation = fromNode.projection_role === "next_layer_preview" || toNode.projection_role === "next_layer_preview";
+    const signature = JSON.stringify([from.x, from.y, to.x, to.y, relation.type, relation.id === selectedRelationId, isPreviewRelation]);
+    let entry = registry.relations.get(relation.id);
+    if (!entry || entry.signature !== signature) {
+      entry?.display.destroy({ children: true });
+      const display = createRelationLine({
+        from,
         isHighlighted: highlightedNodeIds.includes(fromNode.id) || highlightedNodeIds.includes(toNode.id),
         isSelected: relation.id === selectedRelationId || selectedNodeIds.includes(fromNode.id) || selectedNodeIds.includes(toNode.id),
-        onRelationSelect,
+        onRelationSelect: isPreviewRelation ? () => undefined : onRelationSelect,
         relation,
-        to: renderTo,
-      }),
-    );
+        to,
+      });
+      display.alpha = isPreviewRelation ? 0.24 : 1;
+      display.eventMode = isPreviewRelation ? "none" : "passive";
+      registry.relationLayer.addChild(display);
+      entry = { display, signature };
+      registry.relations.set(relation.id, entry);
+    }
   }
+  removeMissingDisplays(registry.relations, desiredRelationIds);
 
+  const desiredNodeIds = new Set<string>();
   for (const node of renderedNodes) {
+    desiredNodeIds.add(node.id);
     const position = node.position_hint ?? { x: 0, y: 0 };
     const isMacro = isMacroBubbleNode(node);
     const radius = isMacro ? getMacroBubbleRadius(node, viewport) : 0;
-    const edgeProjection = enableEdgeCompression && isMacro && visibleNodeIds.has(node.id)
-      ? projectMacroNodeDisplay(position, viewport, bounds)
-      : undefined;
-    const displayObject = isMacro
+    const isGhost = node.projection_role === "next_layer_preview" || !visibleNodeIds.has(node.id);
+    const signature = JSON.stringify([
+      node.title,
+      node.orientation_summary,
+      node.semantic_role,
+      node.layer,
+      node.footprint,
+      node.visual_mass,
+      isGhost,
+      focusedNodeId === node.id,
+      highlightedNodeIds.includes(node.id),
+      selectedNodeIds.includes(node.id),
+    ]);
+    let entry = registry.nodes.get(node.id);
+    if (!entry || entry.signature !== signature) {
+      if (entry) {
+        cancelPixiAnimation(app, entry.display);
+        entry.display.destroy({ children: true });
+      }
+      const displayObject = isMacro
         ? createMacroBubble({
           isFocused: focusedNodeId === node.id,
-          isGhost: !visibleNodeIds.has(node.id),
+          isGhost,
           isHighlighted: highlightedNodeIds.includes(node.id),
           isSelected: selectedNodeIds.includes(node.id),
           node,
@@ -1042,7 +1067,7 @@ function renderPixiScene({
         })
       : createDetailCard({
           isFocused: focusedNodeId === node.id,
-          isGhost: !visibleNodeIds.has(node.id),
+          isGhost,
           isHighlighted: highlightedNodeIds.includes(node.id),
           isSelected: selectedNodeIds.includes(node.id),
           node,
@@ -1051,19 +1076,158 @@ function renderPixiScene({
           onNodeOpen: (nodeId, context) => onNodeOpen(nodeId, createNodeActivationContext(context?.origin)),
           onNodeSelect,
         });
-
-    if (edgeProjection) {
-      displayObject.position.set(edgeProjection.worldPoint.x, edgeProjection.worldPoint.y);
-      displayObject.scale.set(edgeProjection.scale);
-      displayObject.alpha *= edgeProjection.alpha;
-    } else {
-      displayObject.position.set(position.x, position.y);
+      (isGhost ? registry.previewLayer : registry.primaryLayer).addChild(displayObject);
+      entry = { display: displayObject, signature };
+      registry.nodes.set(node.id, entry);
     }
-    nodeLayer.addChild(displayObject);
+    const displayObject = entry.display;
+    const desiredParent = isGhost ? registry.previewLayer : registry.primaryLayer;
+    if (displayObject.parent !== desiredParent) desiredParent.addChild(displayObject);
+    displayObject.position.set(position.x, position.y);
+    updateNodeInformationDensity(displayObject, node, viewport, isGhost, focusedNodeId === node.id);
+    const ghostAlpha = 0.1 + 0.08 * (node.visual_mass ?? 0.5);
+    const targetAlpha = isGhost ? ghostAlpha : 1;
+    const targetScale = isGhost ? 0.82 : 1;
+    if (semanticTransitionActive) {
+      const enterScale = reducedMotion ? targetScale : semanticTransitionDirection === "out" ? 1.06 : 0.82;
+      const enterAlpha = isGhost ? ghostAlpha : 0.14;
+      if (!pixiAnimations.has(displayObject)) {
+        displayObject.alpha = enterAlpha;
+        displayObject.scale.set(enterScale);
+      }
+      animatePixiDisplay(app, displayObject, targetAlpha, targetScale, reducedMotion ? 120 : 460);
+    } else {
+      cancelPixiAnimation(app, displayObject);
+      displayObject.alpha = targetAlpha;
+      displayObject.scale.set(targetScale);
+    }
   }
+  for (const [id, entry] of registry.nodes) {
+    if (desiredNodeIds.has(id)) continue;
+    registry.nodes.delete(id);
+    if (semanticTransitionActive) {
+      const exitScale = reducedMotion ? entry.display.scale.x : semanticTransitionDirection === "out" ? 0.82 : 1.06;
+      animatePixiDisplay(app, entry.display, 0, exitScale, reducedMotion ? 120 : 460, true);
+    } else {
+      entry.display.destroy({ children: true });
+    }
+  }
+  registry.projectionMs = performance.now() - startedAt;
+  maybeTracePixiRegistry(registry);
+}
 
-  world.addChild(tileSurfaceLayer, relationLayer, nodeLayer);
-  stage.addChild(world);
+function ensurePixiDisplayRegistry(app: Application, bounds: DOMRect): PixiDisplayRegistry {
+  const existing = pixiRegistries.get(app);
+  if (existing) return existing;
+
+  const background = new Graphics();
+  const world = new Container();
+  const relationLayer = new Container();
+  const tileLayer = new Container();
+  const previewLayer = new Container();
+  const primaryLayer = new Container();
+  previewLayer.eventMode = "none";
+  world.addChild(tileLayer, relationLayer, previewLayer, primaryLayer);
+  app.stage.addChild(background, world);
+  const timestamp = performance.now();
+  const registry: PixiDisplayRegistry = {
+    background,
+    world,
+    relationLayer,
+    tileLayer,
+    previewLayer,
+    primaryLayer,
+    relations: new Map(),
+    tiles: new Map(),
+    nodes: new Map(),
+    frameTimes: [],
+    lastFrameAt: timestamp,
+    lastTraceAt: timestamp,
+    projectionMs: 0,
+  };
+  updatePixiBackground(background, bounds);
+  app.ticker.add(() => {
+    const current = performance.now();
+    const frameTime = current - registry.lastFrameAt;
+    registry.lastFrameAt = current;
+    if (frameTime < 250) {
+      registry.frameTimes.push(frameTime);
+      if (registry.frameTimes.length > 600) registry.frameTimes.shift();
+    }
+  });
+  pixiRegistries.set(app, registry);
+  return registry;
+}
+
+function updatePixiBackground(background: Graphics, bounds: DOMRect): void {
+  background.clear();
+  const width = Math.max(1, bounds.width);
+  const height = Math.max(1, bounds.height);
+  for (let x = 0; x <= width; x += 48) background.moveTo(x, 0).lineTo(x, height);
+  for (let y = 0; y <= height; y += 48) background.moveTo(0, y).lineTo(width, y);
+  background.stroke({ color: 0x6e9fff, alpha: 0.028, width: 1 });
+}
+
+function removeMissingDisplays(entries: Map<string, PixiRegistryEntry>, desiredIds: Set<string>): void {
+  for (const [id, entry] of entries) {
+    if (desiredIds.has(id)) continue;
+    entry.display.destroy({ children: true });
+    entries.delete(id);
+  }
+}
+
+function animatePixiDisplay(
+  app: Application,
+  display: Container,
+  targetAlpha: number,
+  targetScale: number,
+  durationMs: number,
+  removeAfter = false,
+): void {
+  cancelPixiAnimation(app, display);
+  const startTime = performance.now();
+  const startAlpha = display.alpha;
+  const startScale = display.scale.x;
+  const tick = (): void => {
+    const progress = Math.min(1, (performance.now() - startTime) / Math.max(1, durationMs));
+    const eased = 1 - Math.pow(1 - progress, 3);
+    display.alpha = startAlpha + (targetAlpha - startAlpha) * eased;
+    display.scale.set(startScale + (targetScale - startScale) * eased);
+    if (progress < 1) return;
+    app.ticker.remove(tick);
+    pixiAnimations.delete(display);
+    if (removeAfter) display.destroy({ children: true });
+  };
+  pixiAnimations.set(display, tick);
+  app.ticker.add(tick);
+}
+
+function cancelPixiAnimation(app: Application, display: Container): void {
+  const current = pixiAnimations.get(display);
+  if (!current) return;
+  app.ticker.remove(current);
+  pixiAnimations.delete(display);
+}
+
+function maybeTracePixiRegistry(registry: PixiDisplayRegistry): void {
+  const timestamp = performance.now();
+  if (timestamp - registry.lastTraceAt < 5_000) return;
+  registry.lastTraceAt = timestamp;
+  try {
+    if (window.localStorage.getItem("seekstar.trace") !== "1") return;
+  } catch {
+    return;
+  }
+  const samples = [...registry.frameTimes].sort((left, right) => left - right);
+  const percentile = (ratio: number): number => samples[Math.min(samples.length - 1, Math.floor(samples.length * ratio))] ?? 0;
+  console.info("[SeekStar][render]", {
+    primary_objects: registry.primaryLayer.children.length,
+    preview_objects: registry.previewLayer.children.length,
+    projection_ms: Number(registry.projectionMs.toFixed(2)),
+    frame_p95_ms: Number(percentile(0.95).toFixed(2)),
+    frame_p99_ms: Number(percentile(0.99).toFixed(2)),
+  });
+  registry.frameTimes.length = 0;
 }
 
 function createTileSurfaceFrame(surface: RenderableTileSurface, thumbnail?: TileThumbnailState): Container {
@@ -1248,25 +1412,9 @@ function destroyPixiApplication(app: Application): void {
   } catch (error) {
     console.warn("[SeekStar] Pixi cleanup skipped after renderer teardown.", error);
   } finally {
+    pixiRegistries.delete(app);
     canvas?.remove();
   }
-}
-
-function drawPixiBackground(stage: Container, bounds: DOMRect): void {
-  const grid = new Graphics();
-  const width = Math.max(1, bounds.width);
-  const height = Math.max(1, bounds.height);
-
-  for (let x = 0; x <= width; x += 48) {
-    grid.moveTo(x, 0).lineTo(x, height);
-  }
-
-  for (let y = 0; y <= height; y += 48) {
-    grid.moveTo(0, y).lineTo(width, y);
-  }
-
-  grid.stroke({ color: 0x6e9fff, alpha: 0.028, width: 1 });
-  stage.addChild(grid);
 }
 
 function createRelationLine({
@@ -1333,39 +1481,51 @@ function createMacroBubble({
   const container = new Container();
   const distance = getMacroLensDistance(node, viewport);
   const color = getMacroColor(node);
-  const circle = new Graphics();
+  const shape = new Graphics();
   const highlight = isSelected || isFocused || isHighlighted;
   const isCartographer = isCartographerTerrainNode(node);
+  const width = node.footprint?.width ?? radius * 2;
+  const height = node.footprint?.height ?? radius * 2;
 
-  container.alpha = isGhost ? 0.2 : Math.max(0.32, 1 - distance * 0.52);
-  circle.circle(0, 0, radius).fill({ color, alpha: 1 });
-  circle.circle(-radius * 0.24, -radius * 0.28, radius * 0.36).fill({ color: 0xffffff, alpha: isCartographer ? 0.18 : 0.14 });
-  if (isCartographer) {
-    circle.circle(radius * 0.28, radius * 0.3, Math.max(4, radius * 0.08)).fill({ color: 0x46d8c6, alpha: 0.82 });
+  container.alpha = isGhost ? 0.14 : Math.max(0.32, 1 - distance * 0.52);
+  if (node.layer === "L0") {
+    shape.ellipse(0, 0, width / 2, height / 2).fill({ color, alpha: 0.78 });
+    shape.ellipse(-width * 0.13, -height * 0.15, width * 0.2, height * 0.22).fill({ color: 0xffffff, alpha: 0.09 });
+    shape.ellipse(0, 0, width / 2, height / 2).stroke({ color: highlight ? 0x9bc0ff : 0x45d0c2, alpha: highlight ? 0.82 : 0.36, width: highlight ? 2.4 : 1.4 });
+  } else {
+    const corner = node.semantic_role === "thread" ? height / 2 : 22;
+    shape.roundRect(-width / 2, -height / 2, width, height, corner).fill({ color, alpha: node.semantic_role === "bridge" ? 0.58 : 0.72 });
+    shape.roundRect(-width / 2, -height / 2, width, height, corner).stroke({ color: highlight ? 0x9bc0ff : 0x45d0c2, alpha: highlight ? 0.82 : 0.42, width: highlight ? 2.4 : 1.5 });
   }
-  circle.circle(0, 0, radius).stroke({
-    color: highlight ? 0x9bc0ff : isCartographer ? 0x45d0c2 : 0x0b1220,
-    alpha: highlight ? 0.75 : isCartographer ? 0.46 : 0.38,
-    width: highlight ? 2.4 : isCartographer ? 1.7 : 1.3,
-  });
+  if (isCartographer) {
+    shape.circle(width * 0.35, height * 0.28, Math.max(4, Math.min(width, height) * 0.035)).fill({ color: 0x46d8c6, alpha: 0.82 });
+  }
 
   const title = createPixiText(node.title, {
     color: 0xf4f7fb,
-    fontSize: Math.max(10, Math.min(14, radius / 5)),
-    wordWrapWidth: radius * 1.45,
+    fontSize: Math.max(11, Math.min(20, Math.min(width, height) / 7)),
+    wordWrapWidth: width * 0.74,
   });
-  const type = createPixiText(node.type.replace("_", " "), {
+  const type = createPixiText(node.semantic_role?.replace("_", " ") ?? node.type.replace("_", " "), {
     color: isCartographer ? 0xb8f3ec : 0xc4d2e5,
-    fontSize: 8,
-    wordWrapWidth: radius * 1.3,
+    fontSize: 9,
+    wordWrapWidth: width * 0.7,
   });
+  const summary = node.orientation_summary ? createPixiText(node.orientation_summary, { color: 0xc7d5e8, fontSize: 10, wordWrapWidth: width * 0.72 }) : undefined;
 
-  type.y = -radius * 0.22;
-  title.y = radius * 0.1;
-  container.addChild(circle, type, title);
+  type.label = "semantic-role";
+  title.label = "semantic-title";
+  if (summary) summary.label = "semantic-summary";
+
+  type.y = -height * 0.22;
+  title.y = -height * 0.02;
+  if (summary) summary.y = height * 0.23;
+  container.addChild(shape);
+  container.addChild(type, title);
+  if (summary) container.addChild(summary);
   container.eventMode = isGhost ? "none" : "static";
   container.cursor = isGhost ? "default" : "pointer";
-  container.hitArea = new Rectangle(-radius, -radius, radius * 2, radius * 2);
+  container.hitArea = new Rectangle(-width / 2, -height / 2, width, height);
   bindPrimaryCanvasActivation(container, {
     onOpen: (origin) => onNodeOpen(node.id, origin),
     onSelect: () => onNodeSelect(node.id),
@@ -1398,8 +1558,8 @@ function createDetailCard({
   onNodeSelect: (nodeId: string) => void;
 }): Container {
   const container = new Container();
-  const width = getDetailCardWidth(node);
-  const height = getDetailCardHeight(node);
+  const width = node.footprint?.width ?? getDetailCardWidth(node);
+  const height = node.footprint?.height ?? getDetailCardHeight(node);
   const highlight = isSelected || isFocused || isHighlighted;
   const card = new Graphics();
   const isCartographer = isCartographerTerrainNode(node);
@@ -1418,7 +1578,7 @@ function createDetailCard({
     card.roundRect(-width / 2 + 10, -height / 2 + 10, 28, 4, 2).fill({ color: 0x46d8c6, alpha: 0.76 });
   }
 
-  const type = createPixiText(node.type.replace("_", " "), {
+  const type = createPixiText(node.semantic_role?.replace("_", " ") ?? node.type.replace("_", " "), {
     color: isCartographer ? 0xa7efe7 : 0x9aa7ba,
     fontSize: 9,
     wordWrapWidth: width - 26,
@@ -1428,12 +1588,23 @@ function createDetailCard({
     fontSize: node.type === "character" ? 34 : 13,
     wordWrapWidth: width - 26,
   });
+  const summary = node.orientation_summary
+    ? createTileSurfaceText(node.orientation_summary, { color: 0xbac9dc, fontSize: 10, lineHeight: 13, wordWrapWidth: width - 28 })
+    : undefined;
+
+  type.label = "semantic-role";
+  title.label = "semantic-title";
+  if (summary) summary.label = "semantic-summary";
 
   type.anchor.set(0, 0);
   title.anchor.set(0, 0);
   type.position.set(-width / 2 + 13, -height / 2 + 11);
   title.position.set(-width / 2 + 13, node.type === "character" ? -22 : -height / 2 + 30);
   container.addChild(card, type, title);
+  if (summary) {
+    summary.position.set(-width / 2 + 13, -height / 2 + 54);
+    container.addChild(summary);
+  }
   container.eventMode = isGhost ? "none" : "static";
   container.cursor = isGhost ? "default" : "pointer";
   container.hitArea = new Rectangle(-width / 2, -height / 2, width, height);
@@ -1445,6 +1616,17 @@ function createDetailCard({
   container.on("pointerout", onHoverClear);
 
   return container;
+}
+
+function updateNodeInformationDensity(display: Container, node: TerrainNode, viewport: ViewportState, isGhost: boolean, isFocused: boolean): void {
+  const footprint = node.footprint ?? { width: getDetailCardWidth(node), height: getDetailCardHeight(node) };
+  const screenMinimum = Math.min(footprint.width, footprint.height) * viewport.zoom;
+  const role = display.children.find((child) => child.label === "semantic-role");
+  const title = display.children.find((child) => child.label === "semantic-title");
+  const summary = display.children.find((child) => child.label === "semantic-summary");
+  if (role) role.visible = !isGhost && screenMinimum >= 96;
+  if (title) title.visible = !isGhost || ((node.visual_mass ?? 0.5) >= 0.55 && screenMinimum * 0.82 >= 72);
+  if (summary) summary.visible = !isGhost && isFocused && screenMinimum >= 150;
 }
 
 function createPixiText(text: string, options: { color: number; fontSize: number; wordWrapWidth: number }): Text {
@@ -1540,7 +1722,7 @@ function normalizeWheelStep(event: WheelEvent): number {
 function resolveSoftZoomProfile(layer: LayerId): SoftZoomProfile {
   if (layer === "L2") {
     return {
-      cooldownMs: 900,
+      cooldownMs: 460,
       maxFactor: 1.18,
       minFactor: 0.86,
       pressureResetMs: 260,
@@ -1551,7 +1733,7 @@ function resolveSoftZoomProfile(layer: LayerId): SoftZoomProfile {
 
   if (layer === "L3") {
     return {
-      cooldownMs: 920,
+      cooldownMs: 460,
       maxFactor: 1.12,
       minFactor: 0.88,
       pressureResetMs: 260,
@@ -1561,7 +1743,7 @@ function resolveSoftZoomProfile(layer: LayerId): SoftZoomProfile {
   }
 
   return {
-    cooldownMs: 860,
+    cooldownMs: 460,
     maxFactor: 1.22,
     minFactor: 0.82,
     pressureResetMs: 280,
@@ -1620,128 +1802,6 @@ function resolveReticleTarget(input: {
     : undefined;
 }
 
-function projectMacroWorldPoint(
-  point: CanvasPoint,
-  viewport: ViewportState,
-  bounds: { height: number; width: number },
-): CanvasPoint {
-  return projectMacroNodeDisplay(point, viewport, bounds).worldPoint;
-}
-
-function projectMacroNodeDisplay(
-  point: CanvasPoint,
-  viewport: ViewportState,
-  bounds: { height: number; width: number },
-  baseScreenPoint = worldToScreen(point, viewport, bounds),
-): { alpha: number; scale: number; worldPoint: CanvasPoint } {
-  const overscanX = 180;
-  const overscanY = 140;
-
-  if (
-    baseScreenPoint.x < -overscanX ||
-    baseScreenPoint.x > bounds.width + overscanX ||
-    baseScreenPoint.y < -overscanY ||
-    baseScreenPoint.y > bounds.height + overscanY
-  ) {
-    return {
-      alpha: 1,
-      scale: 1,
-      worldPoint: point,
-    };
-  }
-
-  const warpedX = compressScreenAxis({
-    edgeOverscan: overscanX,
-    end: bounds.width - 28,
-    start: 132,
-    value: baseScreenPoint.x,
-  });
-  const warpedY = compressScreenAxis({
-    edgeOverscan: overscanY,
-    end: bounds.height - 28,
-    start: 118,
-    value: baseScreenPoint.y,
-  });
-  const edgeInfluence = Math.max(
-    resolveEdgeCompressionProgress({
-      edgeOverscan: overscanX,
-      end: bounds.width - 28,
-      start: 132,
-      value: baseScreenPoint.x,
-    }),
-    resolveEdgeCompressionProgress({
-      edgeOverscan: overscanY,
-      end: bounds.height - 28,
-      start: 118,
-      value: baseScreenPoint.y,
-    }),
-  );
-  const eased = 1 - Math.pow(1 - edgeInfluence, 2);
-  const warpedScreenPoint = {
-    x: warpedX,
-    y: warpedY,
-  };
-
-  return {
-    alpha: lerp(1, 0.86, eased),
-    scale: lerp(1, 0.76, eased),
-    worldPoint: screenToWorld(warpedScreenPoint, viewport, bounds),
-  };
-}
-
-function compressScreenAxis(input: {
-  edgeOverscan: number;
-  end: number;
-  start: number;
-  value: number;
-}): number {
-  const { edgeOverscan, end, start, value } = input;
-
-  if (value >= start && value <= end - start) {
-    return value;
-  }
-
-  if (value < start) {
-    const edge = -edgeOverscan * 0.24;
-    const progress = resolveEdgeCompressionProgress(input);
-    const target = edge + (value - edge) * 0.46;
-
-    return lerp(value, target, progress);
-  }
-
-  const edge = end + edgeOverscan * 0.24;
-  const mirroredValue = end - value;
-  const mirroredInput = {
-    edgeOverscan,
-    end,
-    start,
-    value: mirroredValue,
-  };
-  const progress = resolveEdgeCompressionProgress(mirroredInput);
-  const target = edge + (value - edge) * 0.46;
-
-  return lerp(value, target, progress);
-}
-
-function resolveEdgeCompressionProgress(input: {
-  edgeOverscan: number;
-  end: number;
-  start: number;
-  value: number;
-}): number {
-  const { edgeOverscan, end, start, value } = input;
-
-  if (value >= start && value <= end - start) {
-    return 0;
-  }
-
-  if (value < start) {
-    return clamp01((start - value) / (start + edgeOverscan));
-  }
-
-  return clamp01((value - (end - start)) / (start + edgeOverscan));
-}
-
 function isCanvasEntityAtScreenPoint(
   point: CanvasPoint,
   bounds: { width: number; height: number },
@@ -1777,12 +1837,13 @@ function isWorldPointInsideNode(point: CanvasPoint, node: TerrainNode, viewport:
   const dy = point.y - position.y;
 
   if (isMacroBubbleNode(node)) {
-    const radius = getMacroBubbleRadius(node, viewport);
-    return dx * dx + dy * dy <= radius * radius;
+    const width = node.footprint?.width ?? getMacroBubbleRadius(node, viewport) * 2;
+    const height = node.footprint?.height ?? getMacroBubbleRadius(node, viewport) * 2;
+    return dx * dx / Math.pow(width / 2, 2) + dy * dy / Math.pow(height / 2, 2) <= 1;
   }
 
-  const width = getDetailCardWidth(node);
-  const height = getDetailCardHeight(node);
+  const width = node.footprint?.width ?? getDetailCardWidth(node);
+  const height = node.footprint?.height ?? getDetailCardHeight(node);
 
   return Math.abs(dx) <= width / 2 && Math.abs(dy) <= height / 2;
 }
@@ -1907,36 +1968,7 @@ function getDetailColor(node: TerrainNode): number {
 }
 
 function isCartographerTerrainNode(node: TerrainNode): boolean {
-  return node.tags?.includes("exploration-world") === true || node.source_state === "source_backed";
-}
-
-function traceTerrainCanvas(event: string, payload?: unknown): void {
-  try {
-    if (window.localStorage.getItem("seekstar.trace") !== "1") {
-      return;
-    }
-  } catch {
-    return;
-  }
-
-  const suffix = payload === undefined ? "" : ` ${stringifyTerrainCanvasTracePayload(payload)}`;
-  console.info(`[SeekStar][terrain-canvas] ${event}${suffix}`);
-}
-
-function stringifyTerrainCanvasTracePayload(payload: unknown): string {
-  try {
-    return JSON.stringify(payload, (_key, value: unknown) => {
-      if (typeof value === "string" && value.length > 800) {
-        return `${value.slice(0, 800)}...<truncated ${value.length - 800} chars>`;
-      }
-
-      return value;
-    });
-  } catch (error) {
-    return JSON.stringify({
-      trace_error: error instanceof Error ? error.message : String(error),
-    });
-  }
+  return node.tags?.includes("exploration-world-v2") === true || node.source_state === "source_backed";
 }
 
 function getDetailCardWidth(node: TerrainNode): number {
@@ -2037,7 +2069,7 @@ function NodeHoverPreview({ preview }: { preview: HoverPreviewState }): ReactEle
 }
 
 function isMacroBubbleNode(node: TerrainNode): boolean {
-  return isMacroLayer(node.layer);
+  return node.layer !== "L3";
 }
 
 function getMacroLensDistance(node: TerrainNode, viewport: ViewportState): number {
@@ -2045,12 +2077,4 @@ function getMacroLensDistance(node: TerrainNode, viewport: ViewportState): numbe
   const distance = Math.hypot(position.x - viewport.x, position.y - viewport.y);
 
   return Math.min(1, distance / 620);
-}
-
-function lerp(from: number, to: number, amount: number): number {
-  return from + (to - from) * amount;
-}
-
-function clamp01(value: number): number {
-  return Math.min(1, Math.max(0, value));
 }

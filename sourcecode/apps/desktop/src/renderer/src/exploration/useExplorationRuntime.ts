@@ -87,6 +87,13 @@ function useRuntimeModel(options: UseExplorationRuntimeOptions = {}): Exploratio
         viewRevision: opened.view_checkpoint.view_revision,
         jobs: opened.jobs,
       });
+      stateRef.current = {
+        leaseId,
+        world: opened.world,
+        view: opened.view_checkpoint.view,
+        viewRevision: opened.view_checkpoint.view_revision,
+        jobsById: Object.fromEntries(opened.jobs.map((job) => [job.id, job])),
+      };
       unsubscribe = window.seekstar.exploration.subscribe(leaseId, (event) => dispatch({ type: "world_event", event }));
     }).catch((error: unknown) => dispatch({ type: "open_failed", message: getErrorMessage(error) }));
     return () => {
@@ -100,6 +107,7 @@ function useRuntimeModel(options: UseExplorationRuntimeOptions = {}): Exploratio
     const current = stateRef.current;
     const nextView = update(current.view);
     const viewRevision = current.viewRevision + 1;
+    stateRef.current = { ...current, view: nextView, viewRevision };
     dispatch({ type: "view_changed", view: nextView, viewRevision });
     if (current.leaseId) void window.seekstar.exploration.reportView(current.leaseId, viewRevision, nextView).catch(() => undefined);
     return nextView;
@@ -222,7 +230,10 @@ function createProjectionScene(state: ExplorationRendererState, projection: Retu
   const base = createDefaultNewSeekScene();
   const tabId = runtimeTabId ?? (projection.tab_id || base.active_tab_id);
   const title = state.world?.seed ?? "New Seek";
-  const nodes = [...projection.nodes, ...createFogNodes(projection)];
+  const primaryNodes = projection.primary.map(({ node, projection_role, visual_mass }) => ({ ...node, projection_role, visual_mass }));
+  const previewNodes = projection.next_layer_preview.map(({ node, projection_role, visual_mass }) => ({ ...node, projection_role, visual_mass }));
+  const nodes = [...primaryNodes, ...previewNodes, ...createFogNodes(projection)];
+  const relations = projection.projected_relations.map(({ relation }) => relation);
   const timestamp = state.world?.updated_at ?? new Date().toISOString();
   const tab = {
     ...base.tabs[0],
@@ -232,7 +243,7 @@ function createProjectionScene(state: ExplorationRendererState, projection: Retu
     current_layer: projection.view.camera.layer,
     viewport: projection.view.camera,
     node_ids: nodes.map((node) => node.id),
-    relation_ids: projection.relations.map((relation) => relation.id),
+    relation_ids: relations.map((relation) => relation.id),
     source_ids: projection.sources.map((source) => source.id),
     updated_at: timestamp,
   };
@@ -243,7 +254,7 @@ function createProjectionScene(state: ExplorationRendererState, projection: Retu
     tabs: [tab],
     layers: base.layers.filter((layer) => layer.id === "L0" || layer.id === "L1" || layer.id === "L2" || layer.id === "L3"),
     nodes,
-    relations: projection.relations,
+    relations,
     sources: projection.sources,
     viewport: projection.view.camera,
     selection: { ...base.selection, tab_id: tabId, node_ids: projection.view.selected_node_ids },

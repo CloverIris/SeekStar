@@ -2,6 +2,11 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "jsx": "react-jsx",
+    "paths": {
+      "@seekstar/ai-service": ["../../packages/ai-service/src/index.ts"],
+      "@seekstar/core-schema": ["../../packages/core-schema/src/index.ts"],
+      "@seekstar/constellation-engine": ["../../packages/constellation-engine/src/index.ts"]
+    },
     "types": ["node", "electron"]
   },
   "include": [

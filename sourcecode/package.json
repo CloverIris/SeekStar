@@ -14,6 +14,7 @@
     "smoke:modules": "node scripts/module-smoke.mjs",
     "smoke:settings": "node scripts/electron-runtime-smoke.mjs --settings-only",
     "smoke:electron": "node scripts/electron-runtime-smoke.mjs",
+    "smoke:render": "node scripts/render-smoke.mjs",
     "smoke:modules:public": "node scripts/module-smoke.mjs --public-search",
     "typecheck": "npm --workspace @seekstar/core-schema run typecheck && npm --workspace @seekstar/ai-service run typecheck && npm --workspace @seekstar/constellation-engine run typecheck && npm --workspace @seekstar/scout-service run typecheck && npm --workspace @seekstar/storage-service run typecheck && npm --workspace @seekstar/desktop run typecheck",
     "clean": "npm run clean --workspaces --if-present"
