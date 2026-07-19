@@ -1,194 +1,148 @@
-# PHILOSOPHY.md
-
 # SeekStar Philosophy
 
 Chinese edition: [`PHILOSOPHY.zh.md`](./PHILOSOPHY.zh.md).
 
-SeekStar begins from one observation:
+The normative product meaning lives in the [Product Contract](./docs/product/PRODUCT_CONTRACT.zh.md) and [Semantic Scale Contract](./docs/product/SEMANTIC_SCALE_CONTRACT.zh.md). The [Current Baseline](./docs/status/CURRENT_BASELINE.zh.md) is the source of truth for implementation status.
 
-Most search and chat interfaces assume that the user already knows what to ask.
+SeekStar begins with one observation: most search and chat interfaces assume that the user already knows what to ask.
 
-This is a serious cognitive limitation. A blank search box or chat box silently asks the user to describe their intent precisely before the system can help. But many valuable discoveries happen before precise intent exists.
+Many valuable discoveries happen before a question can be named precisely. A person may have only a direction, an unfamiliar term, a fragment of material, or a sense that something relevant is nearby. SeekStar exists for that moment.
 
-SeekStar exists for the moment before the question.
+It is designed for **unknown unknowns**: fields, concepts, relations, contradictions, people, tools, sources, and paths that users cannot search for because they do not yet know they exist.
 
-It is designed for unknown unknowns: the fields, words, sources, concepts, contradictions, people, tools, and paths that the user cannot search for because the user does not yet know they exist.
+## 1. Seek, not only Search
 
-## Why SeekStar, not SearchStar
+**Search** assumes that a target is already clear enough to name. **Seek** allows direction to come before the question.
 
-The name is not cosmetic. It states the product thesis.
+SeekStar is therefore neither a decorated results page nor a chat shell spread across a canvas. Search, questions, imported pages, and saved trails are entry points. The product is the cognitive terrain that users can observe, traverse, compare, and revisit.
 
-* **Search** assumes the target already exists in the user's mind well enough to be named. A search box asks for precision before orientation.
-* **Seek** assumes the user may only have a direction, a fragment, a feeling of nearby relevance, or a region worth inspecting. The product must help the user discover what can be asked before the question is fully formed.
+SeekStar should help users discover:
 
-SeekStar is therefore not a better search engine and not a chat answer machine. It is an exploration instrument for the moment when a blank input box feels inadequate.
-
-Human progress often begins in unknown unknowns: fields, sources, and connections that were already there, but not yet visible to the person standing in front of the interface. SeekStar exists to make that pre-question state navigable.
-
-## 1. Search is not the center
-
-SeekStar does not treat search as a linear request-response act.
-
-Search is only one way to enter the map.
-
-The user may begin from:
-
-* a vague seed word;
-* a question;
-* a webpage;
-* a daily topic;
-* a lassoed region;
-* a paragraph;
-* a word;
-* a character;
-* a hyperlink;
-* a saved trail.
-
-The search box is not the product. The explorable terrain is the product.
+- where they are;
+- what other possibilities surround them;
+- why those possibilities are adjacent, overlapping, or in conflict;
+- what question is worth forming next;
+- which objects are inferred and which are backed by observed sources.
 
 ## 2. The interface is a cognitive map
 
-SeekStar turns information into a spatial field.
+SeekStar organizes information as a spatial field:
 
-Distance suggests semantic relation.
-Clusters suggest topic communities.
-Constellations suggest recognizable domains.
-Fog suggests unknown but potentially valuable directions.
-Trails preserve the user’s path.
-Selections become prompts.
-Exports turn exploration into knowledge assets.
+- distance suggests semantic proximity;
+- footprints and regions suggest coverage;
+- landmarks preserve orientation;
+- bridges reveal cross-domain connections;
+- fog honestly represents terrain that is missing or uncertain;
+- trails preserve where the user has actually travelled;
+- source objects reconnect the map to existing material.
 
-The map does not exist to look impressive. It exists to help the user understand where they are, what surrounds them, and where they might go next.
+The map does not exist to create spectacle. It must help users understand where they are, what surrounds them, and what they will encounter by moving further. Nodes with only keywords, no orientation, and no meaningful relations remain a word cloud, however attractive their layout may be.
 
-## 3. Zoom is semantic
+## 3. One world, one telescope
 
-Zooming in SeekStar is not only visual magnification.
+Every Seek tab is one continuous world. Panning, focusing, or changing scale must not create nested boxes, child scenes, or parallel timelines.
 
-Zooming means moving through cognitive layers:
-
-domain → topic → source → document → section → paragraph → sentence → phrase → word → character → Unicode → dictionary → new seed.
-
-Any grain of information can become a new beginning.
-
-## 4. Serendipity should be structured
-
-SeekStar should create the possibility of accidental discovery without becoming random.
-
-A good SeekStar moment is:
-
-“I came here for A, but now I understand why B is nearby, why C is strange, and why D might be worth exploring next.”
-
-This is not recommendation feed logic. It is spatial, inspectable, source-aware serendipity.
-
-## 5. AI is a cartographer, not an oracle
-
-The AI Agent should not behave like an all-knowing answer machine.
-
-Its job is to:
-
-* organize terrain;
-* explain selected regions;
-* identify parent, child, and sibling concepts;
-* reveal adjacent unknowns;
-* mark uncertainty;
-* connect sources;
-* generate possible next questions.
-
-The Agent must distinguish sourced information from inference. Unknown regions must remain visibly uncertain.
-
-SeekStar uses large-model knowledge and knowledge-organization ability, but not as a default answer surface.
-
-The Agent's primary value is to **fix the unknown into explorable structure**:
-
-* partition a vague direction into layers and regions;
-* suggest adjacent possibilities without pretending they are proven;
-* mark fog, inference, and weak hypothesis visibly;
-* explain only when the user selects a region and asks;
-* help the user leave with a better question, not only a faster answer.
-
-Most of the product loop should remain explorable without waiting for model output: panning, zooming, selecting, converting scout observations, and turning grains into new seeds. AI is essential, but it serves exploration. Exploration does not serve chat.
-
-## 6. Existence precedes cognition
-
-Not everything valuable in SeekStar can be invented by a model.
-
-Some things already exist in the world:
-
-* webpages;
-* papers and PDFs;
-* encyclopedia entries;
-* articles, documentation, and public references.
-
-These objects exist before the user recognizes their relevance. SeekStar must be able to observe them, not only imagine them.
-
-Playwright is the Scout in this philosophy. Its job is retrieval and observation:
-
-* open a URL or planned observation target;
-* read title, visible text, metadata, links, and retrieval time;
-* return structured observations with provenance;
-* fail visibly when observation fails.
-
-The Scout does not decide meaning, rank truth, or turn observations into facts by itself. A scout observation is a candidate star until the user and the map's provenance rules promote it into durable terrain.
-
-This is why SeekStar needs both AI and Scout:
-
-* **AI** helps organize what the user does not yet know how to ask;
-* **Scout** helps bring what already exists into the map with source backing.
-
-A map made only from model inference becomes a hallucinated sky. A map made only from fetched pages becomes a pile of tiles without orientation. SeekStar needs both the cartographer's structure and the scout's contact with existing reality.
-
-## 7. The telescope is the product
-
-SeekStar pays homage to the first human use of the telescope to observe the night sky.
-
-That moment was not about receiving a ranked list of answers. It was about gaining a new way to see: move, magnify, compare, notice the unexpected, and return later with better questions.
-
-The telescope is therefore more than visual metaphor. It is the product's interaction constitution.
+The telescope is SeekStar's interaction constitution:
 
 | Telescope act | SeekStar meaning |
 | --- | --- |
-| Magnify | Move into finer semantic depth: domain → topic → source → document → paragraph → word |
-| Pull back | Return to macro orientation and see where the current region sits |
-| Pan horizontally | Explore nearby space and discover frontier candidates |
-| Fix on one object | Select, inspect, lasso, or promote a node |
-| Change observing field | Open a new tab or seed from a word, link, or selected region |
+| Magnify | Reveal a finer semantic view at the current position |
+| Pull back | Preserve position while recovering macro orientation |
+| Pan | Travel through adjacent, overlapping, and bridging regions at one scale |
+| Focus | Inspect an object, relation, explanation, or source without creating an isolated world |
+| Change observing field | Create a new world only through an explicit new Seed |
 
-The primary product surface is the star map and the telescope that moves across it.
+A user may enter from “cars,” move laterally at a finer scale into the region of “aircraft,” and then pull back near “aircraft.” Returning to the original “cars” entry point would break spatial memory. This continuous behavior is closer to observing a world than navigating a directory tree.
 
-* At macro depth, the **Star Gallery** (Macro Lens Gallery) orients the user among domains, topic regions, seed fields, fog, and scout-pending stars.
-* At content depth, webpages and documents appear as a **tile field**: a navigable plane of real material rather than a chat transcript.
-* At detail depth, paragraphs, sentences, words, characters, and dictionary grains become clickable entry points. Any grain may become a new seed.
+## 4. Zoom changes semantic view
 
-Input boxes, inspectors, trays, and export panels support the telescope. They must not replace it.
+SeekStar currently defines four product scales. They are projections of the same map, not four equal-sized lists:
 
-## 8. The user explores by seeing, moving, circling, and asking
+| Scale | Name | Question answered |
+| --- | --- | --- |
+| L0 | Domain Field | What large regions make up this knowledge world, and where am I? |
+| L1 | Topic Field | What topic neighborhoods, branches, and intersections exist here? |
+| L2 | Explanation Field | How does this work, what composes it, and what comparisons, disputes, practices, and evidence directions matter? |
+| L3 | Source Field | Which observed materials support, challenge, document, or exemplify these explanations? |
 
-SeekStar should not force all intent through typed prompts.
+Refinement across scales may be one-to-many, many-to-one, or many-to-many. Density follows semantic difference and available evidence; it must not be forced into a `1:1:1` quota to fill the viewport.
 
-The user can:
+Paragraphs, sentences, words, and other reading grains may later become deep-reading capabilities or new-Seed entry points. They should not be presented as extra fixed layers of the current world map.
 
-* zoom;
-* pan;
-* hover;
-* lasso;
-* brush;
-* drag items into the side tray;
-* create new tabs from words;
-* ask about a selected region;
-* export a path as Markdown.
+## 5. Serendipity should be structured
+
+SeekStar should enable accidental discovery without producing random noise.
+
+A good exploration moment is: “I came here for A, now I understand why B is nearby, why C conflicts with it, and why D may be worth entering next.”
+
+That serendipity must be spatially traceable, relationally explainable, and source-aware. The system may expose unknowns and weak hypotheses, but it must not present them as established facts.
+
+## 6. AI is a Cartographer, not an oracle
+
+The AI Cartographer fixes an unformed question into explorable structure. It can:
+
+- propose semantic objects, concise orientation summaries, and roles;
+- organize adjacency, overlap, bridges, contrasts, and refinement;
+- reveal unknown boundaries and possible next questions;
+- mark inference, uncertainty, and source candidates;
+- explain the current region when the user asks.
+
+The Cartographer does not decide pixel coordinates, own the camera, or declare a candidate URL to be a real source. AI may help draw the map, but it cannot cross the reality-verification boundary.
+
+Most of the browsing loop—panning, zooming, selecting, returning, and viewing cached terrain—should not wait for a model. AI serves exploration; exploration does not serve chat.
+
+## 7. Existence precedes cognition; Scout touches reality
+
+Web pages, papers, PDFs, images, documents, and public references exist before a user recognizes their relevance. SeekStar must observe them, not merely ask a model to imagine them.
+
+Scout / DataService must:
+
+- open a candidate URL or local source;
+- observe title, visible content, metadata, resource type, and retrieval time;
+- return structured observations with provenance;
+- fail explicitly when observation fails;
+- promote a source to the L3 canvas only after successful observation.
+
+Scout does not decide semantic importance, and Cartographer does not decide whether a source is real. A map made only from model inference becomes a hallucinated sky. A map made only from fetched pages becomes a warehouse without orientation. SeekStar needs both the Cartographer's structure and the Scout's contact with reality.
+
+## 8. The world pool precedes the frame
+
+The user browses objects that already exist in the world pool, not synchronous AI answers triggered by every camera movement.
+
+The camera sends a weak signal: position, scale, direction, and proximity to an edge. Producers use it to reprioritize and predict nearby terrain. The renderer consumes ready objects, while missing, generating, and failed regions remain honest fog or status boundaries.
+
+This protects three properties:
+
+- interaction stays immediate rather than being captured by network latency;
+- the world stays continuous instead of splitting after every click;
+- explored terrain can be cached, restored, and extended.
+
+## 9. Users explore by seeing, moving, circling, and asking
+
+SeekStar should not force every intention through a typed prompt. Users can pan, zoom, hover, select, lasso, compare, follow relations, open sources, ask about the current region, or explicitly turn any valuable object into a new Seed.
 
 A circle around a region is a question before language.
 
-## 9. The final object is not an answer
+Input boxes, sidebars, settings, source review, and export panels support the telescope. They must not replace it or create a second state that disagrees with the active map.
 
-SeekStar should help the user produce:
+## 10. The final object is not an answer
 
-* a better question;
-* a map of a field;
-* a learning path;
-* a set of source-backed notes;
-* a Markdown brief;
-* a new exploration seed;
-* a trail of discovery.
+SeekStar should help users leave with:
 
-The goal is not to end curiosity quickly. The goal is to make curiosity navigable.
+- a better question;
+- a field map that can still be explored;
+- a learning or investigation path;
+- source-backed materials and notes;
+- a reusable new Seed;
+- a restorable trail of discovery.
+
+The goal is not to end curiosity quickly. The goal is to make curiosity navigable, inspectable, and durable.
+
+## 11. Philosophy, contract, and implementation
+
+This document explains why SeekStar exists; it does not prove that a feature is complete.
+
+- Product invariants: [Product Contract](./docs/product/PRODUCT_CONTRACT.zh.md).
+- Scale, relation, and transition rules: [Semantic Scale Contract](./docs/product/SEMANTIC_SCALE_CONTRACT.zh.md).
+- Current runtime boundaries: [Exploration Runtime](./docs/architecture/EXPLORATION_RUNTIME.md).
+- Implemented capabilities, known gaps, and release gates: [Current Baseline](./docs/status/CURRENT_BASELINE.zh.md).

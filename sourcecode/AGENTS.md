@@ -1,832 +1,243 @@
-# SeekStar Agent Operating Guide
+# SeekStar 协作规范
 
-## 0. Purpose
+## 0. 适用范围
 
-SeekStar is not a conventional search engine, chat interface, feed reader, or browser wrapper.
+本文件适用于 `sourcecode/` 下的所有工作。它规定如何保护产品语义、判断当前事实、修改代码与文档，以及如何验收结果。
 
-SeekStar is an AI-driven cognitive cartography system. Its purpose is to transform vague intent, unknown unknowns, web content, documents, words, glyphs, and user-selected regions into explorable spatial structures.
+SeekStar 是 AI 认知望远镜。它的核心产物是可浏览的知识地形，不是聊天页、搜索结果列表、分类树或关键词词云。
 
-The Agent system must treat every user action as a possible act of exploration, not merely as an input requiring an answer.
+## 1. 真相源与冲突处理
 
-The core product promise is:
+阅读和决策顺序如下：
 
-> The user does not need to already know the right question. SeekStar helps the user discover what can be asked.
+1. 用户当前明确要求。
+2. [`docs/product/PRODUCT_CONTRACT.zh.md`](./docs/product/PRODUCT_CONTRACT.zh.md)。
+3. [`docs/product/SEMANTIC_SCALE_CONTRACT.zh.md`](./docs/product/SEMANTIC_SCALE_CONTRACT.zh.md)。
+4. [`docs/architecture/EXPLORATION_RUNTIME.md`](./docs/architecture/EXPLORATION_RUNTIME.md)。
+5. [`docs/design/TELESCOPE_DESIGN_SYSTEM.zh.md`](./docs/design/TELESCOPE_DESIGN_SYSTEM.zh.md) 与 [`docs/design/REFERENCE_FLOWS.zh.md`](./docs/design/REFERENCE_FLOWS.zh.md)。
+6. [`docs/status/CURRENT_BASELINE.zh.md`](./docs/status/CURRENT_BASELINE.zh.md)。
+7. 已接受 ADR、当前代码和确定性测试。
 
-## 0.5 MVP Development Override
+产品契约定义“必须成为怎样”；Baseline 与代码定义“现在实际怎样”。二者不一致时，必须明确标注缺口，不能把目标冒充成已实现，也不能用当前实现反向削弱产品契约。
 
-SeekStar is currently in MVP core-development mode.
+[`docs/product/DEFERRED_CAPABILITIES.zh.md`](./docs/product/DEFERRED_CAPABILITIES.zh.md) 只保存尚未进入交付闭环的产品意图，不是 roadmap、实现要求或兼容承诺。
 
-When the user says that a path is obsolete, mock-only, or blocking the MVP, treat that as a deletion instruction unless there is a concrete safety reason not to. This is not a mature product with existing user data obligations. Old logic, old caches, old UI panels, old fallback data, fake buttons, mock layouts, radial/spiral artifacts, and stale product assumptions should be physically removed rather than hidden, softened, or preserved behind compatibility flags.
+旧提交、截图、阶段编号、删除前的 README 和外部聊天记录不是现行真相源。历史只从 Git 查询，不在活跃文档中复制维护。
 
-Do not "reduce noise" by merely not displaying old state. If the old path can re-enter the runtime, confuse the model boundary, resurrect cached mock scenes, or make the UI look like the previous prototype, delete the path and its cache/readback assumptions.
+## 2. 不可破坏的产品语义
 
-Current MVP spine:
+### 2.1 一个 tab，一张世界
 
-* A default New Seek tab opens as an AI-generated `default_tonight_sky`, not as an empty search shell. Users may still type or select a seed, but the first product surface is the star field.
-* `createSeedScene` creates only the tab/runtime/layer container. It must not manufacture visible local scaffold nodes, default domain nodes, fake sources, pending tiles, or old layer breadcrumbs.
-* AI Cartographer is the primary Supra Macro, L0, L1, L2, L3-candidate, and recursive-seed terrain producer.
-* AI-generated `cartographer_primary` terrain is the normal map material for Supra Macro through L2. In L3, AI may propose source candidates and orientation material, but a `cartographer_primary` `webpage`/`document` node must not be rendered as a real tile surface.
-* Domain lexicons are opening-sky prompt hints, not a visible seed pool. In `guided` mode enabled terms are sent as hints; in `pure_ai` mode no preset domain hints are sent. In both modes the AI remains responsible for free exploration.
-* DataService validates, observes, and loads sources for AI and user actions; it is a reality probe and tool surface, not the main map generator.
-* Failed AI-proposed URLs or source candidates must stay out of the main canvas. They may enter diagnostics/recovery queues, then be retried or replaced by AI.
-* L3 source candidates are queue/status objects only. They may appear in Source review, recovery, status overlays, or AI Map Control, but only successful DataService observations create source-backed Tile Field surfaces.
-* Level Runtime owns per-band data contracts, prompt profiles, chunk policy, and layout families. AI supplies semantic material; the runtime decides the product spatial contract.
-* Level Runtime and bridge code must keep model requests compact. Do not send the complete prompt profile or all level modules on every request; send the active module, nearby anchors, compact chunk policy, and the minimum scene summary required for the current band.
-* L0/L1 may use limited AI prefetch for smooth macro exploration. L2/L3 should be on-demand by default and must not spawn automatic preload rings unless the user explicitly asks for that behavior.
-* L0-L3 movement is continuous telescope navigation in one scene and coordinate plane. Do not simulate normal zooming by opening nested seed tabs or isolated layer boxes.
-* Pixi/App Framework render those contracts; they must not resurrect legacy radial, mock, DOM placeholder, debug-HUD, or old inspector-first layouts.
-* Product AI routes default to DeepSeek/OpenAI-compatible real generation. Missing keys must fail clearly. Synthetic generators are allowed only as local test fixtures, never as exported providers or default product fallback.
-* Right sidebar work should become an AI map chat/control surface. Old inspector/debug sprawl should be removed from the default product path.
-* Every level/band module should be CLI-testable with structured input, structured output, validation, and diagnostics. If a path cannot be tested outside the full Electron UI, it is not ready to be a core layer boundary.
+- 每个 tab 对应一个独立 `WorldDocument`。
+- 新建 Seed 才创建新世界；平移、缩放、聚焦和普通尺度切换不得创建子 scene、嵌套 tab 或平行世界。
+- L0–L3 共享连续 XY 与空间记忆。
+- 在细尺度横移后向上收束，应落到当前 XY 附近的上层语义区域，而不是最初入口。
+- 关闭和重启后，应恢复已保存世界与最后 view checkpoint；ready 内容不得无故重新生成。
 
-For this phase, "stable" means the main exploration loop is coherent and testable. It does not mean maintaining forward compatibility with earlier mock-stage scenes, cached chunks, or UI experiments.
+### 2.2 多尺度不是四份等长词表
 
-## 1. Non-negotiable Product Principles
+- L0 是领域视野：区域、方向、邻接、地标和宏观未知。
+- L1 是主题视野：主题邻域、分支、交叉问题和桥接主题。
+- L2 是解释视野：机制、组件、因果、比较、争议、实践和证据方向。
+- L3 是来源视野：只包含 Scout 成功观察的真实材料。
+- 上下尺度允许一对多、多对一和多对多 refinement；不得按数组下标、固定配额或最近距离凭空推断父子关系。
+- 对象数量由语义密度、差异性、证据和预算决定，不追求 `1:1:1`。
+- 短标题只用于远景识别；焦点对象必须能说明“是什么、为何相关、继续进入会看到什么”。
 
-### 1.1 Exploration before answer
+### 2.3 世界段不是语义盒子
 
-Do not collapse exploration into a single answer unless the user explicitly asks for an answer.
+- `WorldSegment` 是生产、缓存、持久化和增量传输单元，不是隐藏父节点。
+- segment 边界不得成为可见语义边界。
+- 相邻 segment 必须复用稳定身份、锚点和边界摘要，避免重复对象和平行事实。
+- 内存可淘汰身后 segment，但持久世界必须可以恢复它。
 
-The Agent should prefer to produce:
+### 2.4 相机是弱信号
 
-* fields of possibility;
-* nearby topics;
-* upper-level categories;
-* lower-level subtopics;
-* sibling concepts;
-* source-backed content;
-* unexplored fog areas;
-* possible next questions.
+- 平移、聚焦、选择和尺度切换先在 renderer 本地完成，不等待 AI、Scout 或磁盘。
+- 相机只报告位置、方向、速度、尺度与边缘距离，用于调度和预取。
+- 后台可以预测并扩展世界，但不得逐帧追随相机，也不得用迟到事件覆盖当前 view。
+- 缺失区域显示真实 fog、loading 或 failure；不得同步伪造可见内容。
 
-### 1.2 Maps before lists
+### 2.5 来源真实边界
 
-The primary output is not a ranked list. The primary output is structured spatial data that can be rendered into a map, grid, constellation, tile field, or zoomable content plane.
+- AI 可以生成语义地形、解释、关系和 URL 候选，不能声称候选已经成为真实来源。
+- 候选在 Scout 成功前只存在于队列、恢复状态或 Source Review。
+- 只有具备成功观察、最终 URL、时间、类型与 provenance 的来源才能成为 L3 tile。
+- 失败来源不得生成破损假 tile，也不得把整个世界标记为失败。
+- 用户必须能区分 AI 推断、已验证来源、未知区域和本地注释。
 
-Lists may exist, but only as secondary support inside panels, inspectors, search results, summaries, and exports.
+## 3. 状态所有权
 
-### 1.3 Sources before confidence
+### 3.1 主进程拥有持久世界
 
-The Agent must not present unsupported claims as source-backed facts.
+Electron 主进程是以下状态的唯一所有者：
 
-This does not mean unsourced AI terrain is secondary or hidden. In the MVP, AI-generated terrain is the primary map material for macro and source-orientation exploration. It must be marked with the correct source state and validated against the schema, but it should render as normal exploration terrain.
+- `WorldDocument` 与 segment/source 索引；
+- AI 与 Scout 任务、重试、并发和取消；
+- tab surface lease；
+- 世界与 view checkpoint 持久化；
+- Provider 设置与密钥；
+- source observation 和世界增量事件。
 
-Every factual content node should prefer to carry:
+### 3.2 活动 tab surface 拥有即时视图
 
-* title;
-* source URL or local source reference;
-* source type;
-* retrieval time;
-* snippet or excerpt;
-* confidence;
-* relation type;
-* reason for inclusion.
+活动 renderer 唯一拥有：
 
-If no source exists, the node must be marked as `cartographer_primary`, `agent_inferred`, `weak_hypothesis`, `fog`, or another honest non-source-backed state. It should not claim `source_backed`.
+- `camera { x, y, zoom, layer }`；
+- selection 与 focus；
+- browser absorption；
+- 指针、拖动、缩放及即时过渡状态。
 
-If a generated URL fails DataService observation or cannot produce a usable tile surface, do not show it as a broken tile on the main canvas. Keep failure evidence in recovery/diagnostics and ask AI for a replacement candidate when appropriate.
+Shell renderer 不得为了读取侧栏信息而打开第二个探索运行时。它只能消费 tab surface 发布的精简只读快照。
 
-### 1.4 Structure before style
+### 3.3 投影必须可重算
 
-The Agent produces cognitive terrain, not visual decoration.
+`TerrainProjection` 是 `WorldDocument + ExplorationViewState` 的纯派生结果：
 
-The UI owns final rendering style. The Agent may suggest semantic roles, node types, relation types, confidence, importance, and layer placement. The Agent must not randomly decide visual colors, animations, icons, or layout rules unless explicitly asked by the architecture contract.
+- 不持久化；
+- 不作为 IPC 世界事实回传；
+- 不包含生成生命周期；
+- 可以被 Pixi、右栏和搜索独立消费而不改变源状态。
 
-### 1.5 Infinite zoom must remain legible
+世界事件只能修改 world/source/job 索引；view action 只能修改 view。`world_revision` 与 `view_revision` 独立，不得互相比较或覆盖。
 
-SeekStar supports infinite Z-axis depth, but every Z transition must preserve orientation.
+### 3.4 surface 与 lease
 
-The Agent must always identify:
+- 同一 tab 同时只允许一个活动 surface。
+- docked/detached 交接时签发新 lease 并撤销旧 lease。
+- 旧 lease 的迟到 report、command 和 subscription event 必须被拒绝。
+- 交接必须保留相机、layer、selection 与 focus。
+
+## 4. 模块边界
 
-* current band or layer;
-* parent / supra context;
-* child / detail target;
-* sibling regions;
-* user’s current path;
-* meaningful exits.
+- `apps/desktop`：Electron App Shell、tab surface、preload 和 UI 编排。
+- `packages/core-schema`：跨进程共享的世界、视图、来源、设置和协议类型。
+- `packages/constellation-engine`：纯投影、空间/交互计算与 Pixi 适配；不拥有持久生命周期。
+- `packages/ai-service`：OpenAI-compatible 请求、紧凑上下文与结构化输出校验；不持有世界。
+- `packages/scout-service`：真实页面观察与来源快照；不决定地图主题。
+- `packages/storage-service`：原子 JSON 世界仓库；不解释内容。
+
+不要重新引入已删除的独立层级运行时、持久化场景快照、可见细粒度阶梯、逐层场景突变、旧探索 IPC，或 renderer 侧生成调度。
 
-The visible product should not expose a brittle staircase of many text layers. L4-L10 style section, paragraph, sentence, phrase, word, character, Unicode, and dictionary detail belong inside Deep Lens unless a grain is promoted into a new recursive seed.
+若一个新抽象没有明确消费者，或只是包装旧名字，应删除而不是保留 facade。MVP 不为已删除的原型实现增加迁移层或向前兼容，除非用户明确要求。
 
-### 1.6 Unknown unknowns must not become hallucinated unknowns
+## 5. 生产与调度规则
 
-The Agent may infer unexplored regions, but must distinguish:
+- 打开世界时先恢复缓存；缺中心 segment 才排中心任务。
+- 中心 segment ready 或终态失败后，再按距离补齐八邻段。
+- 快速移动只重排未开始任务，不重复生成 ready segment。
+- AI 和 Scout 并发上限默认各为 2；同一 segment 同时最多一个活动 job。
+- 结构化 AI 输出截断或无效时最多自动重试一次；终态失败保留 fog 和显式恢复入口。
+- AI 上下文保持紧凑：seed、segment 地址、附近稳定锚点、相邻摘要和 policy revision；不得发送完整世界、完整历史对话或无消费者配置。
+- AI 提供语义身份建议、简短解释、refinement、桥接关系和来源候选；runtime 负责稳定 ID、几何、chunk、去重、revision 和持久化。
+- 当前实现与新语义契约存在差距时，优先增加确定性 fixture 和受控纵切，不以随机布局或视觉装饰掩盖问题。
+
+## 6. 状态、错误与日志
 
-* source-backed knowledge;
-* semantic inference;
-* weak hypothesis;
-* user-created note;
-* generated exploration prompt.
-
-Unverified content must be visually and semantically marked as such.
-
-## 2. System Roles
-
-### 2.1 Observatory Host
-
-The Electron application is the local observatory.
-
-Responsibilities:
-
-* own windows, tabs, panels, local state, file access, and session isolation;
-* render the infinite canvas and 2.5D layer system;
-* maintain user interaction history;
-* store local indexes, snapshots, selections, annotations, and exports;
-* coordinate Agent calls and Playwright tasks;
-* enforce security and permission rules.
-
-The host must not let remote web pages directly control core application state.
-
-### 2.2 Scout
-
-Playwright and DataService are the scout.
-
-Responsibilities:
-
-* validate AI-proposed URLs and source candidates;
-* open and inspect pages when observation is requested;
-* extract titles, snippets, visible text, metadata, links, publication dates, and page structure;
-* distinguish HTML, PDF, image, and future file snapshots;
-* take structured observations;
-* report retrieval failures;
-* expose source probing as a tool/MCP-style capability to the local AI agent;
-* obey rate limits and safety constraints;
-* avoid bypassing authentication, paywalls, anti-bot systems, or private content boundaries.
-
-The scout fetches and observes. It does not decide meaning, rank truth, or generate the L0-L3 map.
-
-### 2.3 Cartographer
-
-The AI Agent is the cartographer.
-
-Responsibilities:
-
-* generate `cartographer_primary` Supra Macro, L0, L1, and L2 terrain;
-* propose L3 source candidates that DataService may validate into source-backed tiles;
-* generate Supra Macro context above L0 without using negative levels;
-* classify retrieved content;
-* detect parent, child, and sibling concepts;
-* assign semantic relations;
-* identify clusters and fog regions;
-* generate level/band structures;
-* expand same-band horizontal chunks as the user approaches viewport boundaries;
-* decompose focused regions downward through band-specific prompts;
-* summarize orphan content upward when parent context is missing;
-* produce explanations for selected regions;
-* generate learning paths, translations, summaries, and question sets;
-* propose source candidates for DataService to validate;
-* generate structured data that the renderer can consume.
-
-The cartographer interprets. It does not perform raw rendering.
-
-### 2.4 Telescope
-
-The UI is the telescope.
-
-Responsibilities:
-
-* show cognitive lens effects;
-* render XY spatial fields;
-* handle semantic band movement and camera depth;
-* provide lasso, brush, selection, search, tabs, sidebars, and inspectors;
-* preserve orientation;
-* make source traceability visible;
-* make unknown regions attractive but not misleading.
-
-The telescope focuses attention. It does not fabricate content, but it should eagerly display valid Cartographer terrain without waiting for every object to be source-backed.
-
-### 2.5 Archivist
-
-The local data layer is the archivist.
-
-Responsibilities:
-
-* save retrieved sources;
-* save generated structures;
-* save user trails;
-* save notes and annotations;
-* save exported Markdown;
-* save tab histories;
-* save content indexes;
-* preserve source provenance.
-
-The archivist remembers. It does not reinterpret without Agent request.
-
-## 3. Agent Types
-
-SeekStar may use one general Agent at the MVP stage, but its behavior must be separated into logical modes.
-
-### 3.1 Seed Mapper
-
-Input:
-
-* seed keyword;
-* natural language prompt;
-* selected text;
-* selected node;
-* current canvas region;
-* daily topic package.
-
-Output:
-
-* parent fields;
-* sibling fields;
-* child fields;
-* candidate search terms;
-* initial spatial schema;
-* fog regions;
-* confidence labels.
-
-Purpose:
-Generate the first explorable map.
-
-### 3.2 Web Scout Planner
-
-Input:
-
-* current seed;
-* map gaps;
-* selected fog region;
-* user intent;
-* existing sources.
-
-Output:
-
-* search query set;
-* search priority;
-* source type targets;
-* stop conditions;
-* deduplication criteria.
-
-Purpose:
-Plan what Playwright should search next.
-
-### 3.3 Source Distiller
-
-Input:
-
-* raw page text;
-* title;
-* URL;
-* page metadata;
-* extracted links;
-* retrieval timestamp.
-
-Output:
-
-* concise source card;
-* main claims;
-* keywords;
-* entities;
-* relation candidates;
-* source type;
-* reliability hints;
-* useful excerpts.
-
-Purpose:
-Turn raw web observations into usable content nodes.
-
-### 3.4 Layer Cartographer
-
-Input:
-
-* current layer;
-* user viewport;
-* node set;
-* relation set;
-* selection history;
-* zoom direction.
-
-Output:
-
-* layer label;
-* parent layer;
-* child layer;
-* sibling regions;
-* node grouping;
-* edge grouping;
-* constellation assignment;
-* semantic axes;
-* Z-depth transition hints.
-
-Purpose:
-Maintain infinite-layer coherence.
-
-### 3.5 Region Explainer
-
-Input:
-
-* lasso selection;
-* brush highlights;
-* selected nodes;
-* selected text blocks;
-* user question or preset prompt.
-
-Output:
-
-* explanation;
-* cited source chain;
-* concept bridge;
-* contradictions;
-* key takeaways;
-* next questions;
-* Markdown export.
-
-Purpose:
-Explain a selected region as a local universe.
-
-### 3.6 Token Explorer
-
-Input:
-
-* word;
-* phrase;
-* character;
-* Unicode code point;
-* selected glyph;
-* dictionary source.
-
-Output:
-
-* meaning;
-* etymology if available;
-* translation;
-* usage examples;
-* related terms;
-* seedable keyword forms;
-* link back to original document context.
-
-Purpose:
-Allow the user to zoom from content into language itself.
-
-### 3.7 Learning Path Generator
-
-Input:
-
-* selected region;
-* known user level if available;
-* goal;
-* available sources;
-* time horizon.
-
-Output:
-
-* ordered learning path;
-* prerequisites;
-* milestones;
-* first-reading list;
-* practice prompts;
-* next exploration seeds.
-
-Purpose:
-Turn exploration into study.
-
-## 4. Core Data Contract
-
-Agent outputs must be structured. The UI may render them differently, but the semantic contract should remain stable.
-
-### 4.1 Node
-
-A node represents one visible or addressable unit.
-
-Node types:
-
-* domain;
-* topic;
-* subtopic;
-* concept;
-* question;
-* source;
-* webpage;
-* document;
-* section;
-* paragraph;
-* sentence;
-* phrase;
-* word;
-* character;
-* unicode;
-* dictionary_entry;
-* annotation;
-* user_note;
-* generated_summary;
-* fog_region;
-* constellation_anchor.
-
-Required fields:
-
-* id;
-* type;
-* title;
-* layer;
-* source_state;
-* confidence;
-* importance;
-* tags;
-* created_at;
-* updated_at.
-
-Recommended fields:
-
-* summary;
-* source_url;
-* source_title;
-* source_type;
-* retrieved_at;
-* parent_id;
-* child_ids;
-* relation_ids;
-* semantic_axes;
-* position_hint;
-* icon_hint;
-* language;
-* token_range;
-* text_range;
-* html_selector_hint;
-* quote;
-* markdown_ref.
-
-### 4.2 Relation
-
-Relations must have explicit types.
-
-Relation types:
-
-* semantic_similarity;
-* parent_child;
-* sibling;
-* citation;
-* hyperlink;
-* same_author;
-* same_institution;
-* same_event;
-* chronological_sequence;
-* contradiction;
-* supports;
-* critiques;
-* toolchain;
-* prerequisite;
-* translation;
-* etymology;
-* token_contains;
-* source_contains;
-* user_selected;
-* agent_inferred.
-
-Required fields:
-
-* id;
-* from;
-* to;
-* type;
-* confidence;
-* explanation;
-* source_state.
-
-### 4.3 Layer
-
-Layers and bands are semantic depths, not merely zoom values.
-
-The old canonical 12Level ladder remains useful as an internal address vocabulary and migration reference:
-
-* L0: 领域 / Star Gallery / seed pool;
-* L1: 主题;
-* L2: 来源;
-* L3: webpage / document / PDF / image tile;
-* L4: section;
-* L5: paragraph;
-* L6: sentence;
-* L7: phrase;
-* L8: word / keyword;
-* L9: character;
-* L10: Unicode / dictionary;
-* L11: term-as-new-seed loop.
-
-The MVP product target is no longer a visible 12-step UI ladder. The user-facing runtime is modular:
-
-* Supra Macro: broader systems and parent domains above L0.
-* L0 Star Gallery: domain seed pool and broad exploration field.
-* L1 Topic Field: topic neighborhoods and same-layer branches.
-* L2 Source Orientation: source directions, reference families, communities, repositories, papers, and trails.
-* L3 Tile Field: source-backed webpage, article, PDF, image, and document tiles. Unverified webpage/document candidates stay in Source review/recovery and must not render as main-canvas tiles.
-* Deep Lens: section, paragraph, sentence, phrase, word, character, Unicode/dictionary, and future byte/hex inspection inside one close-reading mode.
-* Recursive Seed: any selected grain, region, link, file, image region, or text span becomes a new exploration universe.
-
-The runtime must be extensible. The UI must not assume a hard maximum or force every text granularity into its own visible product layer.
-
-### 4.4 Constellation
-
-A constellation is a domain container with a shape identity.
-
-Required fields:
-
-* id;
-* title;
-* domain;
-* icon_shape;
-* anchor_nodes;
-* member_nodes;
-* skeleton_strength;
-* semantic_strength;
-* visual_weight;
-* semantic_axes;
-* source_state.
-
-Rule:
-At far zoom, icon shape may dominate. At close zoom, semantic relations must dominate.
-
-### 4.5 Fog Region
-
-A fog region represents visible unknown space.
-
-Fog types:
-
-* semantic_fog;
-* temporal_fog;
-* controversy_fog;
-* long_tail_fog;
-* cross_domain_fog;
-* source_gap_fog;
-* user_unexplored_fog.
-
-Required fields:
-
-* id;
-* label;
-* reason;
-* relation_to_current_view;
-* suggested_seed_terms;
-* confidence;
-* expansion_cost;
-* expected_value.
-
-## 5. Agent Workflow
-
-### 5.1 Startup
-
-On launch:
-
-1. Load user workspace.
-2. Load recent tabs and saved trails.
-3. If no workspace exists, generate or load an opening star field.
-4. Use daily topics, user seed collections, or default exploration packs as initial material.
-5. Render fog regions instead of pretending that the map is complete.
-
-### 5.2 New seed tab
-
-When the user enters text and chooses “as new exploration seed”:
-
-1. Create a new independent tab.
-2. Do not inherit the previous tab’s navigation history.
-3. Use the text as the seed context.
-4. Ask AI Cartographer to bootstrap Supra Macro and L0 first; generate L1/L2/L3 on demand from focus, viewport, and user movement.
-5. Render valid `cartographer_primary` terrain immediately after schema validation.
-6. Ask DataService to validate only the URL/source candidates that need reality probing.
-7. Promote successful observations into source-backed L3 tiles.
-8. Hide failed candidates from the main canvas and keep them in recovery/diagnostics.
-9. Preload nearby chunks according to settings, with the MVP default of limited L0/L1 prefetch and on-demand L2/L3.
-
-### 5.3 Search within current tab
-
-When the user enters text and chooses “search within this tab”:
-
-1. Search indexed content in the current tab.
-2. Highlight matches.
-3. Show keyword result cards.
-4. Each card must include snippet, location, source, layer, and match type.
-5. Clicking a result moves the camera to that exact content region.
-6. This action must not create a new tab.
-
-### 5.4 Hyperlink click
-
-When the user clicks a hyperlink in content:
-
-1. Open the link in a new tab.
-2. Do not inherit the previous tab history.
-3. Preserve a backlink to the origin node.
-4. Mark the new tab as hyperlink-derived.
-5. Keep original context available in the side panel.
-
-### 5.5 Viewport edge expansion
-
-When the user approaches an edge:
-
-1. Detect that the active viewport is near the prepared chunk boundary.
-2. Request AI Cartographer `expand_horizontal` for the next same-band chunk.
-3. Preload one small ring only for L0/L1 when settings allow; keep L2/L3 on-demand unless explicitly requested.
-4. Run DataService only for source candidates that require observation.
-5. Add new structures in the direction of travel without re-laying out the entire map.
-6. Put distant chunks to sleep, cache them, or evict them when budgets are exceeded.
-7. Preserve spatial memory and avoid visible chunk seams.
-
-### 5.6 Z-axis transition
-
-When the user zooms in:
-
-1. Determine whether the next semantic band should be revealed.
-2. Fade the current band into context.
-3. Generate or hydrate child/detail terrain through the band module using the current focus anchor, nearby sibling anchors, viewport center, and movement direction.
-4. Keep parent/supra context visible.
-5. Stay in the same scene and coordinate plane for ordinary L0/L1/L2/L3 zooming; do not create nested tabs or isolated boxes.
-6. Enter Deep Lens for text/content detail instead of marching through many visible text layers.
-
-When the user zooms out:
-
-1. Collapse child nodes into summaries.
-2. Fade lower band detail to zero or near-zero opacity.
-3. Reveal the parent region nearest the current viewport, not necessarily the original entry node.
-4. If the lower-band exploration discovered an upper-band gap, write that context back into the existing parent terrain with `summarize_up`.
-5. Preserve the user’s trail.
-
-### 5.7 HTML content zoom
-
-At document level:
-
-1. Render content as a non-overlapping tiled plane.
-2. Maintain internal scale inside each tile.
-3. Absorb a focused tile into a browser/document surface when the user chooses or crosses the threshold.
-4. Use Deep Lens for section, paragraph, sentence, phrase, word, character, Unicode/dictionary, and future byte/hex inspection.
-5. Every lower-level address path must preserve source location when it came from a source-backed tile.
-6. Any phrase, word, character, image region, paragraph, sentence, or selected grain can become a recursive seed.
-
-### 5.8 Lasso and brush AI action
-
-When the user lassos content:
-
-1. Freeze selection.
-2. Collect selected nodes, text ranges, source refs, annotations, and visible context.
-3. Let the user choose a preset prompt or enter a question.
-4. Generate a structured answer.
-5. Show the answer in the side panel.
-6. Allow export to Markdown.
-7. Allow selected items to be dragged into the seed tray or collection tray.
-
-When the user brushes content:
-
-1. Treat brush marks as attention weights.
-2. Preserve brush annotations.
-3. Use brush weights to guide explanation priority.
-
-## 6. Prompt Presets
-
-Default presets:
-
-* Explain this region.
-* Summarize this region.
-* Translate selected text.
-* Generate learning path.
-* Extract key questions.
-* Find contradictions.
-* Find source chain.
-* Expand nearby unknowns.
-* Turn selection into new seed.
-* Compare selected clusters.
-* Explain as beginner.
-* Explain as expert.
-* Export as Markdown brief.
-
-Each preset must be editable.
-
-## 7. Research-first Rule
-
-Before implementing a custom subsystem, the project must first investigate existing libraries, prior art, and official documentation.
-
-Subsystems requiring research before custom implementation:
-
-* Electron tab architecture;
-* browser isolation and security;
-* Playwright search and extraction;
-* 2D GPU rendering;
-* infinite canvas;
-* graph layout;
-* force simulation;
-* local search;
-* fuzzy search;
-* full-text indexing;
-* vector search;
-* annotation tools;
-* lasso/brush interactions;
-* Markdown export;
-* citation management;
-* HTML parsing;
-* Unicode and dictionary lookup;
-* local storage;
-* agent orchestration;
-* cost monitoring;
-* tracing and logging.
-
-Deliverable:
-Each major technical choice must have a short decision record:
-
-* problem;
-* considered libraries;
-* official docs checked;
-* constraints;
-* chosen approach;
-* rejected approaches;
-* reason for not building from scratch, or reason custom work is justified.
-
-## 8. Library Evaluation Policy
-
-The team must prefer proven libraries when they cover commodity infrastructure.
-
-Build custom only when:
-
-* SeekStar’s interaction is genuinely novel;
-* existing libraries cannot handle the required scale;
-* existing libraries block the visual language;
-* dependency risk is unacceptable;
-* integration cost exceeds custom implementation cost.
-
-Candidate categories:
-
-* Desktop host: Electron.
-* Browser automation: Playwright.
-* 2D rendering: PixiJS or equivalent GPU canvas renderer.
-* Infinite canvas and annotation: tldraw-style SDK evaluation required.
-* Graph visualization: Cytoscape.js, Sigma.js, React Flow, Graphology, or equivalent.
-* Force layout: D3 Force or equivalent.
-* Layered graph layout: ELK.js or equivalent.
-* Local fuzzy search: Fuse.js.
-* Local full-text search: MiniSearch or equivalent.
-* Async state and caching: TanStack Query or equivalent.
-* Persistence: local database or document store to be evaluated.
-* Agent orchestration: Responses API / Agents SDK / custom orchestrator to be evaluated.
-
-## 9. Safety and Trust Rules
-
-### 9.1 Web access
-
-The Agent must not:
-
-* bypass paywalls;
-* bypass authentication;
-* scrape private user accounts without explicit permission;
-* ignore robots, rate limits, or site rules;
-* disguise itself as the user in unsafe ways;
-* silently download unknown files;
-* execute untrusted scripts as application logic.
-
-### 9.2 User data
-
-The Agent must:
-
-* keep user-created notes separate from fetched web data;
-* mark local-only data;
-* request permission before sending private selections to external AI APIs if privacy mode requires it;
-* allow deletion of local trails and cached content.
-
-### 9.3 Source reliability
-
-The Agent must:
-
-* distinguish primary sources, secondary reports, community posts, and generated summaries;
-* show uncertainty;
-* avoid overclaiming;
-* preserve source links;
-* allow users to inspect source provenance.
-
-## 10. Performance Principles
-
-The Agent should not drive real-time animation.
-
-The local UI handles:
-
-* panning;
-* zooming;
-* fisheye lens;
-* opacity transitions;
-* hit testing;
-* selection;
-* highlighting;
-* tile rendering.
-
-The Agent handles:
-
-* map generation;
-* structure expansion;
-* source distillation;
-* region explanation;
-* prompt execution;
-* export generation.
-
-Agent calls should be:
-
-* interruptible;
-* cancellable;
-* resumable when possible;
-* visible in a job queue;
-* cost-aware;
-* cached when possible.
-
-## 11. Output Style
-
-Agent text should be concise, structured, source-aware, and spatially grounded.
-
-Good:
-
-* “This region connects AI role design with virtual identity systems. The strongest bridge node is X. The uncertain fog region to the right likely contains Y.”
-
-Bad:
-
-* “Here is everything about AI role design.”
-
-The Agent should explain what the user is looking at, why it matters, and where they can go next.
+以下状态域必须独立：
+
+- View：相机、layer、focus、selection。
+- World/Segment：missing、queued、running、ready、failed。
+- AI Job：attempt、retry、cancel、token/JSON failure。
+- Scout：candidate、observing、verified、failed、replacement。
+- Persistence：dirty、saving、saved、failed、recovered。
+- Surface：docked、detached、lease 与 handoff。
+- Settings：draft、validating、saving、saved、warning、failed。
+
+一个根因只产生一个主错误。其他界面引用该错误，不复制全局红色警告。AI JSON 截断不能映射为“本地工作区损坏”或“轨迹保存失败”。Retry 必须指向具体状态机，不使用万能按钮。
+
+常规日志只记录 `模块 / 状态 / 事件 / 关联 ID / 耗时`。详细 payload、prompt、响应和堆栈只在显式 debug 下记录。任何日志、错误或遥测都不得包含 API Key、授权头、私有正文或 safeStorage 密文。
+
+## 7. 设置与安全
+
+- 当前 MVP 只承诺 OpenAI-compatible 协议，但支持多个 Provider 的 CRUD、启停和活动切换。
+- renderer 只接收 `api_key_configured` 和密钥来源状态；绝不返回明文或密文。
+- 密钥编辑使用 `preserve / replace / clear`，密码框不回填。
+- 使用 Electron `safeStorage`；加密不可用时禁止明文回退，提示使用环境变量。
+- 保存固定为：校验 → 加密 → 临时文件原子替换 → 更新内存 → 通知运行时。
+- 落盘成功后的热应用失败只能产生 warning，不能把已保存结果显示成保存失败。
+- 测试连接使用当前草稿，与保存严格分离；测试失败不得清空草稿或密钥。
+- 破坏性数据操作必须有明确范围和二次确认。
+
+Web/Scout 不得绕过登录、付费墙、站点规则或速率限制；不得把私有选择静默发送到外部模型；不得执行抓取页面中的不可信代码作为应用逻辑。
+
+## 8. UI 与交互约束
+
+- 画布必须表达 Region、Landmark、Thread、Explanation、Evidence Route、Source Tile 和 Fog 的区别。
+- 不用大量等大圆、等大卡片或单词重复模拟“完成度”。
+- 尺度改变采用渐进信息密度与稳定锚点过渡，不能整屏瞬间替换。
+- 相邻语义区域可以交叠和缠入；普通缩放不进入封闭盒子。
+- 右栏解释当前真实 tab、layer、选择、来源和错误域；不得展示 Shell 自己虚构的 `New Seek / L0` 占位状态。
+- 未实现的入口应隐藏或明确标为不可用；不得保留 no-op 按钮。
+- UI 文案默认简体中文；内部类型名、协议名和用户确实需要的技术信息可以保留英文。
+- 关键流程必须在 1280×720 与 1600×900 下无溢出、重叠或不可达操作。
+
+详细视觉与流程要求见设计系统和参考 fixture，不要在组件 CSS 中另造一套语法。
+
+## 9. 工程工作方式
+
+- 先读邻近代码、类型、测试和权威文档，再修改。
+- 搜索优先使用 `rg` / `rg --files`。
+- 保持变更聚焦；不要顺手重写无关生产代码。
+- 工作区可能已有用户修改。不得覆盖、回滚或格式化无关文件。
+- 文件编辑使用补丁；批量格式化仅限明确范围。
+- 禁止 `git reset --hard`、未经授权的 checkout 覆盖、递归删除和其他破坏性命令。
+- 跨进程协议先改 core schema，再改 main/preload/renderer 消费者和测试。
+- 不在 renderer、preload 和 main 各复制一份协议类型或状态机。
+- 避免 `any`、静默 catch、无限重试、定时器竞态和用副作用修正 reducer 状态。
+- 新增异步任务必须可取消、有终态、可观察，并对迟到结果做 revision/lease 校验。
+- 新依赖或重大基础设施先查官方文档与成熟方案；重要取舍写 ADR，不写阶段流水账。
+
+## 10. 验证规则
+
+验证强度与变更风险匹配，默认发布门禁为：
+
+```bash
+npm run typecheck
+npm run build
+npm run smoke:modules
+npm run smoke:settings
+npm run smoke:electron
+```
+
+- schema、runtime、投影或调度变化：至少运行 typecheck、build、module smoke。
+- 设置、Provider、密钥或持久化变化：加跑 settings smoke。
+- main/preload/lease/tab/window/UI 闭环变化：加跑 Electron smoke。
+- 公网 smoke 只在明确需要真实网络时运行，不用它替代确定性测试。
+- 纯文档变更至少运行链接/术语搜索和 `git diff --check`。
+
+新增或修改多尺度行为时，必须覆盖：
+
+- 后台迟到事件不改变当前 layer、XY、focus 或 selection；
+- 汽车 L1 → 汽车 L2 → 横移飞机区域 → 飞机 L2 → 上滚飞机 L1；
+- 可变对象数量以及一对多、多对一、多对多 refinement；
+- candidate 不渲染为 L3 tile，Scout 成功后才出现；
+- ready segment 重启恢复且不重复调用 AI；
+- 单 surface lease 与 detach/attach 视图交接；
+- segment、Scout、Persistence 和 View 错误互不冒充。
+
+测试应优先使用确定性 AI/Scout adapter。真实 Provider 只做用户明确触发的人工验收，避免意外 token 成本和网络不稳定。
+
+## 11. 文档维护
+
+- 产品含义变更先更新产品/语义契约，并记录可观察的价值与取舍。
+- 当前实现变化同步更新运行时文档与 `CURRENT_BASELINE.zh.md`。
+- 视觉对象或交互变化同步更新设计系统和参考流程。
+- 重大、长期有效的架构选择写 ADR；ADR 记录问题、方案、拒绝项与后果。
+- 不创建按阶段编号累积的日记、完成清单或重复 README。
+- 替代旧设计后直接删除失效文档和无消费者接口；Git 已承担历史保存。
+- 文档不得引用不存在的 package、IPC、脚本或设置项。
+- 合并前搜索已删除的 runtime 名称、历史探索 IPC 和阶段编号，确认它们没有回到现行文档。
+
+## 12. 完成定义
+
+一次工作只有在以下条件都成立时才算完成：
+
+1. 解决了用户要求的真实问题，而不是只改变表象。
+2. 没有破坏本文件第 2 节的产品语义。
+3. 状态所有权与来源边界清晰，没有引入第二事实源。
+4. 无假入口、无空 facade、无不受控兼容层。
+5. 错误、日志和权限没有泄露敏感信息。
+6. 对应门禁通过，或明确报告未运行及原因。
+7. 权威文档、代码和测试对当前事实的表述一致。
+8. 交付说明区分“本轮已实现”“已知缺口”和“下一步目标”。
